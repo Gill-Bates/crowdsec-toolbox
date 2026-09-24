@@ -87,6 +87,9 @@ jobs:
       # badges are generated on demand by a third party that throttles: a badge
       # answering 503 after lychee's retries says nothing about the
       # documentation, and blocking the Pages deploy on it only produces reruns.
+      # x-arf.org (linked from abuse-reporter/index.md) has repeatedly timed out
+      # in this same way, unrelated to any change here - same reasoning as
+      # apps.apple.com in the wirebuddy repo's docs-build.yml.
       # The site's own Pages URL is excluded because it does not exist yet on the
       # very first deploy.
       - name: Check links
@@ -97,6 +100,7 @@ jobs:
             --no-progress
             --exclude 'fonts\.gstatic\.com'
             --exclude 'img\.shields\.io'
+            --exclude 'x-arf\.org'
             --exclude 'gill-bates\.github\.io/crowdsec-toolbox'
             './site/**/*.html'
           fail: true
