@@ -81,7 +81,7 @@ jobs:
         working-directory: crowdsec-abuse-reporter
         run: >-
           python -m pytest --deselect
-          "crowdsec-abuse-reporter/tests/test_hardening.py::EntrypointHardeningTest::test_entrypoint_rejects_non_integer_run_jitter"
+          "tests/test_hardening.py::EntrypointHardeningTest::test_entrypoint_rejects_non_integer_run_jitter"
 
   container:
     name: Dockerfiles + entrypoints
