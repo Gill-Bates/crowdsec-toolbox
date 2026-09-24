@@ -515,6 +515,16 @@ jobs:
           path: digests/
           merge-multiple: false
 
+      # Appended to every release's notes as a rough size/composition signal.
+      # Counts the checked-out tree at the release commit, not the whole
+      # history, so it reflects exactly what this tag ships.
+      - name: Run cloc
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq cloc
+          cloc . --hide-rate --exclude-dir=.git > cloc-output.txt
+          cat cloc-output.txt
+
       - name: Create or update the release
         uses: actions/github-script@v7
         env:
@@ -588,6 +598,14 @@ jobs:
             }
             body += `There is no bare \`latest\` tag: with two tools in one repository it could only mean one of them.\n\n`;
             body += `Built ${process.env.BUILD_DATE} from ${context.sha}.\n`;
+
+            let cloc;
+            try {
+              cloc = fs.readFileSync('cloc-output.txt', 'utf8').trim();
+            } catch { cloc = null; }
+            if (cloc) {
+              body += `\n### Code Statistics (cloc)\n\n\`\`\`\n${cloc}\n\`\`\`\n`;
+            }
 
             const { owner, repo } = context.repo;
             let existing = null;
