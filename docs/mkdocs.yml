@@ -32,15 +32,18 @@ theme:
   name: material
   language: en
   palette:
-    # Light mode
-    - scheme: default
+    # Light mode, used when the OS reports a light or no preference.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
       primary: indigo
       accent: blue
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
-    # Dark mode
-    - scheme: slate
+    # Dark mode, used when the OS reports a dark preference. The toggle still
+    # lets a visitor override the OS choice for the rest of the session.
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
       primary: indigo
       accent: blue
       toggle:
