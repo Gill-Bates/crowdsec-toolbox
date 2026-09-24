@@ -236,11 +236,16 @@ jobs:
       matrix:
         # Both run on native runners rather than QEMU: these images install apt
         # packages and, for the abuse reporter, fetch two GeoLite2 databases, all
-        # of which emulate poorly. If arm64 runners are unavailable, delete that
-        # entry - the manifest job adapts to whatever digests it finds.
+        # of which emulate poorly. tool x arch as two real axes, so GitHub
+        # expands the full cartesian product (4 jobs) instead of `include`
+        # entries that lack a `tool` key and therefore do not multiply against
+        # it - that silently produced only one arch per tool.
         tool:
           - abuse-reporter
           - metrics-exporter
+        arch:
+          - amd64
+          - arm64
         include:
           - arch: amd64
             runner: ubuntu-24.04
