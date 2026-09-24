@@ -141,8 +141,9 @@ INFLUXDB_VALIDATE_CERTIFICATE = (
 INFLUXDB_ORGANIZATION = os.getenv("INFLUXDB_ORGANIZATION", "myOrg")
 INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "crowdsec")
 
-# InfluxDB Security Settings
-INFLUXDB_MIN_TLS_VERSION = "TLSv1.2"
+# InfluxDB Security Settings. The TLS version bounds live in
+# `influxdb.TLS12Adapter` (ssl.TLSVersion.TLSv1_2 … TLSv1_3); only the cipher
+# list is configured here.
 INFLUXDB_CIPHERS = (
     "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS"
 )
@@ -262,7 +263,6 @@ __all__ = [
     "HOSTNAME_OVERRIDE",
     "INFLUXDB_BUCKET",
     "INFLUXDB_CIPHERS",
-    "INFLUXDB_MIN_TLS_VERSION",
     "INFLUXDB_ORGANIZATION",
     "INFLUXDB_PORT",
     "INFLUXDB_TOKEN",

@@ -1,6 +1,6 @@
 [project]
 name = "crowdsec-abuse-reporter"
-version = "1.0.0"
+version = "1.0.1"
 description = "CrowdSec bans to X-ARF abuse reports; at-most-once delivery with SQLite"
 license = "MIT"
 readme = "README.md"

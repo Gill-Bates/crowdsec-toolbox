@@ -29,7 +29,7 @@
         }
       }
     ],
-    "cursorSync": "Off",
+    "cursorSync": "Crosshair",
     "editable": true,
     "elements": {
       "panel-5": {
@@ -56,7 +56,7 @@
                       "spec": {
                         "queryType": "sql",
                         "format": 1,
-                        "rawSql": "SELECT count() AS \"Sent\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp) AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring}) AND status = 'sent';"
+                        "rawSql": "SELECT count() AS \"Sent\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\n  AND status = 'sent';"
                       }
                     },
                     "refId": "A",
@@ -140,7 +140,7 @@
                       "spec": {
                         "queryType": "sql",
                         "format": 1,
-                        "rawSql": "SELECT count() AS \"Failed\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp) AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring}) AND status = 'failed';"
+                        "rawSql": "SELECT count() AS \"Failed\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\n  AND status = 'failed';"
                       }
                     },
                     "refId": "A",
@@ -205,7 +205,7 @@
         "spec": {
           "id": 10,
           "title": "Success rate",
-          "description": "Share of reports delivered successfully.",
+          "description": "Share of delivery attempts (sent + failed) that succeeded. Excludes METRICS_ONLY snapshot rows (status='observed'), which never attempt delivery.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -224,7 +224,7 @@
                       "spec": {
                         "queryType": "sql",
                         "format": 1,
-                        "rawSql": "SELECT CASE WHEN count() > 0\n            THEN 100.0 * count(CASE WHEN status = 'sent' THEN 1 END) / count()\n       END AS \"Success rate\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp) AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring});"
+                        "rawSql": "SELECT CASE WHEN count(CASE WHEN status IN ('sent', 'failed') THEN 1 END) > 0\n            THEN 100.0 * count(CASE WHEN status = 'sent' THEN 1 END) / count(CASE WHEN status IN ('sent', 'failed') THEN 1 END)\n       END AS \"Success rate\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
                       }
                     },
                     "refId": "A",
@@ -289,7 +289,7 @@
         "spec": {
           "id": 11,
           "title": "Total reports",
-          "description": "All reports recorded in the selected range.",
+          "description": "Delivery attempts recorded in the selected range (sent + failed). Excludes METRICS_ONLY snapshot rows (status='observed'), which never attempt delivery.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -308,7 +308,7 @@
                       "spec": {
                         "queryType": "sql",
                         "format": 1,
-                        "rawSql": "SELECT count() AS \"Total reports\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp) AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring});"
+                        "rawSql": "SELECT count(CASE WHEN status IN ('sent', 'failed') THEN 1 END) AS \"Total reports\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
                       }
                     },
                     "refId": "A",
@@ -392,7 +392,7 @@
                       "spec": {
                         "queryType": "sql",
                         "format": 0,
-                        "rawSql": "SELECT timestamp,\n       count(CASE WHEN status = 'sent' THEN 1 END) AS sent,\n       count(CASE WHEN status = 'failed' THEN 1 END) AS failed\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp) AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\nSAMPLE BY 1d ALIGN TO CALENDAR\nORDER BY timestamp;"
+                        "rawSql": "SELECT timestamp,\n       count(CASE WHEN status = 'sent' THEN 1 END) AS sent,\n       count(CASE WHEN status = 'failed' THEN 1 END) AS failed\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nSAMPLE BY 1d ALIGN TO CALENDAR\nORDER BY timestamp;"
                       }
                     },
                     "refId": "A",
@@ -488,107 +488,6 @@
           }
         }
       },
-      "panel-8": {
-        "kind": "Panel",
-        "spec": {
-          "id": 8,
-          "title": "Top abuse recipients",
-          "description": "Most-contacted abuse addresses. A distribution, not a status - hence one neutral colour.",
-          "links": [],
-          "data": {
-            "kind": "QueryGroup",
-            "spec": {
-              "queries": [
-                {
-                  "kind": "PanelQuery",
-                  "spec": {
-                    "query": {
-                      "kind": "DataQuery",
-                      "group": "questdb-questdb-datasource",
-                      "version": "v0",
-                      "datasource": {
-                        "name": "${datasource}"
-                      },
-                      "spec": {
-                        "queryType": "sql",
-                        "format": 1,
-                        "rawSql": "SELECT abuse_email AS \"Recipient\", count() AS \"Mails\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp) AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring}) AND status = 'sent'\nGROUP BY abuse_email\nORDER BY \"Mails\" DESC\nLIMIT 10;"
-                      }
-                    },
-                    "refId": "A",
-                    "hidden": false
-                  }
-                }
-              ],
-              "transformations": [],
-              "queryOptions": {}
-            }
-          },
-          "vizConfig": {
-            "kind": "VizConfig",
-            "group": "barchart",
-            "version": "13.0.2",
-            "spec": {
-              "options": {
-                "orientation": "horizontal",
-                "xField": "Recipient",
-                "showValue": "always",
-                "stacking": "none",
-                "groupWidth": 0.7,
-                "barWidth": 0.85,
-                "barRadius": 0.15,
-                "fullHighlight": true,
-                "xTickLabelRotation": 0,
-                "xTickLabelSpacing": 0,
-                "legend": {
-                  "calcs": [],
-                  "displayMode": "list",
-                  "placement": "bottom",
-                  "showLegend": false
-                },
-                "tooltip": {
-                  "hideZeros": false,
-                  "mode": "single",
-                  "sort": "none"
-                }
-              },
-              "fieldConfig": {
-                "defaults": {
-                  "unit": "short",
-                  "decimals": 0,
-                  "min": 0,
-                  "color": {
-                    "mode": "fixed",
-                    "fixedColor": "blue"
-                  },
-                  "noValue": "—",
-                  "custom": {
-                    "axisPlacement": "auto",
-                    "axisLabel": "",
-                    "axisColorMode": "text",
-                    "axisCenteredZero": false,
-                    "fillOpacity": 85,
-                    "gradientMode": "none",
-                    "lineWidth": 1,
-                    "scaleDistribution": {
-                      "type": "linear"
-                    },
-                    "hideFrom": {
-                      "legend": false,
-                      "tooltip": false,
-                      "viz": false
-                    },
-                    "thresholdsStyle": {
-                      "mode": "off"
-                    }
-                  }
-                },
-                "overrides": []
-              }
-            }
-          }
-        }
-      },
       "panel-12": {
         "kind": "Panel",
         "spec": {
@@ -613,7 +512,7 @@
                       "spec": {
                         "queryType": "sql",
                         "format": 1,
-                        "rawSql": "WITH country_counts AS (\n    SELECT\n        coalesce(nullif(country, ''), '(unknown)') AS country,\n        count() AS reports\n    FROM \"${table}\"\n    WHERE $__timeFilter(timestamp)\n      AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n    GROUP BY country\n),\nranked AS (\n    SELECT\n        country,\n        reports,\n        row_number() OVER (ORDER BY reports DESC) AS rn\n    FROM country_counts\n),\ngrouped AS (\n    SELECT\n        CASE\n            WHEN rn <= 5 THEN country\n            ELSE 'Other'\n        END AS country,\n        sum(reports) AS reports\n    FROM ranked\n    GROUP BY\n        CASE\n            WHEN rn <= 5 THEN country\n            ELSE 'Other'\n        END\n)\nSELECT\n    CASE\n        WHEN country = 'Other' THEN 'Other'\n        WHEN country ~ '^[A-Za-z]{2}$'\n             AND upper(country) NOT IN ('AP', 'ZZ')\n        THEN concat(\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 1, 1)\n                ) - 1,\n                2\n            ),\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 2, 1)\n                ) - 1,\n                2\n            )\n        )\n        ELSE '🌐'\n    END AS \"Country\",\n    reports AS \"Reports\"\nFROM grouped\nORDER BY \"Reports\" DESC;"
+                        "rawSql": "WITH country_counts AS (\n    SELECT\n        coalesce(nullif(country, ''), '(unknown)') AS country,\n        count() AS reports\n    FROM \"${table}\"\n    WHERE $__timeFilter(timestamp)\n      AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n      AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n      AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\n    GROUP BY country\n),\nranked AS (\n    SELECT\n        country,\n        reports,\n        row_number() OVER (ORDER BY reports DESC) AS rn\n    FROM country_counts\n),\ngrouped AS (\n    SELECT\n        CASE\n            WHEN rn <= 5 THEN country\n            ELSE 'Other'\n        END AS country,\n        sum(reports) AS reports\n    FROM ranked\n    GROUP BY\n        CASE\n            WHEN rn <= 5 THEN country\n            ELSE 'Other'\n        END\n)\nSELECT\n    CASE\n        WHEN country = 'Other' THEN 'Other'\n        WHEN country ~ '^[A-Za-z]{2}$'\n             AND upper(country) NOT IN ('AP', 'ZZ')\n        THEN concat(\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 1, 1)\n                ) - 1,\n                2\n            ),\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 2, 1)\n                ) - 1,\n                2\n            )\n        )\n        ELSE '🌐'\n    END AS \"Country\",\n    reports AS \"Reports\"\nFROM grouped\nORDER BY \"Reports\" DESC;"
                       }
                     },
                     "refId": "A",
@@ -700,7 +599,7 @@
                       "spec": {
                         "queryType": "sql",
                         "format": 1,
-                        "rawSql": "SELECT timestamp AS \"Time\", status AS \"Status\", ip_address AS \"IP\",\n       scenario AS \"Scenario\", country AS \"Country\",\n       abuse_email AS \"Recipient\", as_name AS \"AS Name\",\n       alert_id AS \"Alert\", error_message AS \"Error\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp) AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\nORDER BY timestamp DESC\nLIMIT 100;"
+                        "rawSql": "SELECT timestamp AS \"Time\", status AS \"Status\", ip_address AS \"IP\",\n       scenario AS \"Scenario\", country AS \"Country\",\n       abuse_email AS \"Recipient\", as_name AS \"AS Name\",\n       alert_id AS \"Alert\", error_message AS \"Error\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nORDER BY timestamp DESC\nLIMIT 100;"
                       }
                     },
                     "refId": "A",
@@ -789,10 +688,54 @@
                               "failed": {
                                 "color": "red",
                                 "index": 1
+                              },
+                              "observed": {
+                                "color": "orange",
+                                "index": 2
                               }
                             }
                           }
                         ]
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Alert"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "none"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Time"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeAsIso"
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 200
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Recipient"
+                    },
+                    "properties": [
+                      {
+                        "id": "noValue",
+                        "value": "n/a (observed only)"
                       }
                     ]
                   }
@@ -877,21 +820,8 @@
             "spec": {
               "x": 0,
               "y": 14,
-              "width": 12,
-              "height": 9,
-              "element": {
-                "kind": "ElementReference",
-                "name": "panel-8"
-              }
-            }
-          },
-          {
-            "kind": "GridLayoutItem",
-            "spec": {
-              "x": 12,
-              "y": 14,
-              "width": 12,
-              "height": 9,
+              "width": 6,
+              "height": 11,
               "element": {
                 "kind": "ElementReference",
                 "name": "panel-12"
@@ -901,9 +831,9 @@
           {
             "kind": "GridLayoutItem",
             "spec": {
-              "x": 0,
-              "y": 23,
-              "width": 24,
+              "x": 6,
+              "y": 14,
+              "width": 18,
               "height": 11,
               "element": {
                 "kind": "ElementReference",
@@ -917,7 +847,11 @@
     "links": [],
     "liveNow": false,
     "preload": false,
-    "tags": [],
+    "tags": [
+      "crowdsec",
+      "questdb",
+      "abuse-reporting"
+    ],
     "timeSettings": {
       "timezone": "browser",
       "from": "now-30d",
@@ -938,7 +872,7 @@
       "hideTimepicker": false,
       "fiscalYearStartMonth": 0
     },
-    "title": "CrowdSec Abuse Reporter (QuestDB)",
+    "title": "CrowdSec · Abuse Reporter",
     "variables": [
       {
         "kind": "DatasourceVariable",
@@ -957,7 +891,7 @@
           "options": [],
           "multi": false,
           "includeAll": false,
-          "allowCustomValue": true
+          "allowCustomValue": false
         }
       },
       {
@@ -991,7 +925,7 @@
           "options": [],
           "multi": false,
           "includeAll": false,
-          "allowCustomValue": true
+          "allowCustomValue": false
         }
       },
       {
@@ -1022,6 +956,75 @@
           "regex": "",
           "sort": "alphabeticalAsc",
           "definition": "SELECT DISTINCT coalesce(nullif(host, ''), '(unknown)') AS value FROM \"${table}\" ORDER BY value;",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "scenario",
+          "current": {
+            "text": "$__all",
+            "value": "$__all"
+          },
+          "label": "Scenario",
+          "hide": "dontHide",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "queryType": "sql",
+              "format": 1,
+              "rawSql": "SELECT DISTINCT coalesce(nullif(scenario, ''), '(unknown)') AS value FROM \"${table}\" ORDER BY value;"
+            }
+          },
+          "regex": "",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT DISTINCT coalesce(nullif(scenario, ''), '(unknown)') AS value FROM \"${table}\" ORDER BY value;",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "country",
+          "current": {
+            "text": "$__all",
+            "value": "$__all"
+          },
+          "label": "Country",
+          "hide": "dontHide",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "queryType": "sql",
+              "format": 1,
+              "rawSql": "SELECT DISTINCT concat(CASE WHEN country ~ '^[A-Za-z]{2}$' AND upper(country) NOT IN ('AP', 'ZZ') THEN concat(substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(country), 1, 1)) - 1, 2), substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(country), 2, 1)) - 1, 2)) ELSE '🌐' END, '#', coalesce(nullif(country, ''), '(unknown)')) AS value FROM \"${table}\" ORDER BY value;"
+            }
+          },
+          "regex": "/^(?<text>[^#]+)#(?<value>.*)$/",
+          "regexApplyTo": "value",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT DISTINCT concat(CASE WHEN country ~ '^[A-Za-z]{2}$' AND upper(country) NOT IN ('AP', 'ZZ') THEN concat(substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(country), 1, 1)) - 1, 2), substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(country), 2, 1)) - 1, 2)) ELSE '🌐' END, '#', coalesce(nullif(country, ''), '(unknown)')) AS value FROM \"${table}\" ORDER BY value;",
           "options": [],
           "multi": true,
           "includeAll": true,

@@ -6,8 +6,8 @@ blocking — no provisioning and no plugins beyond the data source itself.
 
 | | Dashboard | Panels | Highlights |
 |---|---|---|---|
-| Metrics export | `crowdsec-metrics-exporter/grafana/dashboard_questdb.json` | 18 | World map of source IPs coloured per host, alert and event history, top countries, networks/ASN, scenarios, source IPs, and — with the per-event export enabled — top endpoints and target FQDNs |
-| Abuse reporting | `crowdsec-abuse-reporter/grafana/dashboard_questdb.json` | 8 | A four-card KPI header (sent, failed, success rate, total), daily reports, top recipients, origin countries, and a paginated detail table |
+| Metrics export | `crowdsec-metrics-exporter/grafana/dashboard_questdb.json` | 21 | World map of source IPs coloured per host, alert and event history, top countries, networks/ASN, scenarios and source IPs each paired with a chart overview above its detail table, and — with the per-event export enabled — top endpoints and target FQDNs |
+| Abuse reporting | `crowdsec-abuse-reporter/grafana/dashboard_questdb.json` | 7 | A four-card KPI header (sent, failed, success rate, total), daily reports, origin countries, and a paginated detail table |
 
 ## Requirements
 
@@ -39,29 +39,37 @@ The InfluxDB variants are placeholders:
 
 ## Variables
 
+Both dashboards expose the same five variables, built the same way, so a
+filter behaves identically regardless of which dashboard is open:
+
 | Variable | Purpose |
 |---|---|
 | `datasource` | Picks the QuestDB data source |
 | `table` | The alert table — `QUESTDB_TABLE`, default `crowdsec` (exporter) or `crowdsec-abuse` (reporter) |
 | `host` | Filters instances within that table; multi-select with an **All** option |
-| `scenario` | Shared scenario filter (metrics dashboard) |
-| `country` | Shared country filter (metrics dashboard) |
+| `scenario` | Shared scenario filter; multi-select with an **All** option |
+| `country` | Shared country filter; multi-select with an **All** option |
 
 The `table` picker excludes tables ending in `_events`, so the events table cannot
 be selected as the alert table. In both dashboards `table` is hidden
 (`hide: hideVariable`) because it is deployment configuration rather than a
 filter; `datasource` stays visible so an imported dashboard can be pointed at
-your QuestDB without opening the settings.
+your QuestDB without opening the settings. Neither `datasource` nor `table`
+allows a custom value in either dashboard — both are picked from what the
+data source actually reports, not typed in.
 
 !!! note "The country filter does not reach the event panels"
-    The shared host and scenario filters apply throughout. The `country` filter
-    applies to every panel except the two event panels, whose table holds no geo
-    columns — geo data lives on the alert row only.
+    The shared host, scenario and country filters apply throughout both
+    dashboards. In the metrics dashboard, `country` applies to every panel
+    except the two event panels, whose table holds no geo columns — geo data
+    lives on the alert row only. The abuse dashboard has no event table, so
+    all seven of its panels honour all three filters.
 
 Both dashboards match the host with
 `coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})`, so points
 written before the `host` tag existed group under `(unknown)` and remain
-selectable instead of disappearing.
+selectable instead of disappearing. The `scenario` and `country` filters follow
+the same `coalesce(nullif(...), '(unknown)') IN (...)` pattern.
 
 ## Event panels
 

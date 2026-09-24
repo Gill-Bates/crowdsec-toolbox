@@ -55,8 +55,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-_SUBDIR = "geolite2"
-
 # P3TERX mirror — updated regularly, no MaxMind license key required
 CITY_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
 ASN_URL  = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb"
@@ -154,20 +152,15 @@ class GeoInfo(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
-def _data_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "data"
-
-
-def _geoip_dir(base: Path | None = None) -> Path:
+def _geoip_dir() -> Path:
     """Return the GeoLite2 working directory, creating it if needed.
 
-    Defaults to `GEOIP_DIR` from the configuration, which the container points
-    at a tmpfs seeded from the image's build-time copy. Passing `base`
-    overrides it and keeps the historical `<base>/geolite2` layout.
+    This is `GEOIP_DIR` from the configuration, which the container points at a
+    tmpfs seeded from the image's build-time copy; direct host runs keep the
+    databases under `data/geolite2`.
     """
-    d = GEOIP_DIR if base is None else base / _SUBDIR
-    d.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return d
+    GEOIP_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return GEOIP_DIR
 
 
 def _is_public(ip: str) -> bool:

@@ -36,7 +36,10 @@ EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 @contextmanager
 def smtp_connection(timeout: int = SMTP_TIMEOUT):
     """
-    SMTP connection context manager with connection pooling capabilities.
+    SMTP connection context manager.
+
+    Opens one connection per report (STARTTLS and AUTH as configured) and closes
+    it again on exit; connections are not reused across sends.
 
     Args:
         timeout: SMTP connection timeout in seconds
@@ -205,7 +208,7 @@ def send_abuse_mail(
             # Create MIME message
             msg = _create_mime_message(recipients, subject, body, xarf_attachment)
 
-            # Send email via SMTP (always use pooled connection for efficiency).
+            # Send email via SMTP.
             # Pass the primary recipients so a refused BCC copy does not fail the
             # whole report (which would re-send to the abuse contact next run).
             _send_smtp_message(msg, all_recipients, recipients, timeout)
@@ -338,7 +341,7 @@ def _send_smtp_message(
     timeout: int = SMTP_TIMEOUT,
 ) -> None:
     """
-    Send message via SMTP connection with pooling.
+    Send message over a freshly opened SMTP connection.
 
     Args:
         msg: MIMEMultipart message to send

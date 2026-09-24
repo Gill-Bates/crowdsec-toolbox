@@ -332,6 +332,10 @@ jobs:
           output: 'trivy-${{ matrix.tool }}-${{ matrix.arch }}.json'
           exit-code: '0'
           ignore-unfixed: true
+          # See .trivyignore: findings accepted here are pip's own vendored
+          # copies of msgpack/setuptools, not a dependency either tool
+          # declares or imports.
+          trivyignores: '.trivyignore'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
 

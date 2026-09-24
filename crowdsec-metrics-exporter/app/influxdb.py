@@ -201,7 +201,11 @@ def format_influxdb_line_protocol(
     tags_str = ",".join([f"{k}={v}" for k, v in tags.items() if v])
     fields_str = ",".join([f"{k}={v}" for k, v in fields.items() if v is not None])
 
-    return f"{measurement},{tags_str} {fields_str} {timestamp}"
+    # The comma before tags_str is only valid when there is at least one tag.
+    # as_name always falls back to "unknown", so tags_str is never empty today,
+    # but this must not silently emit invalid line protocol if that changes.
+    prefix = f"{measurement},{tags_str}" if tags_str else measurement
+    return f"{prefix} {fields_str} {timestamp}"
 
 
 def send_to_influxdb(line_protocol_data: str) -> bool:

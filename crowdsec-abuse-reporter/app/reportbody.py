@@ -494,20 +494,18 @@ def ensure_decisions_format(decisions: list[dict[str, Any]]) -> list[dict[str, A
     """
     Normalize decisions list to ensure consistent format.
 
+    The single caller (`build_xarf_report()`) always passes `_decisions_for()`'s
+    output, which already contains only dicts. This function has no other
+    caller and does not filter defensively; a non-dict entry would raise here.
+
     Args:
         decisions: List of decision dictionaries
 
     Returns:
         Normalized list of decision dictionaries
     """
-    if not isinstance(decisions, list):
-        decisions = [decisions] if decisions else []
-
     formatted_decisions = []
     for decision in decisions:
-        if not isinstance(decision, dict):
-            continue
-
         formatted_decision = {
             "type": _limit_value(decision.get("type", "unknown")),
             "scope": _limit_value(decision.get("scope", "unknown")),

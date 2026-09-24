@@ -1343,7 +1343,7 @@ def _run(started_at: str) -> int:
         # matters because in metrics mode the report details are stored nowhere
         # else. A deferred batch is therefore a warning, not a run failure; the
         # outbox bounds in config.py decide when a prolonged outage becomes one
-        # (see _check_metrics_outbox_health).
+        # (see _metrics_outbox_is_saturated).
         if METRICS_ENABLED and not flush_points(metric_lines):
             print_log(
                 "WARNING",

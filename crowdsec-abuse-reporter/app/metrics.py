@@ -240,16 +240,25 @@ def send_to_influxdb(payload: str) -> bool:
     return False
 
 
-def send_to_questdb(payload: str) -> bool:
-    protocol = "https" if QUESTDB_USE_HTTPS else "http"
-    url = f"{protocol}://{QUESTDB_URL}:{QUESTDB_PORT}/write"
-    headers = {"Content-Type": "text/plain; charset=utf-8"}
-    # Bearer token takes precedence over basic auth, as in the sibling tool.
+def _questdb_auth() -> tuple[dict[str, str], tuple[str, str] | None]:
+    """Build the headers/auth pair for a QuestDB request.
+
+    A bearer token takes precedence over basic auth, as in the sibling tool.
+    """
+    headers: dict[str, str] = {}
     auth = None
     if QUESTDB_TOKEN:
         headers["Authorization"] = f"Bearer {QUESTDB_TOKEN}"
     elif QUESTDB_USERNAME and QUESTDB_PASSWORD:
         auth = (QUESTDB_USERNAME, QUESTDB_PASSWORD)
+    return headers, auth
+
+
+def send_to_questdb(payload: str) -> bool:
+    protocol = "https" if QUESTDB_USE_HTTPS else "http"
+    url = f"{protocol}://{QUESTDB_URL}:{QUESTDB_PORT}/write"
+    headers, auth = _questdb_auth()
+    headers["Content-Type"] = "text/plain; charset=utf-8"
     try:
         response = _post(
             url,
@@ -351,6 +360,42 @@ def flush_points(lines: list[str] | None = None) -> bool:
     return True
 
 
+def _quote_ident(name: str) -> str:
+    """Double-quote a QuestDB identifier, doubling embedded quotes."""
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _run_questdb_exec(query: str, *, warning_prefix: str) -> bool:
+    """Run a statement against QuestDB's `/exec` SQL endpoint.
+
+    Returns True on HTTP 200, False otherwise. Failures are only warned about,
+    never raised: callers use this for post-write DDL (TTL, dedup) where the
+    rows themselves are already stored.
+    """
+    protocol = "https" if QUESTDB_USE_HTTPS else "http"
+    url = f"{protocol}://{QUESTDB_URL}:{QUESTDB_PORT}/exec"
+    headers, auth = _questdb_auth()
+    try:
+        with httpx.Client(
+            verify=QUESTDB_VALIDATE_CERTIFICATE, timeout=REQUEST_TIMEOUT
+        ) as client:
+            response = client.get(
+                url, params={"query": query}, headers=headers, auth=auth
+            )
+    except httpx.HTTPError as e:
+        print_log("WARNING", TAGS["WARNING"], f"{warning_prefix}: {e}")
+        return False
+    if response.status_code != 200:
+        print_log(
+            "WARNING",
+            TAGS["WARNING"],
+            f"{warning_prefix}: {response.status_code} - {response.text[:300]}",
+        )
+        return False
+    return True
+
+
 def ensure_questdb_ttl(table: str) -> bool:
     """Apply QUESTDB_TTL to the table via QuestDB's /exec SQL endpoint.
 
@@ -361,29 +406,10 @@ def ensure_questdb_ttl(table: str) -> bool:
     """
     if not QUESTDB_TTL:
         return True
-    protocol = "https" if QUESTDB_USE_HTTPS else "http"
-    url = f"{protocol}://{QUESTDB_URL}:{QUESTDB_PORT}/exec"
-    quoted = table.replace('"', '""')
-    query = f'ALTER TABLE "{quoted}" SET TTL {QUESTDB_TTL}'
-    headers = {}
-    auth = None
-    if QUESTDB_TOKEN:
-        headers["Authorization"] = f"Bearer {QUESTDB_TOKEN}"
-    elif QUESTDB_USERNAME and QUESTDB_PASSWORD:
-        auth = (QUESTDB_USERNAME, QUESTDB_PASSWORD)
-    try:
-        with httpx.Client(verify=QUESTDB_VALIDATE_CERTIFICATE, timeout=REQUEST_TIMEOUT) as client:
-            response = client.get(url, params={"query": query}, headers=headers, auth=auth)
-    except httpx.HTTPError as e:
-        print_log("WARNING", TAGS["WARNING"], f"QuestDB TTL not applied to {table!r}: {e}")
-        return False
-    if response.status_code != 200:
-        print_log("WARNING", TAGS["WARNING"], 
-            f"QuestDB TTL not applied to {table!r}: "
-            f"{response.status_code} - {response.text[:300]}"
-        )
-        return False
-    return True
+    query = f"ALTER TABLE {_quote_ident(table)} SET TTL {QUESTDB_TTL}"
+    return _run_questdb_exec(
+        query, warning_prefix=f"QuestDB TTL not applied to {table!r}"
+    )
 
 
 def ensure_questdb_dedup(table: str, keys: tuple[str, ...]) -> bool:
@@ -401,31 +427,10 @@ def ensure_questdb_dedup(table: str, keys: tuple[str, ...]) -> bool:
     """
     if not keys:
         return True
-    protocol = "https" if QUESTDB_USE_HTTPS else "http"
-    url = f"{protocol}://{QUESTDB_URL}:{QUESTDB_PORT}/exec"
-    quoted_table = table.replace('"', '""')
-    quoted_keys = ", ".join(f'"{key.replace(chr(34), chr(34) * 2)}"' for key in keys)
-    query = f'ALTER TABLE "{quoted_table}" DEDUP ENABLE UPSERT KEYS({quoted_keys})'
-    headers = {}
-    auth = None
-    if QUESTDB_TOKEN:
-        headers["Authorization"] = f"Bearer {QUESTDB_TOKEN}"
-    elif QUESTDB_USERNAME and QUESTDB_PASSWORD:
-        auth = (QUESTDB_USERNAME, QUESTDB_PASSWORD)
-    try:
-        with httpx.Client(verify=QUESTDB_VALIDATE_CERTIFICATE, timeout=REQUEST_TIMEOUT) as client:
-            response = client.get(url, params={"query": query}, headers=headers, auth=auth)
-    except httpx.HTTPError as e:
-        print_log(
-            "WARNING", TAGS["WARNING"], f"QuestDB dedup not enabled on {table!r}: {e}"
-        )
-        return False
-    if response.status_code != 200:
-        print_log(
-            "WARNING",
-            TAGS["WARNING"],
-            f"QuestDB dedup not enabled on {table!r}: "
-            f"{response.status_code} - {response.text[:300]}",
-        )
-        return False
-    return True
+    quoted_keys = ", ".join(_quote_ident(key) for key in keys)
+    query = (
+        f"ALTER TABLE {_quote_ident(table)} DEDUP ENABLE UPSERT KEYS({quoted_keys})"
+    )
+    return _run_questdb_exec(
+        query, warning_prefix=f"QuestDB dedup not enabled on {table!r}"
+    )

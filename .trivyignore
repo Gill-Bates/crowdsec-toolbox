@@ -1,0 +1,22 @@
+# .trivyignore
+#
+# CVEs accepted for the published crowdsec-toolbox images, consumed by the
+# Trivy scan in .github/workflows/release.yml. The scan already passes
+# --ignore-unfixed, so every entry here is a finding that HAS a fix available
+# and is accepted anyway. Each entry needs a reason and an `exp:` date, after
+# which Trivy reports it again and forces a re-check.
+#
+# Format: `<id> exp:YYYY-MM-DD`, with the reason in a comment above it.
+
+# pip vendors its own internal copy of msgpack for wheel metadata handling.
+# This is not a dependency either tool declares or imports; it ships inside
+# pip's own package (see pip/_vendor/msgpack) and is fixed only when pip
+# itself updates that vendored copy upstream, independent of the pip version
+# installed in the image.
+GHSA-6v7p-g79w-8964 exp:2027-03-24
+
+# setuptools ships an old vendored copy inside pip as well (pip/_vendor or
+# its build backend chain), not as a package either tool installs or imports.
+# Same upstream dependency as above: fixed when pip's own vendored copy is
+# updated, not by anything in this repository's build.
+CVE-2025-47273 exp:2027-03-24

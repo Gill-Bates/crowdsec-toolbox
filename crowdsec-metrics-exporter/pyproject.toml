@@ -1,6 +1,6 @@
 [project]
 name = "crowdsec-metrics-exporter"
-version = "1.0.0"
+version = "1.0.1"
 description = "CrowdSec decisions to InfluxDB 2.x or QuestDB time series"
 license = "MIT"
 readme = "README.md"

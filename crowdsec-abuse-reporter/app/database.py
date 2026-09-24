@@ -688,8 +688,8 @@ def cleanup_old_records(days_to_keep: int) -> tuple[int, int]:
 
     abuse_alerts rows are removed by CreatedAt; abuse_contacts_cache entries
     by updated_at (using 2× the retention period so contacts are re-resolved
-    less often than alerts are retired). A VACUUM is run after any deletion
-    to shrink the WAL file — it must run outside a transaction.
+    less often than alerts are retired). After any deletion the WAL is
+    truncated with a checkpoint, which must run outside the transaction.
 
     Args:
         days_to_keep: Delete records older than this many days. 0 = skip.

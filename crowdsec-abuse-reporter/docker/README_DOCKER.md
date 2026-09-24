@@ -44,8 +44,8 @@ blocking. No provisioning, no plugins beyond the data source itself.
 
 | | Dashboard | Panels | Highlights |
 |---|---|---|---|
-| **Metrics export** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-metrics-exporter/grafana/dashboard_questdb.json) | 18 | World map of source IPs coloured per host, alert and event history, top countries, networks/ASN, scenarios, source IPs, and — with the per-event export enabled — top endpoints and target FQDNs |
-| **Abuse reporting** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-abuse-reporter/grafana/dashboard_questdb.json) | 8 | A four-card KPI header (sent, failed, success rate, total), daily reports, top recipients, origin countries, and a paginated detail table |
+| **Metrics export** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-metrics-exporter/grafana/dashboard_questdb.json) | 21 | World map of source IPs coloured per host, alert and event history, top countries, networks/ASN, scenarios and source IPs each paired with a chart overview above its detail table, and — with the per-event export enabled — top endpoints and target FQDNs |
+| **Abuse reporting** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-abuse-reporter/grafana/dashboard_questdb.json) | 7 | A four-card KPI header (sent, failed, success rate, total), daily reports, origin countries, and a paginated detail table |
 
 Country values render as flag emoji, and hosts keep a stable colour across
 panels. The shared host and scenario filters apply throughout; the country

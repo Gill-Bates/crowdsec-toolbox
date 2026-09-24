@@ -734,6 +734,217 @@
           }
         }
       },
+      "panel-20": {
+        "kind": "Panel",
+        "spec": {
+          "id": 20,
+          "title": "Alerts by Host",
+          "description": "Overview for the Host Comparison table below: total alerts per host in the selected range.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(host, ''), '(unknown)') AS \"Host\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY host\nORDER BY \"Alerts\" DESC;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "barchart",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "orientation": "horizontal",
+                "xField": "Host",
+                "showValue": "always",
+                "stacking": "none",
+                "groupWidth": 0.7,
+                "barWidth": 0.85,
+                "barRadius": 0.15,
+                "fullHighlight": true,
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0,
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "single",
+                  "sort": "none"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "color": {
+                    "mode": "palette-classic-by-name"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "axisPlacement": "auto",
+                    "axisLabel": "",
+                    "axisColorMode": "text",
+                    "axisCenteredZero": false,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-21": {
+        "kind": "Panel",
+        "spec": {
+          "id": 21,
+          "title": "Scenarios by Host",
+          "description": "Overview for the Scenarios per Host table below: alert share per scenario, stacked by host.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(host, ''), '(unknown)') AS \"Host\", coalesce(nullif(scenario, ''), '(unknown)') AS \"Scenario\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY host, scenario\nORDER BY \"Alerts\" DESC\nLIMIT 200;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [
+                {
+                  "id": "prepareTimeSeries",
+                  "options": {}
+                }
+              ],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "barchart",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "orientation": "horizontal",
+                "xField": "Host",
+                "showValue": "never",
+                "stacking": "normal",
+                "groupWidth": 0.7,
+                "barWidth": 0.85,
+                "barRadius": 0.05,
+                "fullHighlight": false,
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0,
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "axisPlacement": "auto",
+                    "axisLabel": "",
+                    "axisColorMode": "text",
+                    "axisCenteredZero": false,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
       "panel-14": {
         "kind": "Panel",
         "spec": {
@@ -826,6 +1037,110 @@
                     ]
                   }
                 ]
+              }
+            }
+          }
+        }
+      },
+      "panel-22": {
+        "kind": "Panel",
+        "spec": {
+          "id": 22,
+          "title": "Top 15 Networks / ASN | Alerts",
+          "description": "Overview for the Networks / ASN table below, capped at 15 bars for readability; the table lists up to 50.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(as_name, ''), '(unknown)') AS \"Provider\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY as_name\nORDER BY \"Alerts\" DESC\nLIMIT 15;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "barchart",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "orientation": "horizontal",
+                "xField": "Provider",
+                "showValue": "always",
+                "stacking": "none",
+                "groupWidth": 0.7,
+                "barWidth": 0.85,
+                "barRadius": 0.15,
+                "fullHighlight": true,
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0,
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "single",
+                  "sort": "none"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "purple"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "axisPlacement": "auto",
+                    "axisLabel": "",
+                    "axisColorMode": "text",
+                    "axisCenteredZero": false,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
               }
             }
           }
@@ -2039,7 +2354,7 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 0,
-              "y": 50,
+              "y": 79,
               "width": 14,
               "height": 9,
               "element": {
@@ -2052,7 +2367,7 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 14,
-              "y": 50,
+              "y": 79,
               "width": 10,
               "height": 9,
               "element": {
@@ -2222,7 +2537,33 @@
             "spec": {
               "x": 0,
               "y": 25,
-              "width": 12,
+              "width": 24,
+              "height": 6,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-20"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 31,
+              "width": 24,
+              "height": 8,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-21"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 39,
+              "width": 24,
               "height": 8,
               "element": {
                 "kind": "ElementReference",
@@ -2233,9 +2574,22 @@
           {
             "kind": "GridLayoutItem",
             "spec": {
-              "x": 12,
-              "y": 25,
-              "width": 12,
+              "x": 0,
+              "y": 47,
+              "width": 24,
+              "height": 7,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-22"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 54,
+              "width": 24,
               "height": 8,
               "element": {
                 "kind": "ElementReference",
@@ -2247,7 +2601,7 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 0,
-              "y": 33,
+              "y": 62,
               "width": 24,
               "height": 8,
               "element": {
@@ -2260,7 +2614,7 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 0,
-              "y": 41,
+              "y": 70,
               "width": 24,
               "height": 9,
               "element": {
@@ -2296,7 +2650,7 @@
       "hideTimepicker": false,
       "fiscalYearStartMonth": 0
     },
-    "title": "CrowdSec · Security Overview",
+    "title": "CrowdSec · Metrics Exporter",
     "variables": [
       {
         "kind": "DatasourceVariable",
