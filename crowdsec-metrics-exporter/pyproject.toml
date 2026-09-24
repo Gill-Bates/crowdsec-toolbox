@@ -1,0 +1,28 @@
+[project]
+name = "crowdsec-metrics-exporter"
+version = "1.0.0"
+description = "CrowdSec decisions to InfluxDB 2.x or QuestDB time series"
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.13"
+
+[dependency-groups]
+# Runtime dependencies for metrics exporter
+default = [
+    "httpx",
+    "requests",
+    "urllib3",
+]
+# Development dependencies (linting)
+dev = [
+    "ruff",
+]
+
+[tool.ruff]
+# Build and scan artefacts of the docs pipeline; they hold no source of ours.
+extend-exclude = ["site", ".docs-scan"]
+
+[tool.ruff.lint]
+# BLE001 (blind `except Exception`) is deliberate at collector and outer-loop
+# boundaries so one bad decision cannot kill the run.
+ignore = ["BLE001"]

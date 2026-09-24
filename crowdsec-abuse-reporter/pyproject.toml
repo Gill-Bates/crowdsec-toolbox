@@ -1,0 +1,29 @@
+[project]
+name = "crowdsec-abuse-reporter"
+version = "1.0.0"
+description = "CrowdSec bans to X-ARF abuse reports; at-most-once delivery with SQLite"
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.13"
+
+[dependency-groups]
+# Runtime dependencies for abuse reporter
+default = [
+    "dnspython",
+    "geoip2",
+    "httpx",
+]
+# Development dependencies (testing, linting)
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.ruff]
+# Build and scan artefacts of the docs pipeline; they hold no source of ours.
+extend-exclude = ["site", ".docs-scan"]
+
+[tool.ruff.lint]
+# BLE001 (blind `except Exception`) is deliberate at collector and outer-loop
+# boundaries so one bad alert cannot kill the run.
+ignore = ["BLE001"]

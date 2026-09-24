@@ -1,0 +1,611 @@
+#
+# .github/workflows/release.yml
+#
+# Publishes BOTH tools from a single repo-wide tag. This repository ships two
+# tools into ONE Docker Hub repository (giiibates/crowdsec-toolbox), so the tool
+# name has to live in the image tag:
+#
+#     crowdsec-toolbox:abuse-reporter-1.0.0    pinned
+#     crowdsec-toolbox:abuse-reporter-latest   moving
+#     crowdsec-toolbox:metrics-exporter-1.0.0  pinned
+#     crowdsec-toolbox:metrics-exporter-latest moving
+#
+# A bare `latest` is deliberately never published: it could only mean one of
+# the two tools, and silently picking one would ship the wrong image to anyone
+# who omits the tag.
+#
+# The tag is the contract: vX.Y.Z releases BOTH tools and requires BOTH
+# manifests (each tool's own pyproject.toml) to declare exactly that version.
+# That keeps one git tag mapped to one reviewable state of the repository. This
+# is the one place the two tools are not fully independent - if they ever need
+# to ship separately, split this into per-tool tags.
+#
+# ci.yml gates main; this workflow gates tags, and a tag can be pushed from any
+# commit. The meta job therefore re-establishes what a tag alone cannot prove.
+#
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Never cancel a release in flight: a half-pushed manifest is worse than a slow
+# one, and Docker Hub tag moves are not reversible.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    name: Validate release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      is_newest: ${{ steps.newest.outputs.is_newest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # Full history, so the main-ancestry check below can walk from the
+          # tagged commit back to main.
+          fetch-depth: 0
+
+      - name: Validate Docker Hub secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_USERNAME:?Missing DOCKERHUB_USERNAME secret}"
+          : "${DOCKERHUB_TOKEN:?Missing DOCKERHUB_TOKEN secret}"
+          if ! echo "$DOCKERHUB_USERNAME" | grep -qE '^[a-z0-9][a-z0-9_-]{2,}$'; then
+            echo "ERROR: invalid Docker Hub namespace: '$DOCKERHUB_USERNAME'"
+            exit 1
+          fi
+
+      - name: Validate tag, versions and branch containment
+        id: meta
+        run: |
+          set -euo pipefail
+          # A release must run from the tag. A manual run on a branch could
+          # otherwise republish an existing version from a different commit and
+          # move the `-latest` tags with it. Re-runs stay possible: pick the tag
+          # as the ref when dispatching.
+          if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+            echo "ERROR: this workflow must run from a tag, but '${GITHUB_REF_NAME}' is a ${GITHUB_REF_TYPE}."
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "ERROR: invalid version in tag '${GITHUB_REF_NAME}' (expected vX.Y, vX.Y.Z or either with -suffix)"
+            exit 1
+          fi
+          # Both manifests must agree with the tag. Each tool's own
+          # pyproject.toml is what app/version.py reads back at runtime, so a
+          # mismatch here would ship an image that misreports its own version.
+          failed=0
+          for project in crowdsec-abuse-reporter crowdsec-metrics-exporter; do
+            declared="$(python3 -c "import tomllib; print(tomllib.load(open('${project}/pyproject.toml','rb'))['project']['version'])" | tr -d '[:space:]')"
+            echo "${project}: declares ${declared}"
+            if [[ "$declared" != "$VERSION" ]]; then
+              echo "ERROR: ${project}/pyproject.toml declares ${declared}, tag says ${VERSION}"
+              failed=1
+            fi
+          done
+          [[ "$failed" -eq 0 ]]
+          # The tag checks above only prove the name agrees with the manifests,
+          # not that the commit ever passed CI. Without this, a tag cut from an
+          # unreviewed commit publishes to Docker Hub.
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "ERROR: ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not contained in main."
+            echo "Merge the release commit into main first, then tag that commit."
+            exit 1
+          fi
+          {
+            echo "version=${VERSION}"
+            echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } >> "$GITHUB_OUTPUT"
+
+      # A release must not travel backwards. Re-running an older tag passes
+      # every check above, because that commit really does declare that version.
+      # It would then move the `-latest` tags onto the older image. Both are
+      # irreversible on Docker Hub, so the already-published tags decide.
+      - name: Determine whether this is the newest release
+        id: newest
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          hub_token="$(
+            jq -nc --arg username "$DOCKERHUB_USERNAME" --arg password "$DOCKERHUB_TOKEN" \
+              '{username: $username, password: $password}' \
+            | curl -fsSL -H 'Content-Type: application/json' -d @- \
+                'https://hub.docker.com/v2/users/login/' \
+            | jq -r '.token // .access_token // empty'
+          )"
+          [[ -n "$hub_token" ]] || { echo "ERROR: failed to obtain a Docker Hub API token"; exit 1; }
+
+          api_base="https://hub.docker.com/v2/namespaces/${DOCKERHUB_USERNAME}/repositories/crowdsec-toolbox/tags"
+          first_url="${api_base}?page_size=100"
+          next_url="$first_url"
+          : > published-tags.txt
+          body="$(mktemp)"
+          trap 'rm -f "$body"' EXIT
+
+          # This listing decides is_newest, which moves the `-latest` tags. An
+          # empty answer must therefore not be allowed to mean "nothing newer
+          # exists": a 401, 429 or 5xx would read exactly like a pristine
+          # repository. Only a 404 on the first page is tolerated, which is the
+          # one case that genuinely has no tags yet.
+          while [[ -n "$next_url" && "$next_url" != "null" ]]; do
+            status="$(curl -sS --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 \
+              -o "$body" -w '%{http_code}' -H "Authorization: Bearer ${hub_token}" "$next_url")"
+            if [[ "$status" == "404" && "$next_url" == "$first_url" ]]; then
+              echo "No crowdsec-toolbox repository yet; treating this as the first release." >&2
+              break
+            fi
+            if [[ "$status" != "200" ]]; then
+              echo "ERROR: Docker Hub tag listing returned HTTP ${status} for ${next_url}." >&2
+              echo "Refusing to decide whether this is newest on an incomplete listing." >&2
+              exit 1
+            fi
+            jq -r '.results[].name' < "$body" >> published-tags.txt
+            next_url="$(jq -r '.next // empty' < "$body")"
+          done
+
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, re, sys
+          # Tags are '<tool>-<version>'; architecture fragments and the moving
+          # '-latest' pointers are build artefacts, not releases.
+          TOOLS = ("abuse-reporter", "metrics-exporter")
+          ARCH = {"amd64", "arm64"}
+          VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?$")
+
+          def suffix_key(suffix):
+              # Identifier-wise: numeric parts compare as numbers, so rc.10
+              # sorts above rc.2 - a string compare gets that backwards, and
+              # this decides whether `-latest` may move.
+              parts = []
+              for part in suffix.split("."):
+                  parts.append((0, int(part), "") if part.isdigit() else (1, 0, part))
+              return tuple(parts)
+
+          def key(tag):
+              for tool in TOOLS:
+                  if tag.startswith(tool + "-"):
+                      rest = tag[len(tool) + 1:]
+                      break
+              else:
+                  return None
+              if rest == "latest":
+                  return None
+              parts = rest.rsplit("-", 1)
+              if len(parts) == 2 and parts[1] in ARCH:
+                  rest = parts[0]
+              m = VERSION_RE.match(rest)
+              if not m:
+                  return None
+              release = tuple(int(p) for p in m.group(1).split("."))
+              if len(release) < 3:
+                  release += (0,) * (3 - len(release))
+              suffix = m.group(2)
+              # A prerelease sorts below its own release: 1.1-rc.1 < 1.1.
+              return (release, (0, suffix_key(suffix)) if suffix else (1, ()))
+
+          current = os.environ["VERSION"]
+          current_key = key(f"abuse-reporter-{current}")
+          assert current_key is not None, f"unparseable version: {current}"
+
+          with open("published-tags.txt", encoding="utf-8") as fh:
+              published = {line.strip() for line in fh if line.strip()}
+
+          newer = sorted(t for t in published
+                         if (k := key(t)) is not None and k > current_key)
+          if newer:
+              print(f"Newer versions already published: {', '.join(newer)}", file=sys.stderr)
+              print(f"{current} will be republished, but the -latest tags stay put.", file=sys.stderr)
+              print("is_newest=false")
+          else:
+              print(f"{current} is the newest published version.", file=sys.stderr)
+              print("is_newest=true")
+          PY
+
+  build:
+    name: Build ${{ matrix.tool }} (${{ matrix.arch }})
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      IMAGE_NAME: ${{ format('{0}/crowdsec-toolbox', secrets.DOCKERHUB_USERNAME) }}
+      IMAGE_TAG: ${{ matrix.tool }}-${{ needs.meta.outputs.version }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both run on native runners rather than QEMU: these images install apt
+        # packages and, for the abuse reporter, fetch two GeoLite2 databases, all
+        # of which emulate poorly. If arm64 runners are unavailable, delete that
+        # entry - the manifest job adapts to whatever digests it finds.
+        tool:
+          - abuse-reporter
+          - metrics-exporter
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve project directory
+        id: project
+        run: echo "name=crowdsec-${{ matrix.tool }}" >> "$GITHUB_OUTPUT"
+
+      # Build context is the repository root: each Dockerfile bind-mounts its own
+      # tool's pyproject.toml and COPYs repo-relative paths, and the neighbouring
+      # Dockerfile.dockerignore allowlist keeps everything else out.
+      - name: Build and push architecture image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ steps.project.outputs.name }}/docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          pull: true
+          push: true
+          provenance: false
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            APP_VERSION=${{ needs.meta.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ needs.meta.outputs.build_date }}
+          cache-from: type=gha,scope=${{ matrix.tool }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.tool }}-${{ matrix.arch }}
+
+      # Cheap but real: proves the `default` dependency group actually resolved
+      # inside the image and that the entrypoint is present and executable. A
+      # missing runtime dependency would otherwise only surface on the first
+      # container start in production. The application itself is not imported,
+      # because importing app.config has side effects and exits on absent
+      # settings.
+      - name: Smoke-test the image
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          set -euo pipefail
+          case "${{ matrix.tool }}" in
+            abuse-reporter)   imports="httpx, dns.resolver, geoip2.database" ;;
+            metrics-exporter) imports="httpx, requests, urllib3" ;;
+            *) echo "ERROR: no smoke-test imports defined for ${{ matrix.tool }}"; exit 1 ;;
+          esac
+          docker run --rm --entrypoint python "$IMAGE" -c "import ${imports}; print('imports ok')"
+          docker run --rm --entrypoint pip "$IMAGE" check
+          docker run --rm --entrypoint test "$IMAGE" -x /app/entrypoint.sh
+          echo "Reported version:"
+          docker run --rm --entrypoint printenv "$IMAGE" APP_VERSION GIT_SHA
+
+      # Report-only on purpose. Most findings in these images come from the
+      # python:3-slim base and are not actionable at release time; failing here
+      # would block a release for something the next base image rebuild fixes.
+      # The counts land in the release notes instead. The docs pipeline scans
+      # differently - there it does block, because those dependencies are pinned
+      # by this repository.
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'latest'
+          cache: 'false'
+          scan-type: 'image'
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format: 'json'
+          output: 'trivy-${{ matrix.tool }}-${{ matrix.arch }}.json'
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          timeout: '10m'
+
+      - name: Record image digest
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          printf '%s' '${{ steps.push.outputs.digest }}' > "digests/${{ matrix.tool }}-${{ matrix.arch }}"
+          cat "digests/${{ matrix.tool }}-${{ matrix.arch }}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.tool }}-${{ matrix.arch }}
+          path: digests/${{ matrix.tool }}-${{ matrix.arch }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload Trivy findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ matrix.tool }}-${{ matrix.arch }}
+          path: trivy-${{ matrix.tool }}-${{ matrix.arch }}.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  manifest:
+    name: Publish ${{ matrix.tool }} manifest
+    needs: [meta, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        tool:
+          - abuse-reporter
+          - metrics-exporter
+    env:
+      IMAGE_NAME: ${{ format('{0}/crowdsec-toolbox', secrets.DOCKERHUB_USERNAME) }}
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-${{ matrix.tool }}-*
+          path: digests/
+          merge-multiple: true
+
+      - name: Create multi-arch manifest
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          IS_NEWEST: ${{ needs.meta.outputs.is_newest }}
+          TOOL: ${{ matrix.tool }}
+        run: |
+          set -euo pipefail
+          sources=(); platforms=()
+          for file in digests/*; do
+            arch="$(basename "$file" | sed "s/^${TOOL}-//")"
+            digest="$(tr -d '[:space:]' < "$file")"
+            sources+=("${IMAGE_NAME}@${digest}")
+            platforms+=("linux/${arch}")
+            echo "  linux/${arch}  ${digest}"
+          done
+          [[ ${#sources[@]} -gt 0 ]] || { echo "ERROR: no digests found"; exit 1; }
+
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${TOOL}-${VERSION}" "${sources[@]}"
+          echo "Pushed ${IMAGE_NAME}:${TOOL}-${VERSION}"
+
+          # The moving pointer is per tool. It never moves for a prerelease, and
+          # never moves backwards - see the meta job's is_newest probe. A bare
+          # `latest` is intentionally not published: with two tools in one
+          # repository it could only mean one of them.
+          if [[ "$VERSION" == *-* ]]; then
+            echo "Skipping ${TOOL}-latest: ${VERSION} is a prerelease"
+          elif [[ "$IS_NEWEST" != "true" ]]; then
+            echo "Skipping ${TOOL}-latest: a newer version is already published"
+          else
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:${TOOL}-latest" "${sources[@]}"
+            echo "Pushed ${IMAGE_NAME}:${TOOL}-latest"
+          fi
+          printf '%s\n' "${platforms[@]}" | sort > "expected-platforms-${TOOL}.txt"
+
+      # imagetools reports success as soon as the registry accepts the index; it
+      # does not confirm the index describes what was intended. A missing or
+      # duplicated architecture would otherwise only surface as a pull failure on
+      # the affected platform.
+      - name: Verify the published manifest
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          TOOL: ${{ matrix.tool }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE_NAME}:${TOOL}-${VERSION}" \
+            --format '{{range .Manifest.Manifests}}{{if ne .Platform.Architecture "unknown"}}linux/{{.Platform.Architecture}}
+          {{end}}{{end}}' | grep -v '^[[:space:]]*$' | sort -u > "actual-platforms-${TOOL}.txt"
+          echo "expected:"; cat "expected-platforms-${TOOL}.txt"
+          echo "actual:";   cat "actual-platforms-${TOOL}.txt"
+          diff -u "expected-platforms-${TOOL}.txt" "actual-platforms-${TOOL}.txt"
+
+  cleanup:
+    name: Remove ${{ matrix.tool }} arch fragment tags
+    needs: [meta, manifest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        tool:
+          - abuse-reporter
+          - metrics-exporter
+    steps:
+      # The per-architecture tags exist only so imagetools has immutable sources
+      # to combine. Once the manifest is published and verified they are noise in
+      # the Docker Hub tag list; the digests they pointed at stay referenced by
+      # the manifest, so deleting the tags removes nothing real.
+      - name: Delete architecture tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          TOOL: ${{ matrix.tool }}
+        run: |
+          set -euo pipefail
+          hub_token="$(
+            jq -nc --arg username "$DOCKERHUB_USERNAME" --arg password "$DOCKERHUB_TOKEN" \
+              '{username: $username, password: $password}' \
+            | curl -fsSL -H 'Content-Type: application/json' -d @- \
+                'https://hub.docker.com/v2/users/login/' \
+            | jq -r '.token // .access_token // empty'
+          )"
+          [[ -n "$hub_token" ]] || { echo "ERROR: failed to obtain a Docker Hub API token"; exit 1; }
+
+          base="https://hub.docker.com/v2/namespaces/${DOCKERHUB_USERNAME}/repositories/crowdsec-toolbox/tags"
+          for arch in amd64 arm64; do
+            tag="${TOOL}-${VERSION}-${arch}"
+            status="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer ${hub_token}" "${base}/${tag}")"
+            case "$status" in
+              204|202) echo "deleted ${tag}" ;;
+              404)     echo "skipped ${tag} (not present)" ;;
+              *)       echo "WARNING: deleting ${tag} returned HTTP ${status}" ;;
+            esac
+          done
+
+  release:
+    name: Create GitHub Release
+    needs: [meta, manifest, cleanup]
+    # A published manifest is what a release documents. Tag cleanup is cosmetic,
+    # so a warning there must not suppress the notes - but a cancelled run must.
+    # Without a status function GitHub adds an implicit success() over needs,
+    # which a skipped dependency would not satisfy.
+    if: >-
+      !cancelled() &&
+      needs.manifest.result == 'success' &&
+      needs.cleanup.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      IMAGE_NAME: ${{ format('{0}/crowdsec-toolbox', secrets.DOCKERHUB_USERNAME) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Download Trivy findings
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trivy-*
+          path: trivy/
+          merge-multiple: false
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests/
+          merge-multiple: false
+
+      - name: Create or update the release
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          IMAGE: ${{ env.IMAGE_NAME }}
+          IS_NEWEST: ${{ needs.meta.outputs.is_newest }}
+          BUILD_DATE: ${{ needs.meta.outputs.build_date }}
+        with:
+          # RELEASE_TOKEN rather than the default token on purpose: a release
+          # created with GITHUB_TOKEN does not emit a `release` event, so no
+          # other workflow could ever react to a publish.
+          github-token: ${{ secrets.RELEASE_TOKEN }}
+          script: |
+            const fs = require('node:fs');
+            const version = process.env.VERSION;
+            const image = process.env.IMAGE;
+            const tagName = 'v' + version;
+            const isPrerelease = version.includes('-');
+            const isNewest = process.env.IS_NEWEST === 'true';
+            const tools = ['abuse-reporter', 'metrics-exporter'];
+            const arches = (tool) => {
+              try {
+                return fs.readdirSync('digests')
+                  .filter(d => d.startsWith(`digest-${tool}-`))
+                  .map(d => d.replace(`digest-${tool}-`, ''))
+                  .sort();
+              } catch { return []; }
+            };
+
+            const trivy = (tool) => {
+              let critical = 0, high = 0, seen = false;
+              for (const arch of arches(tool)) {
+                const file = `trivy/trivy-${tool}-${arch}/trivy-${tool}-${arch}.json`;
+                try {
+                  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                  seen = true;
+                  for (const r of (data.Results || [])) {
+                    for (const v of (r.Vulnerabilities || [])) {
+                      if (v.Severity === 'CRITICAL') critical++;
+                      else if (v.Severity === 'HIGH') high++;
+                    }
+                  }
+                } catch { /* missing report stays unreported */ }
+              }
+              if (!seen) return 'Report unavailable';
+              return (critical === 0 && high === 0)
+                ? 'No HIGH/CRITICAL findings'
+                : `${critical} CRITICAL, ${high} HIGH (unfixed excluded)`;
+            };
+
+            let body = `## CrowdSec Toolbox ${version}\n\n`;
+            body += `Both tools are published to the same Docker Hub repository; `;
+            body += `the tool name is part of the tag.\n\n`;
+            body += `| Tool | Image | Platforms | Vulnerability scan |\n`;
+            body += `|---|---|---|---|\n`;
+            for (const tool of tools) {
+              const platforms = arches(tool).map(a => `linux/${a}`).join(', ') || 'n/a';
+              body += `| \`crowdsec-${tool}\` | \`${image}:${tool}-${version}\` | ${platforms} | ${trivy(tool)} |\n`;
+            }
+            body += `\n### Pull\n\n\`\`\`bash\n`;
+            for (const tool of tools) {
+              body += `docker pull ${image}:${tool}-${version}\n`;
+            }
+            body += `\`\`\`\n\n`;
+            if (isPrerelease) {
+              body += `> This is a prerelease: the \`-latest\` tags were not moved.\n\n`;
+            } else if (!isNewest) {
+              body += `> A newer version is already published, so the \`-latest\` tags were not moved.\n\n`;
+            } else {
+              body += `The \`abuse-reporter-latest\` and \`metrics-exporter-latest\` tags point at this release.\n\n`;
+            }
+            body += `There is no bare \`latest\` tag: with two tools in one repository it could only mean one of them.\n\n`;
+            body += `Built ${process.env.BUILD_DATE} from ${context.sha}.\n`;
+
+            const { owner, repo } = context.repo;
+            let existing = null;
+            try {
+              existing = (await github.rest.repos.getReleaseByTag({ owner, repo, tag: tagName })).data;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+            if (existing) {
+              await github.rest.repos.updateRelease({
+                owner, repo, release_id: existing.id,
+                name: `CrowdSec Toolbox ${version}`, body, prerelease: isPrerelease,
+              });
+              core.info(`Updated release ${tagName}`);
+            } else {
+              await github.rest.repos.createRelease({
+                owner, repo, tag_name: tagName,
+                name: `CrowdSec Toolbox ${version}`, body,
+                prerelease: isPrerelease, draft: false,
+              });
+              core.info(`Created release ${tagName}`);
+            }

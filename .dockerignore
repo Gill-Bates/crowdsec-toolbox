@@ -1,0 +1,21 @@
+# Fallback denylist for legacy (non-BuildKit) builders, which ignore the
+# per-Dockerfile `crowdsec-abuse-reporter/docker/Dockerfile.dockerignore` allowlist next
+# to the Dockerfile. That file is the primary build-context filter under
+# BuildKit; this one exists purely as defense in depth so that a
+# `DOCKER_BUILDKIT=0 docker build -f crowdsec-abuse-reporter/docker/Dockerfile .` never
+# ships secrets, databases, or repo metadata to the daemon.
+**/settings.env
+**/settings-*.env
+**/*.db
+**/*.db-*
+.git/
+**/data/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.omc/
+**/.claude/
+**/BUILD_INFO
+**/grafana/

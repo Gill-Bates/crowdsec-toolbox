@@ -1,0 +1,28 @@
+services:
+  crowdsec-metrics-exporter:
+    image: docker.cirrio.de/crowdsec-metrics-exporter:latest
+    container_name: crowdsec-metrics-exporter
+    env_file:
+      - ./settings.env
+    init: true
+    restart: always
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    environment:
+      - TZ=Europe/Berlin
+    volumes:
+      - /etc/hostname:/run/host/hostname:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+
+networks:
+  default:
+    driver: bridge

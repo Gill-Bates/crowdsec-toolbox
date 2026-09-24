@@ -1,0 +1,2463 @@
+{
+  "apiVersion": "dashboard.grafana.app/v2",
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "crowdsec-questdb",
+    "generation": 3,
+    "creationTimestamp": "2026-09-23T16:57:21Z",
+    "labels": {},
+    "annotations": {}
+  },
+  "spec": {
+    "annotations": [
+      {
+        "kind": "AnnotationQuery",
+        "spec": {
+          "query": {
+            "kind": "DataQuery",
+            "group": "grafana",
+            "version": "v0",
+            "spec": {}
+          },
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "builtIn": true
+        }
+      }
+    ],
+    "cursorSync": "Crosshair",
+    "editable": true,
+    "elements": {
+      "panel-18": {
+        "kind": "Panel",
+        "spec": {
+          "id": 18,
+          "title": "Top Endpoints | Path / Verb / Status",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(http_path, ''), '(unknown)') AS \"Path\", coalesce(nullif(http_verb, ''), '(unknown)') AS \"Verb\", coalesce(nullif(http_status, ''), '(unknown)') AS \"Status\", count() AS \"Requests\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\", count_distinct(nullif(target_fqdn, '')) AS \"Targets\"\nFROM \"${table}_events\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\nGROUP BY http_path, http_verb, http_status\nORDER BY \"Requests\" DESC\nLIMIT 100;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Path"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 420
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "panel-19": {
+        "kind": "Panel",
+        "spec": {
+          "id": 19,
+          "title": "Top Target FQDNs | Requests",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(target_fqdn, ''), '(unknown)') AS \"Target FQDN\", count() AS \"Requests\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\", count_distinct(nullif(http_path, '')) AS \"Distinct Paths\", count_distinct(nullif(scenario, '')) AS \"Scenarios\"\nFROM \"${table}_events\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\nGROUP BY target_fqdn\nORDER BY \"Requests\" DESC\nLIMIT 50;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Target FQDN"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 300
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "panel-10": {
+        "kind": "Panel",
+        "spec": {
+          "id": 10,
+          "title": "Source IP Origin",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT \"latitude\", \"longitude\", \"Host\", CASE WHEN \"Country\" ~ '^[A-Za-z]{2}$' AND upper(\"Country\") NOT IN ('AP', 'ZZ') THEN concat(substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(\"Country\"), 1, 1)) - 1, 2), substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(\"Country\"), 2, 1)) - 1, 2)) ELSE '🌐' END AS \"Country\", \"Alerts\", \"Events\", \"Source IPs\"\nFROM (\nSELECT latitude, longitude, coalesce(nullif(host, ''), '(unknown)') AS \"Host\", coalesce(nullif(country, ''), '(unknown)') AS \"Country\", count() AS \"Alerts\", sum(events_count) AS \"Events\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\n  AND latitude IS NOT NULL AND longitude IS NOT NULL AND latitude >= -90 AND latitude <= 90 AND longitude >= -180 AND longitude <= 180 AND NOT (latitude = 0 AND longitude = 0)\nGROUP BY latitude, longitude, host, country\nORDER BY \"Alerts\" DESC\nLIMIT 2000\n)\nORDER BY \"Alerts\" DESC;",
+                        "selectedFormat": 2
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "geomap",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "basemap": {
+                  "type": "esri-xyz",
+                  "name": "Basemap",
+                  "noRepeat": true,
+                  "opacity": 1,
+                  "config": {
+                    "server": "custom",
+                    "url": "https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+                    "attribution": "Esri, HERE, Garmin, FAO, NOAA, USGS"
+                  }
+                },
+                "controls": {
+                  "mouseWheelZoom": false,
+                  "showAttribution": true,
+                  "showDebug": false,
+                  "showMeasure": false,
+                  "showScale": false,
+                  "showZoom": true
+                },
+                "layers": [
+                  {
+                    "config": {
+                      "showLegend": true,
+                      "style": {
+                        "color": {
+                          "field": "Host",
+                          "fixed": "orange"
+                        },
+                        "opacity": 0.7,
+                        "rotation": {
+                          "fixed": 0,
+                          "mode": "mod"
+                        },
+                        "size": {
+                          "field": "Alerts",
+                          "fixed": 6,
+                          "max": 28,
+                          "min": 5
+                        },
+                        "symbol": {
+                          "fixed": "img/icons/marker/circle.svg",
+                          "mode": "fixed"
+                        },
+                        "symbolAlign": {
+                          "horizontal": "center",
+                          "vertical": "center"
+                        }
+                      }
+                    },
+                    "filterData": {
+                      "id": "byRefId",
+                      "options": "A"
+                    },
+                    "location": {
+                      "latitude": "latitude",
+                      "longitude": "longitude",
+                      "mode": "coords"
+                    },
+                    "name": "Source IP Locations",
+                    "tooltip": true,
+                    "type": "markers"
+                  }
+                ],
+                "tooltip": {
+                  "mode": "details"
+                },
+                "view": {
+                  "allLayers": true,
+                  "dashboardVariable": false,
+                  "id": "coords",
+                  "lat": 20,
+                  "lon": 0,
+                  "noRepeat": true,
+                  "shared": false,
+                  "zoom": 1.5
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic-by-name"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-11": {
+        "kind": "Panel",
+        "spec": {
+          "id": 11,
+          "title": "Top 10 Origin Countries | Alerts",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "WITH country_counts AS (\n    SELECT\n        coalesce(nullif(country, ''), '(unknown)') AS country,\n        count() AS alerts\n    FROM \"${table}\"\n    WHERE $__timeFilter(timestamp)\n      AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n      AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n      AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\n    GROUP BY country\n),\nranked AS (\n    SELECT\n        country,\n        alerts,\n        row_number() OVER (ORDER BY alerts DESC) AS rn\n    FROM country_counts\n),\ngrouped AS (\n    SELECT\n        CASE\n            WHEN rn <= 5 THEN country\n            ELSE 'Other'\n        END AS country,\n        sum(alerts) AS alerts\n    FROM ranked\n    GROUP BY\n        CASE\n            WHEN rn <= 5 THEN country\n            ELSE 'Other'\n        END\n)\nSELECT\n    CASE\n        WHEN country = 'Other' THEN 'Other'\n        WHEN country ~ '^[A-Za-z]{2}$'\n             AND upper(country) NOT IN ('AP', 'ZZ')\n        THEN concat(\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 1, 1)\n                ) - 1,\n                2\n            ),\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 2, 1)\n                ) - 1,\n                2\n            )\n        )\n        ELSE '🌐'\n    END AS \"Country\",\n    alerts AS \"Alerts\"\nFROM grouped\nORDER BY \"Alerts\" DESC;",
+                        "selectedFormat": 2
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "piechart",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "displayLabels": [
+                  "name",
+                  "percent"
+                ],
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
+                },
+                "pieType": "donut",
+                "reduceOptions": {
+                  "calcs": [],
+                  "fields": "",
+                  "values": true
+                },
+                "sort": "desc",
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "single",
+                  "sort": "none"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-12": {
+        "kind": "Panel",
+        "spec": {
+          "id": 12,
+          "title": "Top 10 Network Providers / AS | Alerts",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(as_name, ''), '(unknown)') AS \"Provider\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY as_name\nORDER BY \"Alerts\" DESC\nLIMIT 10;",
+                        "selectedFormat": 2
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "barchart",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "orientation": "horizontal",
+                "xField": "Provider",
+                "showValue": "always",
+                "stacking": "none",
+                "groupWidth": 0.7,
+                "barWidth": 0.85,
+                "barRadius": 0.15,
+                "fullHighlight": true,
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0,
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "single",
+                  "sort": "none"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "purple"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "axisPlacement": "auto",
+                    "axisLabel": "",
+                    "axisColorMode": "text",
+                    "axisCenteredZero": false,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-13": {
+        "kind": "Panel",
+        "spec": {
+          "id": 13,
+          "title": "Host Comparison | one host per row",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(host, ''), '(unknown)') AS \"Host\", count() AS \"Alerts\", coalesce(sum(events_count),0) AS \"Events\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\", count_distinct(nullif(scenario, '')) AS \"Scenarios\", count_distinct(nullif(country, '')) AS \"Countries\", 100.0 * sum(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL AND latitude >= -90 AND latitude <= 90 AND longitude >= -180 AND longitude <= 180 AND NOT (latitude = 0 AND longitude = 0) THEN 1 ELSE 0 END) / nullif(count(), 0) AS \"Geo Coverage\", max(timestamp) AS \"Last Alert\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY host\nORDER BY \"Alerts\" DESC;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Host"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 220
+                      },
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "targetBlank": false,
+                            "title": "Investigate this Host",
+                            "url": "/d/crowdsec-questdb?${__url_time_range}&var-datasource=${datasource:percentencode}&var-table=${table:percentencode}&var-host=${__value.raw:percentencode}&var-scenario=%24__all&var-country=%24__all"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Geo Coverage"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "percent"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 1
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Last Alert"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeAsIso"
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 210
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Alerts"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "type": "color-background"
+                        }
+                      },
+                      {
+                        "id": "color",
+                        "value": {
+                          "mode": "continuous-BlPu"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "panel-14": {
+        "kind": "Panel",
+        "spec": {
+          "id": 14,
+          "title": "Scenarios per Host | Top 100",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(host, ''), '(unknown)') AS \"Host\", coalesce(nullif(scenario, ''), '(unknown)') AS \"Scenario\", count() AS \"Alerts\", sum(events_count) AS \"Events\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY host, scenario\nORDER BY \"Alerts\" DESC\nLIMIT 100;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Scenario"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 330
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "panel-15": {
+        "kind": "Panel",
+        "spec": {
+          "id": 15,
+          "title": "Networks / ASN | Top 50",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(as_name, ''), '(unknown)') AS \"Provider\", coalesce(nullif(as_number, ''), '(unknown)') AS \"ASN\", count() AS \"Alerts\", sum(events_count) AS \"Events\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\", count_distinct(nullif(host, '')) AS \"Hosts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY as_name, as_number\nORDER BY \"Alerts\" DESC\nLIMIT 50;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "ASN"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "none"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Provider"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 300
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "panel-16": {
+        "kind": "Panel",
+        "spec": {
+          "id": 16,
+          "title": "Notable Source IPs per Host | Top 100",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT \"Host\", \"Source IP\", CASE WHEN \"Country\" ~ '^[A-Za-z]{2}$' AND upper(\"Country\") NOT IN ('AP', 'ZZ') THEN concat(substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(\"Country\"), 1, 1)) - 1, 2), substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(\"Country\"), 2, 1)) - 1, 2)) ELSE '🌐' END AS \"Country\", \"Provider\", \"ASN\", \"Alerts\", \"Events\", \"Scenarios\", \"First Alert\", \"Last Alert\"\nFROM (\nSELECT coalesce(nullif(host, ''), '(unknown)') AS \"Host\", ip_address AS \"Source IP\", coalesce(nullif(country, ''), '(unknown)') AS \"Country\", coalesce(nullif(as_name, ''), '(unknown)') AS \"Provider\", coalesce(nullif(as_number, ''), '(unknown)') AS \"ASN\", count() AS \"Alerts\", sum(events_count) AS \"Events\", count_distinct(nullif(scenario, '')) AS \"Scenarios\", min(timestamp) AS \"First Alert\", max(timestamp) AS \"Last Alert\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\n  AND ip_address IS NOT NULL AND ip_address != ''\nGROUP BY host, ip_address, country, as_name, as_number\nORDER BY \"Alerts\" DESC\nLIMIT 100\n)\nORDER BY \"Alerts\" DESC;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "ASN"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "none"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Source IP"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 170
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Provider"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 240
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "First Alert"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeAsIso"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Last Alert"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeAsIso"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "panel-17": {
+        "kind": "Panel",
+        "spec": {
+          "id": 17,
+          "title": "Latest Alerts | max 200",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT \"Time\", \"Host\", \"Source IP\", CASE WHEN \"Country\" ~ '^[A-Za-z]{2}$' AND upper(\"Country\") NOT IN ('AP', 'ZZ') THEN concat(substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(\"Country\"), 1, 1)) - 1, 2), substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(\"Country\"), 2, 1)) - 1, 2)) ELSE '🌐' END AS \"Country\", \"Scenario\", \"Events\", \"Provider\", \"ASN\", \"Alert ID\", \"Message\", \"Abuse Contact\"\nFROM (\nSELECT timestamp AS \"Time\", host AS \"Host\", ip_address AS \"Source IP\", country AS \"Country\", scenario AS \"Scenario\", events_count AS \"Events\", as_name AS \"Provider\", as_number AS \"ASN\", alert_id AS \"Alert ID\", message AS \"Message\", abuse_email AS \"Abuse Contact\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nORDER BY timestamp DESC\nLIMIT 200\n)\nORDER BY \"Time\" DESC;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "ASN"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "none"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Time"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeAsIso"
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 210
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Host"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 160
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Source IP"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 170
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Scenario"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 300
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Message"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 450
+                      },
+                      {
+                        "id": "custom.inspect",
+                        "value": true
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Alert ID"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "none"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "panel-2": {
+        "kind": "Panel",
+        "spec": {
+          "id": 2,
+          "title": "Alerts Recorded",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT count() AS \"Alerts Recorded\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "blue"
+                  },
+                  "noValue": "—"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-3": {
+        "kind": "Panel",
+        "spec": {
+          "id": 3,
+          "title": "Triggering Events",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(sum(events_count), 0) AS \"Triggering Events\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "orange"
+                  },
+                  "noValue": "—"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-4": {
+        "kind": "Panel",
+        "spec": {
+          "id": 4,
+          "title": "Source IPs",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT count_distinct(nullif(ip_address, '')) AS \"Source IPs\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "purple"
+                  },
+                  "noValue": "—"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-5": {
+        "kind": "Panel",
+        "spec": {
+          "id": 5,
+          "title": "Hosts with Alerts",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT count_distinct(nullif(host, '')) AS \"Hosts with Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "cyan"
+                  },
+                  "noValue": "—"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-6": {
+        "kind": "Panel",
+        "spec": {
+          "id": 6,
+          "title": "Active Scenarios",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT count_distinct(nullif(scenario, '')) AS \"Active Scenarios\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "yellow"
+                  },
+                  "noValue": "—"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-7": {
+        "kind": "Panel",
+        "spec": {
+          "id": 7,
+          "title": "Geo Coverage",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT 100.0 * sum(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL AND latitude >= -90 AND latitude <= 90 AND longitude >= -180 AND longitude <= 180 AND NOT (latitude = 0 AND longitude = 0) THEN 1 ELSE 0 END) / nullif(count(), 0) AS \"Geo Coverage\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "percent",
+                  "decimals": 1,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "green"
+                  },
+                  "noValue": "—"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-8": {
+        "kind": "Panel",
+        "spec": {
+          "id": 8,
+          "title": "Alert History by Host",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 0,
+                        "queryType": "sql",
+                        "rawSql": "SELECT timestamp AS time, coalesce(nullif(host, ''), '(unknown)') AS \"host\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nSAMPLE BY $__sampleByInterval FILL(0) ALIGN TO CALENDAR\nORDER BY time;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "annotations": {
+                  "clustering": -1,
+                  "multiLane": false
+                },
+                "legend": {
+                  "calcs": [
+                    "sum",
+                    "max"
+                  ],
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic-by-name"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "axisBorderShow": false,
+                    "axisCenteredZero": false,
+                    "axisColorMode": "text",
+                    "axisLabel": "Alerts / Interval",
+                    "axisPlacement": "auto",
+                    "barAlignment": 0,
+                    "barWidthFactor": 0.6,
+                    "drawStyle": "line",
+                    "fillOpacity": 12,
+                    "gradientMode": "none",
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "insertNulls": false,
+                    "lineInterpolation": "linear",
+                    "lineWidth": 2,
+                    "pointSize": 5,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "showPoints": "never",
+                    "showValues": false,
+                    "spanNulls": false,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "none"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "panel-9": {
+        "kind": "Panel",
+        "spec": {
+          "id": 9,
+          "title": "Event History by Scenario",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 0,
+                        "queryType": "sql",
+                        "rawSql": "SELECT timestamp AS time, coalesce(nullif(scenario, ''), '(unknown)') AS \"scenario\", sum(events_count) AS \"Events\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nSAMPLE BY $__sampleByInterval FILL(0) ALIGN TO CALENDAR\nORDER BY time;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "annotations": {
+                  "clustering": -1,
+                  "multiLane": false
+                },
+                "legend": {
+                  "calcs": [
+                    "sum",
+                    "max"
+                  ],
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic-by-name"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "axisBorderShow": false,
+                    "axisCenteredZero": false,
+                    "axisColorMode": "text",
+                    "axisLabel": "Events / Interval",
+                    "axisPlacement": "auto",
+                    "barAlignment": 0,
+                    "barWidthFactor": 0.6,
+                    "drawStyle": "line",
+                    "fillOpacity": 12,
+                    "gradientMode": "none",
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "insertNulls": false,
+                    "lineInterpolation": "linear",
+                    "lineWidth": 2,
+                    "pointSize": 5,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "showPoints": "never",
+                    "showValues": false,
+                    "spanNulls": false,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "none"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      }
+    },
+    "layout": {
+      "kind": "GridLayout",
+      "spec": {
+        "items": [
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 50,
+              "width": 14,
+              "height": 9,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-18"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 14,
+              "y": 50,
+              "width": 10,
+              "height": 9,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-19"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 3,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-2"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 4,
+              "y": 0,
+              "width": 4,
+              "height": 3,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-3"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 8,
+              "y": 0,
+              "width": 4,
+              "height": 3,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-4"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 12,
+              "y": 0,
+              "width": 4,
+              "height": 3,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-5"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 16,
+              "y": 0,
+              "width": 4,
+              "height": 3,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-6"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 20,
+              "y": 0,
+              "width": 4,
+              "height": 3,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-7"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 3,
+              "width": 12,
+              "height": 7,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-8"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 12,
+              "y": 3,
+              "width": 12,
+              "height": 7,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-9"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 10,
+              "width": 12,
+              "height": 9,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-10"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 12,
+              "y": 10,
+              "width": 5,
+              "height": 9,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-11"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 17,
+              "y": 10,
+              "width": 7,
+              "height": 9,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-12"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 19,
+              "width": 24,
+              "height": 6,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-13"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 25,
+              "width": 12,
+              "height": 8,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-14"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 12,
+              "y": 25,
+              "width": 12,
+              "height": 8,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-15"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 33,
+              "width": 24,
+              "height": 8,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-16"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 41,
+              "width": 24,
+              "height": 9,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-17"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "links": [],
+    "liveNow": false,
+    "preload": false,
+    "tags": [
+      "crowdsec",
+      "questdb",
+      "security",
+      "host-analysis"
+    ],
+    "timeSettings": {
+      "timezone": "browser",
+      "from": "now-7d",
+      "to": "now",
+      "autoRefresh": "5m",
+      "autoRefreshIntervals": [
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h"
+      ],
+      "hideTimepicker": false,
+      "fiscalYearStartMonth": 0
+    },
+    "title": "CrowdSec · Security Overview",
+    "variables": [
+      {
+        "kind": "DatasourceVariable",
+        "spec": {
+          "name": "datasource",
+          "pluginId": "questdb-questdb-datasource",
+          "refresh": "onDashboardLoad",
+          "regex": "",
+          "current": {
+            "text": "",
+            "value": ""
+          },
+          "options": [],
+          "multi": false,
+          "includeAll": false,
+          "label": "QuestDB",
+          "hide": "dontHide",
+          "skipUrlSync": false,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "table",
+          "current": {
+            "text": "",
+            "value": ""
+          },
+          "label": "Table",
+          "hide": "hideVariable",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "format": 1,
+              "queryType": "sql",
+              "rawSql": "SELECT table_name FROM tables() WHERE NOT table_name ~ '_events$' ORDER BY table_name;"
+            }
+          },
+          "regex": "",
+          "regexApplyTo": "value",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT table_name FROM tables() WHERE NOT table_name ~ '_events$' ORDER BY table_name;",
+          "options": [],
+          "multi": false,
+          "includeAll": false,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "host",
+          "current": {
+            "text": "",
+            "value": ""
+          },
+          "label": "Host",
+          "hide": "dontHide",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "format": 1,
+              "queryType": "sql",
+              "rawSql": "SELECT DISTINCT coalesce(nullif(host, ''), '(unknown)') AS value FROM \"${table}\" ORDER BY value;"
+            }
+          },
+          "regex": "",
+          "regexApplyTo": "value",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT DISTINCT coalesce(nullif(host, ''), '(unknown)') AS value FROM \"${table}\" ORDER BY value;",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "scenario",
+          "current": {
+            "text": "",
+            "value": ""
+          },
+          "label": "Scenario",
+          "hide": "dontHide",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "format": 1,
+              "queryType": "sql",
+              "rawSql": "SELECT DISTINCT coalesce(nullif(scenario, ''), '(unknown)') AS value FROM \"${table}\" ORDER BY value;"
+            }
+          },
+          "regex": "",
+          "regexApplyTo": "value",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT DISTINCT coalesce(nullif(scenario, ''), '(unknown)') AS value FROM \"${table}\" ORDER BY value;",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "country",
+          "current": {
+            "text": "",
+            "value": ""
+          },
+          "label": "Country",
+          "hide": "dontHide",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "format": 1,
+              "queryType": "sql",
+              "rawSql": "SELECT DISTINCT concat(CASE WHEN country ~ '^[A-Za-z]{2}$' AND upper(country) NOT IN ('AP', 'ZZ') THEN concat(substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(country), 1, 1)) - 1, 2), substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(country), 2, 1)) - 1, 2)) ELSE '🌐' END, '#', coalesce(nullif(country, ''), '(unknown)')) AS value FROM \"${table}\" ORDER BY value;"
+            }
+          },
+          "regex": "/^(?<text>[^#]+)#(?<value>.*)$/",
+          "regexApplyTo": "value",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT DISTINCT concat(CASE WHEN country ~ '^[A-Za-z]{2}$' AND upper(country) NOT IN ('AP', 'ZZ') THEN concat(substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(country), 1, 1)) - 1, 2), substring('🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿', 2 * strpos('ABCDEFGHIJKLMNOPQRSTUVWXYZ', substring(upper(country), 2, 1)) - 1, 2)) ELSE '🌐' END, '#', coalesce(nullif(country, ''), '(unknown)')) AS value FROM \"${table}\" ORDER BY value;",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allowCustomValue": false
+        }
+      }
+    ]
+  }
+}

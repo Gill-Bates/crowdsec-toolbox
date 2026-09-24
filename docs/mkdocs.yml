@@ -1,0 +1,149 @@
+site_name: CrowdSec Toolbox Documentation
+site_description: Turn CrowdSec decisions into abuse reports and time-series metrics
+site_author: Gill-Bates
+site_url: https://gill-bates.github.io/crowdsec-toolbox/
+
+repo_name: Gill-Bates/crowdsec-toolbox
+repo_url: https://github.com/Gill-Bates/crowdsec-toolbox
+edit_uri: edit/main/docs/
+
+# As in the sibling projects: this directory is the docs root and the built
+# site lands next to it, outside the sources.
+docs_dir: .
+site_dir: ../site
+
+use_directory_urls: true
+
+# Repository files that live in this directory but are not site content. MkDocs
+# copies any non-Markdown file in docs_dir straight into the build, so the
+# manifest has to be named here or it would be published alongside the pages.
+# gitignore-style, so a nested AGENTS.md is excluded too.
+exclude_docs: |
+  AGENTS.md
+  pyproject.toml
+
+# license.md is generated from the root LICENSE by the docs workflow and is
+# reachable from the footer rather than the nav, so --strict should not treat its
+# absence from the nav as a finding.
+not_in_nav: |
+  license.md
+
+theme:
+  name: material
+  language: en
+  palette:
+    # Light mode
+    - scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.prune
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+plugins:
+  - search:
+      lang: en
+      separator: '[\s\-\.]+'
+  - minify:
+      minify_html: true
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra:
+  homepage: https://gill-bates.github.io/crowdsec-toolbox/
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Gill-Bates
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Overview: getting-started/index.md
+    - Installation: getting-started/installation.md
+    - Docker Deployment: getting-started/docker.md
+  - Abuse Reporter:
+    - Overview: abuse-reporter/index.md
+    - Configuration: abuse-reporter/configuration.md
+    - Delivery Guarantees: abuse-reporter/delivery.md
+    - GeoIP Databases: abuse-reporter/geoip.md
+  - Metrics Exporter:
+    - Overview: metrics-exporter/index.md
+    - Configuration: metrics-exporter/configuration.md
+    - Per-Event Export: metrics-exporter/events.md
+  - Reference:
+    - Metrics Backends: reference/metrics-backends.md
+    - Grafana Dashboards: reference/dashboards.md
+    - Health Checks: reference/health.md
+    - Security Model: reference/security.md
+  - Development:
+    - Setup: development/setup.md
+    - Testing: development/testing.md
+    - Build Pipelines: development/pipelines.md
+  - Troubleshooting: troubleshooting.md
+
+copyright: Copyright &copy; 2026 Gill-Bates | Licensed under MIT

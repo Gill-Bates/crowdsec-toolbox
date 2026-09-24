@@ -1,0 +1,34 @@
+services:
+  crowdsec-abuse-reporter:
+    image: docker.cirrio.de/crowdsec-abuse-reporter:latest
+    container_name: crowdsec-abuse-reporter
+    env_file:
+      - ./settings.env
+    init: true
+    restart: always
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    environment:
+      - TZ=Europe/Berlin
+      - RUN_EVERY_HOUR=6
+      - METRICS_INTERVAL=60
+      - RUN_ONCE=false
+      - RUN_JITTER=300
+    volumes:
+      - ./data:/data
+      - /etc/hostname:/run/host/hostname:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /tmp/geoip:rw,noexec,nosuid,nodev,size=256m
+
+networks:
+  default:
+    driver: bridge

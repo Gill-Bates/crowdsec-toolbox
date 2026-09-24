@@ -1,0 +1,54 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.ruff_cache/
+.pytest_cache/
+
+# Python packaging and virtual environments
+.venv/
+.venv.*
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Test and coverage reports
+.coverage
+htmlcov/
+coverage.xml
+
+# Runtime data, databases, and logs
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.log
+
+# App-specific local state
+settings.env
+settings-*.env
+BUILD_INFO
+
+# Documentation build output and CI scan artefacts. docs/license.md is
+# generated from the root LICENSE by .github/workflows/docs-build.yml.
+site/
+docs/license.md
+.docs-scan/
+docs-requirements-frozen.txt
+
+# oh-my-claudecode state
+.omc/
+.claude/
+
+# Editor, OS, and tooling noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

@@ -1,0 +1,17 @@
+# Build context is the repository root (see setup.conf), because the COPY paths
+# below are repo-relative. BuildKit picks up this file because it sits next to
+# the Dockerfile. Allowlist: everything is excluded except what the image needs,
+# so secrets (settings.env), databases, tests and the other tool never reach the
+# build context.
+#
+# The manifest entry must name this tool's own pyproject.toml. It used to be the
+# repo-root one; after the split to per-tool manifests a stale `!pyproject.toml`
+# left the file outside the context and the build failed on the bind-mount in
+# the pip layer with "not found".
+*
+!crowdsec-metrics-exporter/pyproject.toml
+!crowdsec-metrics-exporter/app/
+!crowdsec-metrics-exporter/main.py
+!crowdsec-metrics-exporter/docker/entrypoint.sh
+**/__pycache__/
+**/*.py[cod]

@@ -1,0 +1,23 @@
+# Manifest for the documentation site only.
+#
+# There is no root pyproject.toml: every component in this repository owns its
+# own manifest (see ../AGENTS.md). The docs site is such a component, so its
+# toolchain lives here next to mkdocs.yml rather than in a shared file.
+#
+#   pip install --group docs/pyproject.toml:default    # needs pip >= 25.1
+#
+# Only [dependency-groups] is declared. This is not an installable package and
+# has no [project] table, which is exactly what PEP 735 allows - pip reads the
+# group without ever building anything.
+
+[dependency-groups]
+# Pinned, unlike the tools' runtime groups: a docs build is only useful if it is
+# reproducible, and mkdocs-material's navigation and emoji behaviour changes
+# between minor releases.
+default = [
+    "mkdocs==1.6.1",
+    "mkdocs-git-revision-date-localized-plugin==1.6.0",
+    "mkdocs-material==9.7.7",
+    "mkdocs-minify-plugin==0.8.0",
+    "pymdown-extensions==12.1",
+]
