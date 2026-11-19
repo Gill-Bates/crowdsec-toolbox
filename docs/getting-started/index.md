@@ -14,7 +14,7 @@ you deploy.
 | Python 3.13+ (host runs only) | required | required |
 | SMTP server | required | — |
 | Outbound DNS to the Abusix zone | required | — |
-| InfluxDB 2.x or QuestDB | optional | required |
+| InfluxDB 2.x or QuestDB 10.x | optional | required |
 
 !!! note "The Docker socket is not a prerequisite"
     Neither container mounts `/var/run/docker.sock`. The LAPI credentials are

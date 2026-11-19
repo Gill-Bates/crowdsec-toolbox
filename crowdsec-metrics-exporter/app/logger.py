@@ -5,87 +5,99 @@
 #
 
 """
-Logging module for colored console output.
-Provides consistent logging with emoji icons and color coding.
+Logging module: one line per record, "<UTC time> | LEVEL | source | message".
+WARNING and above go to stderr, the rest to stdout; colour only on a TTY.
 """
 
 import logging
 import os
 import sys
+import time
 from typing import ClassVar
 
 from .config import LOG_LEVEL
 
-# Plain ANSI escape codes, replacing colorama. Only emitted when stdout is a
-# TTY and NO_COLOR is not set (https://no-color.org/); the reset code always
-# follows a color code so no autoreset shim is needed.
 _RESET = "\033[0m"
 _CYAN = "\033[36m"
-_GREEN = "\033[32m"
 _YELLOW = "\033[33m"
 _RED = "\033[31m"
 
-_COLOR_ENABLED = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S UTC"
+
+
+def _escape(text: str) -> str:
+    """Keep a log entry on one line."""
+    return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
 class ColorFormatter(logging.Formatter):
-    """Custom formatter for colored log output."""
+    """Single-line formatter; colours are decided per stream at emit time."""
 
-    COLORS: ClassVar[dict[str, str]] = {
-        "DEBUG": _CYAN,
-        "INFO": _CYAN,
-        "WARNING": _YELLOW,
-        "ERROR": _RED,
-    }
+    # Log timestamps are always UTC, independent of the container timezone.
+    converter = staticmethod(time.gmtime)
+
+    COLORS: ClassVar[dict[str, str]] = {"DEBUG": _CYAN, "INFO": _CYAN, "WARNING": _YELLOW, "ERROR": _RED}
+
+    def __init__(self, *args, color: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.color = color
 
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record with appropriate color."""
-        message = super().format(record)
-        if not _COLOR_ENABLED:
-            return message
-        color = getattr(record, "color", None) or self.COLORS.get(record.levelname, "")
-        return f"{color}{message}{_RESET}"
+        """Format a record on one line, with the traceback appended after ` | `."""
+        record.message = _escape(record.getMessage())
+        line = f"{self.formatTime(record, self.datefmt)} | {record.levelname:<8} | {record.name} | {record.message}"
+        if record.exc_info:
+            line += f" | {_escape(self.formatException(record.exc_info))}"
+        if not self.color:
+            return line
+        return f"{self.COLORS.get(record.levelname, '')}{line}{_RESET}"
 
 
-# Create base logger
+class _SplitStreamHandler(logging.Handler):
+    """WARNING and above to stderr, everything else to stdout."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFormatter(ColorFormatter(datefmt=LOG_DATE_FORMAT))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        stream = sys.stderr if record.levelno >= logging.WARNING else sys.stdout
+        try:
+            self.formatter.color = stream.isatty() and not os.environ.get("NO_COLOR")  # type: ignore[union-attr]
+            stream.write(self.format(record) + "\n")
+            stream.flush()
+        except Exception:
+            self.handleError(record)
+
+
 logger = logging.getLogger("crowdsec_metrics")
-# LOG_LEVEL is validated once in config.py (raises SystemExit on an invalid
-# value) and imported here as the single source of truth. Importing it from
-# .config also pulls in config.py's settings.env loading, so a LOG_LEVEL set
-# there is honoured regardless of the order in which callers import the two
-# modules.
+# LOG_LEVEL is validated once in config.py and imported as the single source of truth.
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 logger.propagate = False
-
-# Console handler with colored output
-console_handler = logging.StreamHandler(sys.stdout)
-# Same line layout as WireBuddy: "2026-09-23 18:15:13 | INFO     | name | msg".
-LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-console_handler.setFormatter(ColorFormatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
-logger.addHandler(console_handler)
+logger.addHandler(_SplitStreamHandler())
 
 
 def print_debug(message: str) -> None:
-    """Print debug message (only visible when the logger level is DEBUG)."""
-    logger.debug(f"🐛 {message}")
+    """Log a debug message (only visible when the logger level is DEBUG)."""
+    logger.debug(message)
 
 
 def print_info(message: str) -> None:
-    """Print informational message with cyan color."""
-    logger.info(f"ℹ {message}")
+    """Log an informational message."""
+    logger.info(message)
 
 
 def print_success(message: str) -> None:
-    """Print success message with green color."""
-    logger.info(f"✓ {message}", extra={"color": _GREEN})
+    """Log a success message at INFO level."""
+    logger.info(message)
 
 
 def print_warning(message: str) -> None:
-    """Print warning message with yellow color."""
-    logger.warning(f"⚠ {message}")
+    """Log a warning."""
+    logger.warning(message)
 
 
 def print_error(message: str) -> None:
-    """Print error message with red color."""
-    logger.error(f"✗ {message}")
+    """Log an error."""
+    logger.error(message)

@@ -1,21 +1,37 @@
 # Fallback denylist for legacy (non-BuildKit) builders, which ignore the
-# per-Dockerfile `crowdsec-abuse-reporter/docker/Dockerfile.dockerignore` allowlist next
-# to the Dockerfile. That file is the primary build-context filter under
-# BuildKit; this one exists purely as defense in depth so that a
-# `DOCKER_BUILDKIT=0 docker build -f crowdsec-abuse-reporter/docker/Dockerfile .` never
-# ships secrets, databases, or repo metadata to the daemon.
+# per-Dockerfile `<tool>/docker/Dockerfile.dockerignore` allowlist next to the
+# Dockerfile. That file is the primary build-context filter under BuildKit;
+# this one exists purely as defense in depth so that a
+# `DOCKER_BUILDKIT=0 docker build -f <tool>/docker/Dockerfile .` never ships
+# secrets, databases, or repo metadata to the daemon.
+
+# Secrets and runtime data
 **/settings.env
 **/settings-*.env
 **/*.db
 **/*.db-*
-.git/
+**/*.sqlite
+**/*.sqlite3
+**/*.log
 **/data/
+**/BUILD_INFO
+
+# Repository metadata, CI, docs, agent notes, and tests (none is needed inside an image)
+.git/
+**/AGENTS.md
+**/CLAUDE.md
+.github/
+docs/
+site/
+**/tests/
+**/grafana/
+
+# Caches, virtual environments, and local tooling state
 **/.venv/
+**/.venv.*
 **/__pycache__/
 **/*.py[cod]
 **/.pytest_cache/
 **/.ruff_cache/
 **/.omc/
 **/.claude/
-**/BUILD_INFO
-**/grafana/

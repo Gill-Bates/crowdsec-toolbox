@@ -15,9 +15,9 @@ import sys
 from .logger import print_warning
 
 
-def handle_exit(signum: int, frame: object) -> None:
+def handle_exit(signum: int, _frame: object) -> None:
     """Handle SIGINT and SIGTERM signals for graceful shutdown."""
-    print_warning(f"Interrupted by {signal.Signals(signum).name}. Exiting cleanly...")
+    print_warning(f"Interrupted by {signal.Signals(signum).name}. Exiting cleanly")
     sys.exit(0)
 
 

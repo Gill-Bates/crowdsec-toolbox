@@ -35,23 +35,21 @@ NEGATIVE_CACHE_TTL_DAYS = 7
 # We never retry these to guarantee at-most-once delivery for abuse reports.
 HANDLED_STATUSES = ("sent", "pending", "unknown_send_state")
 
+# Handled statuses that cleanup may compact into a tombstone. 'pending' is
+# excluded: only the reaper may turn it into 'unknown_send_state'.
+TOMBSTONE_STATUSES = ("sent", "unknown_send_state")
+
 _thread_local = threading.local()
 _db_initialized = False
 _init_lock = threading.Lock()
 
 
 def get_connection() -> sqlite3.Connection:
-    """
-    Get or create database connection for current thread with lazy initialization.
-
-    Returns:
-        Thread-safe SQLite connection
-    """
+    """Return the current thread's connection, creating it and the schema lazily."""
     global _db_initialized
 
     if not hasattr(_thread_local, "conn"):
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        # Create connection with thread safety
         _thread_local.conn = sqlite3.connect(
             DB_PATH,
             check_same_thread=False,
@@ -59,13 +57,11 @@ def get_connection() -> sqlite3.Connection:
         )
         _thread_local.conn.row_factory = sqlite3.Row
 
-        # Enable performance optimizations
         _thread_local.conn.execute("PRAGMA journal_mode=WAL")
         _thread_local.conn.execute("PRAGMA synchronous=NORMAL")
         _thread_local.conn.execute("PRAGMA foreign_keys=ON")
         _thread_local.conn.execute("PRAGMA busy_timeout=5000")
 
-        # Initialize database schema if needed
         if not _db_initialized:
             with _init_lock:
                 if not _db_initialized:
@@ -76,21 +72,13 @@ def get_connection() -> sqlite3.Connection:
 
 
 def _initialize_database_schema(conn: sqlite3.Connection) -> None:
-    """
-    Initialize database tables and indexes.
-
-    Args:
-        conn: Database connection
-    """
+    """Create the database tables and indexes if they do not exist yet."""
     try:
         cursor = conn.cursor()
 
-        cursor.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='abuse_alerts'"
-        )
+        cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='abuse_alerts'")
         schema_exists = cursor.fetchone()[0] > 0
 
-        # Create main alerts table.
         # Status drives idempotency:
         #   'pending'            - claimed for sending; never re-sent automatically
         #   'sent'               - mail delivered; never sent again
@@ -117,7 +105,22 @@ def _initialize_database_schema(conn: sqlite3.Connection) -> None:
             )
         """)
 
-        # Create abuse contacts cache table
+        # Permanent, compact idempotency record. Retention cleanup moves the key of
+        # every 'sent'/'unknown_send_state' row here before it deletes the row, so
+        # an expired report can never be claimed again. Additive: abuse_alerts and
+        # its CHECK/UNIQUE constraints stay untouched, so old databases need no
+        # table rebuild. Never pruned; roughly 50 bytes per handled pair.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS abuse_alert_tombstones (
+                AlertId INTEGER NOT NULL,
+                IPAddress TEXT NOT NULL,
+                Status TEXT NOT NULL
+                    CHECK (Status IN ('sent', 'unknown_send_state')),
+                HandledAt DATETIME,
+                PRIMARY KEY (AlertId, IPAddress)
+            ) WITHOUT ROWID
+        """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS abuse_contacts_cache (
                 ip_prefix TEXT PRIMARY KEY,
@@ -127,7 +130,7 @@ def _initialize_database_schema(conn: sqlite3.Connection) -> None:
             )
         """)
 
-        # Control data about the exporter itself (last run start/end/exit
+        # Control data about the reporter itself (last run start/end/exit
         # code, active metrics backend). Key/value, one row per key.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS run_state (
@@ -141,8 +144,8 @@ def _initialize_database_schema(conn: sqlite3.Connection) -> None:
         #
         # This is control data, not a second copy of the report: the line holds
         # only what was already sent to the backend, and a row exists only while
-        # that write is outstanding. Without it a failed write lost the points
-        # for good, because with a backend enabled the report details are stored
+        # that write is outstanding. Without it a failed write would lose the
+        # points for good, because with a backend enabled the report details are stored
         # nowhere else (see abuse_alerts above, whose detail columns stay empty
         # in that mode).
         #
@@ -157,33 +160,15 @@ def _initialize_database_schema(conn: sqlite3.Connection) -> None:
             )
         """)
 
-        # Create indexes for better performance
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alert_id ON abuse_alerts(AlertId)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ip_address ON abuse_alerts(IPAddress)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_created_at ON abuse_alerts(CreatedAt)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sent_status ON abuse_alerts(Sent)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_status ON abuse_alerts(Status)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cache_prefix ON abuse_contacts_cache(ip_prefix)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cache_updated ON abuse_contacts_cache(updated_at)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_outbox_created ON metrics_outbox(created_at)"
-        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_id ON abuse_alerts(AlertId)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ip_address ON abuse_alerts(IPAddress)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON abuse_alerts(CreatedAt)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sent_status ON abuse_alerts(Sent)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON abuse_alerts(Status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cache_prefix ON abuse_contacts_cache(ip_prefix)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cache_updated ON abuse_contacts_cache(updated_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_outbox_created ON metrics_outbox(created_at)")
 
-        # Create trigger for automatic UpdatedAt
         cursor.execute("""
             CREATE TRIGGER IF NOT EXISTS update_abuse_alerts_timestamp
             AFTER UPDATE ON abuse_alerts
@@ -214,12 +199,9 @@ def _initialize_database_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def db_transaction():
-    """
-    Context manager for database write transactions with automatic rollback on error.
-    Use db_read() for read-only operations to avoid unnecessary commits.
+    """Yield a connection for a write transaction; commit on success, roll back on error.
 
-    Yields:
-        Database connection for transaction operations
+    Use db_read() for read-only operations to avoid unnecessary commits.
     """
     conn = get_connection()
     try:
@@ -233,13 +215,7 @@ def db_transaction():
 
 @contextmanager
 def db_read():
-    """
-    Context manager for read-only database operations.
-    Does not commit, avoiding unnecessary WAL writes.
-
-    Yields:
-        Database connection for read operations
-    """
+    """Yield a connection for read-only operations; never commits, avoiding WAL writes."""
     yield get_connection()
 
 
@@ -252,7 +228,6 @@ def init_db() -> None:
     treats any exception as a hard failure (exit code 1), before the run
     state is set and before any report is claimed or sent.
     """
-    # Connection will be initialized on first access
     get_connection()
     print_config_info("Database initialization completed")
 
@@ -263,9 +238,7 @@ def _chunks(values: list[Any], size: int = SQLITE_PARAM_LIMIT):
         yield values[index : index + size]
 
 
-def batch_check_processed_alerts(
-    alert_keys: list[tuple[int, str]]
-) -> set[tuple[int, str]]:
+def batch_check_processed_alerts(alert_keys: list[tuple[int, str]]) -> set[tuple[int, str]]:
     """
     Batch check which (alert, IP) reports must NOT be (re)processed in this run.
 
@@ -273,7 +246,8 @@ def batch_check_processed_alerts(
     (already reported), 'pending' (claimed/in-flight or left over from a crash
     mid-send) or 'unknown_send_state' (reaped stale claim) — never auto-resent,
     to guarantee at-most-once delivery. Rows with Status 'failed' are
-    intentionally excluded so genuine send failures can be retried.
+    intentionally excluded so genuine send failures can be retried. Pairs whose
+    row was compacted by retention cleanup are found in abuse_alert_tombstones.
 
     Args:
         alert_keys: List of (alert_id, ip) pairs to check
@@ -302,10 +276,17 @@ def batch_check_processed_alerts(
             """
             cursor.execute(query, [*params, *HANDLED_STATUSES])
             processed.update((row[0], row[1]) for row in cursor.fetchall())
+            # Tombstones only ever hold handled pairs, so no status filter.
+            cursor.execute(
+                f"""
+                SELECT AlertId, IPAddress FROM abuse_alert_tombstones
+                WHERE (AlertId, IPAddress) IN ({placeholders})
+                """,
+                params,
+            )
+            processed.update((row[0], row[1]) for row in cursor.fetchall())
 
-    print_debug(
-        f"Batch check: {len(processed)} of {len(alert_keys)} reports already handled"
-    )
+    print_debug(f"Batch check: {len(processed)} of {len(alert_keys)} reports already handled")
     return processed
 
 
@@ -314,10 +295,12 @@ def claim_alert_for_send(alert_id: int, ip: str, scenario: str) -> bool:
     Atomically claim an alert for sending.
 
     A single conditional UPSERT either inserts a fresh 'pending' row or promotes
-    a previously 'failed' row back to 'pending'. Rows already in 'sent' or
-    'pending' state are left untouched. The claim succeeds (returns True) only
+    a previously 'failed' row back to 'pending'. Rows already in 'sent',
+    'pending' or 'unknown_send_state' are left untouched. The claim succeeds (returns True) only
     when this call is the one that created or transitioned the row, so two
-    concurrent runs can never both send the same report.
+    concurrent runs can never both send the same report. The same statement
+    refuses a pair that has a tombstone (row expired by retention cleanup), so
+    no claim can slip between a tombstone check and the insert.
 
     Note: a send interrupted after SMTP accepted the mail but before
     finalize_alert() runs leaves the row 'pending'. reap_stale_pending() moves
@@ -331,11 +314,12 @@ def claim_alert_for_send(alert_id: int, ip: str, scenario: str) -> bool:
 
     Returns:
         True if the caller owns the claim and may send; False when the report
-        is already 'sent' or 'pending' and must be skipped.
+        is already handled ('sent', 'pending', 'unknown_send_state') and must
+        be skipped.
 
     Raises:
-        sqlite3.Error / Exception: The claim could not be recorded (DB locked,
-            disk full, ...). Propagated on purpose: a persistence failure must
+        Exception: The claim could not be recorded (typically sqlite3.Error:
+            DB locked, disk full, ...). Propagated on purpose: a persistence failure must
             stay distinguishable from a legitimate "already handled" skip, or
             the run reports success while no report went out.
     """
@@ -348,7 +332,11 @@ def claim_alert_for_send(alert_id: int, ip: str, scenario: str) -> bool:
                 """
                 INSERT INTO abuse_alerts
                     (AlertId, Recipient, IPAddress, Scenario, Sent, Status)
-                VALUES (?, '', ?, ?, 0, 'pending')
+                SELECT ?, '', ?, ?, 0, 'pending'
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM abuse_alert_tombstones
+                    WHERE AlertId = ? AND IPAddress = ?
+                )
                 ON CONFLICT(AlertId, IPAddress) DO UPDATE SET
                     Status = 'pending',
                     Scenario = excluded.Scenario,
@@ -356,7 +344,7 @@ def claim_alert_for_send(alert_id: int, ip: str, scenario: str) -> bool:
                 WHERE abuse_alerts.Status = 'failed'
                 RETURNING AlertId
                 """,
-                (alert_id, ip, scenario),
+                (alert_id, ip, scenario, alert_id, ip),
             )
             return cursor.fetchone() is not None
     except Exception as e:
@@ -373,6 +361,7 @@ def finalize_alert(
     scenario: str,
     sent: bool,
     error_msg: str | None = None,
+    outcome_unknown: bool = False,
 ) -> None:
     """
     Record the outcome of a claimed send (transition out of 'pending').
@@ -384,8 +373,14 @@ def finalize_alert(
         scenario: CrowdSec scenario name
         sent: Whether the email was delivered successfully
         error_msg: Error message if sending failed
+        outcome_unknown: The SMTP outcome is uncertain; store the terminal,
+            never-resent 'unknown_send_state' instead of the retryable 'failed'
+
+    Raises:
+        RuntimeError: If no single 'pending' row matched (missing, already
+            finalized, or not pending).
     """
-    status = "sent" if sent else "failed"
+    status = "sent" if sent else "unknown_send_state" if outcome_unknown else "failed"
     try:
         with db_transaction() as conn:
             cursor = conn.execute(
@@ -465,7 +460,7 @@ def get_cached_abuse_contact(ip_prefix: str) -> tuple[bool, str | None]:
     Get cached abuse contact for an IP prefix.
 
     Args:
-        ip_prefix: IP network prefix (e.g., "192.0.2.0/24")
+        ip_prefix: IP network prefix (e.g., "192.0.2.0"), as built by get_ip_prefix()
 
     Returns:
         Tuple of (cache_hit, abuse_contact). abuse_contact is None for negative cache entries.
@@ -474,18 +469,20 @@ def get_cached_abuse_contact(ip_prefix: str) -> tuple[bool, str | None]:
         with db_read() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT abuse_contact FROM abuse_contacts_cache WHERE ip_prefix = ?",
-                (ip_prefix,),
+                "SELECT abuse_contact, updated_at < datetime('now', ?) FROM abuse_contacts_cache WHERE ip_prefix = ?",
+                (f"-{NEGATIVE_CACHE_TTL_DAYS} days", ip_prefix),
             )
             result = cursor.fetchone()
             if result is None:
                 return False, None
+            # Expire negative entries on read: cleanup does not run with
+            # DB_RETENTION_DAYS=0, which would keep them forever.
+            if result[0] == NEGATIVE_CACHE and result[1]:
+                return False, None
             return True, result[0] if result[0] != NEGATIVE_CACHE else None
 
     except Exception as e:
-        print_database_error(
-            0, f"Failed to get cached abuse contact for {ip_prefix}: {e}"
-        )
+        print_database_error(0, f"Failed to get cached abuse contact for {ip_prefix}: {e}")
         return False, None
 
 
@@ -606,8 +603,7 @@ def prune_metric_outbox(max_rows: int, max_age_days: int) -> int:
     """Drop the oldest spooled points beyond the configured bounds.
 
     A prolonged backend outage must not grow the database without limit. Oldest
-    rows go first: they are the least useful, and discarding them is exactly the
-    outcome this code had before the outbox existed. Either bound is disabled
+    rows go first, as they are the least useful. Either bound is disabled
     with 0.
     """
     dropped = 0
@@ -615,8 +611,7 @@ def prune_metric_outbox(max_rows: int, max_age_days: int) -> int:
         with db_transaction() as conn:
             if max_age_days > 0:
                 cursor = conn.execute(
-                    "DELETE FROM metrics_outbox "
-                    "WHERE created_at < datetime('now', ?)",
+                    "DELETE FROM metrics_outbox WHERE created_at < datetime('now', ?)",
                     (f"-{max_age_days} days",),
                 )
                 dropped += cursor.rowcount or 0
@@ -656,12 +651,7 @@ def get_run_state() -> dict[str, str]:
 
 
 def get_alert_stats() -> dict[str, Any]:
-    """
-    Get statistics about processed alerts.
-
-    Returns:
-        Dictionary with alert statistics
-    """
+    """Return alert counts (total, successful, failed); empty on error."""
     try:
         with db_read() as conn:
             cursor = conn.cursor()
@@ -686,16 +676,23 @@ def get_alert_stats() -> dict[str, Any]:
 def cleanup_old_records(days_to_keep: int) -> tuple[int, int]:
     """Delete records older than days_to_keep and reclaim disk space.
 
-    abuse_alerts rows are removed by CreatedAt; abuse_contacts_cache entries
-    by updated_at (using 2× the retention period so contacts are re-resolved
-    less often than alerts are retired). After any deletion the WAL is
-    truncated with a checkpoint, which must run outside the transaction.
+    Expired abuse_alerts rows are removed by CreatedAt, but never without their
+    proof of delivery: 'sent' and 'unknown_send_state' rows are first compacted
+    into abuse_alert_tombstones (key and status only, kept permanently) in the
+    same transaction as the delete. 'pending' rows are left alone until the
+    reaper has classified them. 'failed' rows are plain deleted: no mail went
+    out, and a fresh claim equals the retry they were eligible for anyway.
+    Positive abuse_contacts_cache entries go by updated_at (using 2x the
+    retention period so contacts are re-resolved less often than alerts are
+    retired), negative entries after NEGATIVE_CACHE_TTL_DAYS. After any
+    deletion a WAL truncate checkpoint is attempted; its failure is ignored.
 
     Args:
         days_to_keep: Delete records older than this many days. 0 = skip.
 
     Returns:
-        Tuple of (alerts_deleted, cache_entries_deleted)
+        Tuple of (alerts_deleted, cache_entries_deleted); alerts_deleted counts
+        rows removed from abuse_alerts, tombstoned ones included.
     """
     if days_to_keep <= 0:
         return 0, 0
@@ -706,9 +703,35 @@ def cleanup_old_records(days_to_keep: int) -> tuple[int, int]:
     try:
         with db_transaction() as conn:
             cursor = conn.cursor()
+            # One cutoff for both statements: a row must not cross the threshold
+            # between the tombstone insert and the delete. The insert comes
+            # first, so the transaction takes the write lock before reading.
+            cutoff = cursor.execute("SELECT datetime('now', ?)", (f"-{days_to_keep} days",)).fetchone()[0]
+            tombstone_placeholders = ",".join("?" for _ in TOMBSTONE_STATUSES)
             cursor.execute(
-                "DELETE FROM abuse_alerts WHERE CreatedAt < datetime('now', ?)",
-                (f"-{days_to_keep} days",),
+                f"""
+                INSERT OR IGNORE INTO abuse_alert_tombstones
+                    (AlertId, IPAddress, Status, HandledAt)
+                SELECT AlertId, IPAddress, Status, UpdatedAt FROM abuse_alerts
+                WHERE CreatedAt < ? AND Status IN ({tombstone_placeholders})
+                """,
+                (cutoff, *TOMBSTONE_STATUSES),
+            )
+            # Delete only rows that are 'failed' or whose tombstone exists now.
+            cursor.execute(
+                """
+                DELETE FROM abuse_alerts
+                WHERE CreatedAt < ?
+                  AND (
+                    Status = 'failed'
+                    OR EXISTS (
+                        SELECT 1 FROM abuse_alert_tombstones t
+                        WHERE t.AlertId = abuse_alerts.AlertId
+                          AND t.IPAddress = abuse_alerts.IPAddress
+                    )
+                  )
+                """,
+                (cutoff,),
             )
             alerts_deleted = cursor.rowcount
             cursor.execute(
@@ -731,10 +754,7 @@ def cleanup_old_records(days_to_keep: int) -> tuple[int, int]:
             )
             cache_deleted = cursor.rowcount
 
-        cleanup_msg = (
-            f"DB cleanup: {alerts_deleted} alert(s), {cache_deleted} cache "
-            f"entry/entries removed"
-        )
+        cleanup_msg = f"DB cleanup: {alerts_deleted} alert(s), {cache_deleted} cache entry/entries removed"
         if alerts_deleted > 0 or cache_deleted > 0:
             # Use WAL checkpoint instead of VACUUM: checkpointing is non-blocking
             # and sufficient to reclaim WAL space. VACUUM requires exclusive access
@@ -767,10 +787,7 @@ def run_db_maintenance() -> None:
         conn.execute("PRAGMA optimize")
         result = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
         if result and result[1] > 0:
-            print_debug(
-                f"DB maintenance: WAL checkpoint ({result[1]} pages written, "
-                f"{result[2]} checkpointed)"
-            )
+            print_debug(f"DB maintenance: WAL checkpoint ({result[1]} pages written, {result[2]} checkpointed)")
     except Exception as e:
         print_database_error(0, f"DB maintenance failed (non-fatal): {e}")
 
@@ -785,4 +802,3 @@ def close_connection() -> None:
         finally:
             delattr(_thread_local, "conn")
         print_debug("Database connection closed")
-

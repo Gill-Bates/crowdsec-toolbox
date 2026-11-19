@@ -21,18 +21,30 @@ There is no export watermark: every run re-sends all events in the
 `EVENTS_SINCE` window, and the backend deduplicates. That only works because
 each line carries a deterministic identity — `alert_id` plus `event_seq`, the
 event's position inside its alert. Both are tags, so they are part of the
-series identity for InfluxDB and usable as QuestDB `DEDUP UPSERT KEYS`.
+series identity for InfluxDB and usable as QuestDB `DEDUP UPSERT KEYS`. The
+host is part of that key as well because one QuestDB event table can receive
+events from several CrowdSec instances.
 """
 
 from datetime import UTC, datetime
 from typing import Any
 
+from .crowdsec import parse_record_id
 from .influxdb import escape_influxdb_string_field, escape_influxdb_value
 from .logger import print_warning
 
 # Columns that identify an event row exactly. Passed to QuestDB's
 # `DEDUP ENABLE UPSERT KEYS`; the designated timestamp must come first.
-DEDUP_KEYS = ("timestamp", "alert_id", "event_seq")
+DEDUP_KEYS = ("timestamp", "host", "alert_id", "event_seq")
+
+# This table gets no downsampling rollup (`ROLLUP = None`, see
+# `app.questdb.RollupSpec`). QuestDB requires the non-aggregate columns of a
+# materialized view to be a subset of the base table's DEDUP keys, and those
+# keys are the per-event identity above — grouping a rollup by them would
+# collapse nothing. The events table therefore keeps full resolution for the
+# whole QUESTDB_TTL window; shorten QUESTDB_TTL or EVENTS_SINCE if that is too
+# much data.
+ROLLUP = None
 
 # Meta keys promoted to tags (SYMBOL columns in QuestDB). Everything CrowdSec
 # also puts into the alert row — ASNNumber, ASNOrg, IsoCode, SourceRange — is
@@ -64,13 +76,14 @@ def _meta_to_dict(event: dict[str, Any]) -> dict[str, str]:
     return meta
 
 
-def _event_timestamp_ns(meta: dict[str, str], fallback: str) -> int:
+def _event_timestamp_ns(meta: dict[str, str], fallback: str) -> int | None:
     """Resolve an event's timestamp in nanoseconds.
 
     Prefers the ISO-8601 `timestamp` meta entry (e.g.
     "2026-09-23T15:56:28+02:00"). The event's own `timestamp` field uses a Go
     format that `fromisoformat` cannot read, so the alert's `start_at` is the
-    next fallback, then the current time.
+    fallback. Returns None when neither parses; the current time is never used
+    because it cannot dedup against earlier runs.
     """
     for candidate in (meta.get("timestamp", ""), fallback):
         value = (candidate or "").strip().replace("Z", "+00:00")
@@ -83,7 +96,7 @@ def _event_timestamp_ns(meta: dict[str, str], fallback: str) -> int:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return int(parsed.timestamp() * 1e9)
-    return int(datetime.now(UTC).timestamp() * 1e9)
+    return None
 
 
 def format_event_line_protocol(
@@ -130,7 +143,7 @@ def build_event_lines(
     measurement: str,
     *,
     host: str,
-) -> list[str]:
+) -> tuple[list[str], int]:
     """Turn every event of every alert into line protocol.
 
     All alerts in the fetched window are emitted on every run; repeated rows
@@ -144,26 +157,47 @@ def build_event_lines(
         host: Source host tag
 
     Returns:
-        Line protocol lines, one per event.
+        (lines, skipped): one line per event, and the number of records left
+        out: events without a usable timestamp and alerts with a missing or
+        invalid id (each logged). A non-zero count makes the run fail.
     """
     lines: list[str] = []
     skipped = 0
 
     for alert in alerts:
-        try:
-            alert_id = int(alert.get("id", 0))
-        except (TypeError, ValueError):
+        alert_id = parse_record_id(alert.get("id")) if isinstance(alert, dict) else None
+        if alert_id is None:
+            raw = alert.get("id") if isinstance(alert, dict) else alert
+            print_warning(f"Skipping alert with a missing or invalid id: {raw!r}")
             skipped += 1
             continue
 
-        scenario = (alert.get("scenario") or "").split("/")[-1]
+        raw_scenario = alert.get("scenario")
+        if raw_scenario is not None and not isinstance(raw_scenario, str):
+            print_warning(f"Skipping alert {alert_id} with a non-text scenario")
+            skipped += 1
+            continue
+        scenario = (raw_scenario or "").split("/")[-1]
         fallback_ts = str(alert.get("start_at") or "")
-        source_ip = str((alert.get("source") or {}).get("ip", ""))
+        source = alert.get("source")
+        source_ip = str(source.get("ip") or "") if isinstance(source, dict) else ""
+        alert_events = alert.get("events") or []
+        if not isinstance(alert_events, list):
+            print_warning(f"Skipping alert {alert_id} with malformed event details")
+            skipped += 1
+            continue
 
-        for seq, event in enumerate(alert.get("events") or []):
+        for seq, event in enumerate(alert_events):
             if not isinstance(event, dict):
+                print_warning(f"Skipping malformed event {seq} of alert {alert_id}")
+                skipped += 1
                 continue
             meta = _meta_to_dict(event)
+            timestamp_ns = _event_timestamp_ns(meta, fallback_ts)
+            if timestamp_ns is None:
+                print_warning(f"Skipping event {seq} of alert {alert_id}: no parseable timestamp")
+                skipped += 1
+                continue
             lines.append(
                 format_event_line_protocol(
                     measurement,
@@ -173,11 +207,8 @@ def build_event_lines(
                     scenario=scenario,
                     ip=meta.get("source_ip", "") or source_ip,
                     meta=meta,
-                    timestamp_ns=_event_timestamp_ns(meta, fallback_ts),
+                    timestamp_ns=timestamp_ns,
                 )
             )
 
-    if skipped:
-        print_warning(f"Skipped {skipped} alert(s) with a non-numeric id")
-
-    return lines
+    return lines, skipped

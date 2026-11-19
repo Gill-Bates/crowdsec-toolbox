@@ -39,6 +39,7 @@ _log = logging.getLogger(__name__)
 try:
     import geoip2.database
     import geoip2.errors
+
     _HAS_GEOIP = True
 except ImportError:
     _log.warning("geoip2 package not installed — GeoIP lookups disabled")
@@ -47,32 +48,32 @@ except ImportError:
 
 try:
     import maxminddb
+
     _HAS_MAXMINDDB = True
 except ImportError:
     _HAS_MAXMINDDB = False
     maxminddb = None  # type: ignore[assignment]
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 # P3TERX mirror — updated regularly, no MaxMind license key required
 CITY_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
-ASN_URL  = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb"
+ASN_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb"
 
-_MIN_CITY_SIZE       = 10_000_000   # ~60 MB in production
-_MIN_ASN_SIZE        =  1_000_000   # ~8 MB in production
-_MAX_DOWNLOAD_BYTES  = 200_000_000
-_DOWNLOAD_TIMEOUT_S  = 120.0
-_CHECK_INTERVAL_H    = 12
-_STAMP_FILE          = ".geoip_last_check"
-_LOCK_FILE           = ".geoip-update.lock"
-_CACHE_SIZE          = 4096
+_MIN_CITY_SIZE = 10_000_000  # ~60 MB in production
+_MIN_ASN_SIZE = 1_000_000  # ~8 MB in production
+_MAX_DOWNLOAD_BYTES = 200_000_000
+_DOWNLOAD_TIMEOUT_S = 120.0
+_CHECK_INTERVAL_H = 12
+_STAMP_FILE = ".geoip_last_check"
+_LOCK_FILE = ".geoip-update.lock"
+_CACHE_SIZE = 4096
 
-_ALLOWED_HOSTS = frozenset({
-    "github.com",
-    "raw.githubusercontent.com",
-    "objects.githubusercontent.com",
-})
+_ALLOWED_HOSTS = frozenset(
+    {
+        "github.com",
+        "raw.githubusercontent.com",
+        "objects.githubusercontent.com",
+    }
+)
 _DOWNLOAD_LOCK = RLock()
 
 
@@ -136,12 +137,10 @@ class _ResolvedHTTPSConnection(http.client.HTTPSConnection):
 
 _SPECS: dict[str, _Spec] = {
     "city": _Spec("City", "GeoLite2-City.mmdb", CITY_URL, _MIN_CITY_SIZE, "City"),
-    "asn":  _Spec("ASN",  "GeoLite2-ASN.mmdb",  ASN_URL,  _MIN_ASN_SIZE,  "ASN"),
+    "asn": _Spec("ASN", "GeoLite2-ASN.mmdb", ASN_URL, _MIN_ASN_SIZE, "ASN"),
 }
 
-# ---------------------------------------------------------------------------
-# Public return type
-# ---------------------------------------------------------------------------
+
 class GeoInfo(TypedDict, total=False):
     city: str | None
     country: str | None
@@ -149,9 +148,6 @@ class GeoInfo(TypedDict, total=False):
     provider: str | None
 
 
-# ---------------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------------
 def _geoip_dir() -> Path:
     """Return the GeoLite2 working directory, creating it if needed.
 
@@ -170,9 +166,7 @@ def _is_public(ip: str) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
 # Reader manager (lazy-init, thread-safe)
-# ---------------------------------------------------------------------------
 class _Reader:
     __slots__ = ("_lock", "_r", "_spec", "_warned")
 
@@ -214,13 +208,10 @@ class _Reader:
 
 
 _city_reader = _Reader(_SPECS["city"])
-_asn_reader  = _Reader(_SPECS["asn"])
-_cache_gen   = 0  # incremented on DB update to invalidate LRU caches
+_asn_reader = _Reader(_SPECS["asn"])
+_cache_gen = 0  # incremented on DB update to invalidate LRU caches
 
 
-# ---------------------------------------------------------------------------
-# Verification
-# ---------------------------------------------------------------------------
 def _verify(path: Path, spec: _Spec) -> bool:
     if not path.exists():
         return False
@@ -292,10 +283,7 @@ def _open_resolved_url(
 
         addresses = resolve_hostname(host, nameservers)
         if not addresses:
-            raise URLError(
-                f"Could not resolve {host!r} via selected DNS resolvers: "
-                f"{', '.join(nameservers)}"
-            )
+            raise URLError(f"Could not resolve {host!r} via selected DNS resolvers: {', '.join(nameservers)}")
 
         port = parsed.port or 443
         request_path = _build_request_path(parsed)
@@ -358,9 +346,7 @@ def _open_resolved_url(
     raise HTTPError(current_url, 310, "Too many redirects", None, None)
 
 
-# ---------------------------------------------------------------------------
 # Download (atomic write, size-capped, redirect-validated)
-# ---------------------------------------------------------------------------
 class _TransientDownloadError(RuntimeError):
     """A GeoIP download failed for a reason worth retrying (network/5xx)."""
 
@@ -375,7 +361,7 @@ def _download(spec: _Spec, *, force: bool = False) -> bool:
 
     A cold start with no cached DB is fatal for the whole run, so a single DNS
     or connect blip must not decide the outcome. Non-transient results (304,
-    4xx, checksum mismatch) are returned as-is and never repeated.
+    4xx, failed verification) are returned as-is and never repeated.
     """
     delay = 1.0
     for attempt in range(1, _DOWNLOAD_MAX_ATTEMPTS + 1):
@@ -385,12 +371,18 @@ def _download(spec: _Spec, *, force: bool = False) -> bool:
             if attempt == _DOWNLOAD_MAX_ATTEMPTS:
                 _log.error(
                     "GeoIP %s download failed after %d attempts: %s",
-                    spec.name, _DOWNLOAD_MAX_ATTEMPTS, e,
+                    spec.name,
+                    _DOWNLOAD_MAX_ATTEMPTS,
+                    e,
                 )
                 return False
             _log.warning(
                 "GeoIP %s download failed (attempt %d/%d), retrying in %.0fs: %s",
-                spec.name, attempt, _DOWNLOAD_MAX_ATTEMPTS, delay, e,
+                spec.name,
+                attempt,
+                _DOWNLOAD_MAX_ATTEMPTS,
+                delay,
+                e,
             )
             time.sleep(delay)
             delay *= 2
@@ -455,7 +447,7 @@ def _download_once(spec: _Spec, *, force: bool = False) -> bool:
             return False
 
         tmp.replace(target)
-        os.chmod(target, 0o644)
+        target.chmod(0o644)
         _log.info("GeoIP %s updated (%d bytes)", spec.name, downloaded)
         return True
 
@@ -494,9 +486,7 @@ class GeoIPUnavailableError(RuntimeError):
     """
 
 
-# ---------------------------------------------------------------------------
 # Public: ensure databases are present and reasonably fresh
-# ---------------------------------------------------------------------------
 def ensure_geoip_databases(*, force: bool = False) -> dict[str, bool]:
     """Download/verify both GeoLite2 DBs. Safe to call at every startup.
 
@@ -527,20 +517,17 @@ def ensure_geoip_databases(*, force: bool = False) -> dict[str, bool]:
                     age_h = (time.time() - float(stamp.read_text().strip())) / 3600
                     if age_h < _CHECK_INTERVAL_H:
                         c_ok = _verify(gdir / _SPECS["city"].filename, _SPECS["city"])
-                        a_ok = _verify(gdir / _SPECS["asn"].filename,  _SPECS["asn"])
+                        a_ok = _verify(gdir / _SPECS["asn"].filename, _SPECS["asn"])
                         if c_ok and a_ok:
                             _log.debug("GeoIP DBs fresh (%.1fh old) — skipping remote check", age_h)
                             return {"city": True, "asn": True}
                 except (OSError, ValueError) as exc:
                     _log.debug("GeoIP check stamp could not be read: %s", exc)
 
-            had_before = {
-                name: _verify(gdir / spec.filename, spec)
-                for name, spec in _SPECS.items()
-            }
+            had_before = {name: _verify(gdir / spec.filename, spec) for name, spec in _SPECS.items()}
 
             c_new = _download(_SPECS["city"], force=force)
-            a_new = _download(_SPECS["asn"],  force=force)
+            a_new = _download(_SPECS["asn"], force=force)
 
             if c_new or a_new:
                 _city_reader.close()
@@ -548,13 +535,13 @@ def ensure_geoip_databases(*, force: bool = False) -> dict[str, bool]:
                 _cache_gen += 1
                 _cached_city.cache_clear()
                 _cached_asn.cache_clear()
-                # Provider names come from the same ASN MMDB and would other-
-                # wise keep serving the pre-update database for this process.
+                # Provider names come from the same ASN MMDB and would otherwise
+                # keep serving the pre-update database for this process.
                 _cached_asn_providers.cache_clear()
 
             result = {
                 "city": _verify(gdir / _SPECS["city"].filename, _SPECS["city"]),
-                "asn":  _verify(gdir / _SPECS["asn"].filename,  _SPECS["asn"]),
+                "asn": _verify(gdir / _SPECS["asn"].filename, _SPECS["asn"]),
             }
 
             if result["city"] and result["asn"]:
@@ -565,13 +552,10 @@ def ensure_geoip_databases(*, force: bool = False) -> dict[str, bool]:
                 if not result["asn"]:
                     _log.warning("GeoIP ASN DB unavailable — provider enrichment disabled")
 
-            never_available = [
-                name for name, ok in result.items() if not ok and not had_before[name]
-            ]
+            never_available = [name for name, ok in result.items() if not ok and not had_before[name]]
             if never_available:
                 raise GeoIPUnavailableError(
-                    "GeoIP database(s) could not be downloaded on first startup: "
-                    f"{', '.join(sorted(never_available))}"
+                    f"GeoIP database(s) could not be downloaded on first startup: {', '.join(sorted(never_available))}"
                 )
 
             return result
@@ -582,9 +566,6 @@ def ensure_geoip_databases(*, force: bool = False) -> dict[str, bool]:
             os.close(lock_fd)
 
 
-# ---------------------------------------------------------------------------
-# Cached lookups
-# ---------------------------------------------------------------------------
 @functools.lru_cache(maxsize=_CACHE_SIZE)
 def _cached_city(ip: str, _gen: int) -> tuple[str | None, str | None]:
     reader = _city_reader.get()

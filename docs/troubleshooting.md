@@ -8,30 +8,44 @@ Symptom-driven fixes for both tools. For what "healthy" means, see
 ### "no settings available"
 
 ```
-[entrypoint] ERROR: no settings available.
+2026-11-19 12:13:50 UTC | ERROR    | entrypoint | no settings available.
 ```
 
 The abuse reporter's entrypoint checks `SMTP_SERVER` and refuses to start without
 it. Provide `./settings.env` via Compose's `env_file`, or set the required
 variables directly.
 
-### "RUN_JITTER must be a non-negative integer"
+### "RUN_INTERVAL must be a positive integer"
 
-The entrypoint validates `RUN_INTERVAL`, `RUN_EVERY_HOUR`, `RUN_JITTER`,
+The entrypoint validates `RUN_INTERVAL`, `RUN_EVERY_HOUR`,
 `METRICS_INTERVAL` and `API_HEARTBEAT_INTERVAL` as integers before any arithmetic
 and exits non-zero on bad input. Check for a stray unit suffix — `6h` is not
-valid, `6` is.
+valid, `6` is. Values above the documented maximum (8760 hours, 31536000 seconds)
+are rejected with `must be at most N`.
 
 ### Permission errors on the data directory
 
 ```
-[entrypoint] WARNING: chown -R on /data had permission errors
+2026-11-19 12:13:50 UTC | WARNING  | entrypoint | chown -R on /data had permission errors
 ```
 
 A warning, not a failure. The entrypoint chowns the top-level data directory
 unconditionally and descends best-effort, because a subdirectory with restrictive
 host permissions is not readable even by root under `-R`. If the application then
 cannot write, fix the host ownership of `docker/data/` to uid/gid `10001`.
+
+### The container keeps restarting and the log names a loop
+
+```
+2026-11-19 12:13:50 UTC | ERROR    | entrypoint | LAPI heartbeat loop (pid 23) exited unexpectedly (rc=137) — stopping container
+```
+
+The abuse reporter treats the LAPI heartbeat loop and, with a metrics backend, the
+`metrics` loop as required. When one of these processes dies (for example killed
+by the OOM killer), the entrypoint stops all jobs and exits `1`, and
+`restart: unless-stopped` starts the container again. Check the host for memory
+pressure or a manual `kill`. An unreachable LAPI, SMTP server or metrics backend
+does not cause this; it only logs a warning or turns the container `unhealthy`.
 
 ### The container exits immediately
 
@@ -61,8 +75,9 @@ LF or NUL is rejected outright.
 ### TLS verification fails
 
 `CROWDSEC_LAPI_VERIFY_TLS` controls verification. The abuse reporter's template
-ships `false` for a plain-HTTP LAPI on a trusted network; the exporter defaults to
-`true`.
+ships `true`. The example LAPI URL uses HTTP and is intended for a trusted private
+network; use HTTPS and keep verification enabled when traffic crosses a network
+you do not fully trust. The exporter also defaults to `true`.
 
 ## DNS and abuse contacts
 
@@ -103,6 +118,14 @@ Expected after a crash. A `pending` row left by a crash is reaped after
     The crash may have happened after SMTP accepted the mail. Retrying would send
     a second accusation for the same ban.
 
+### `unknown_send_state` without a crash
+
+A report also ends in `unknown_send_state` when the SMTP connection is lost after
+the transfer began: the server may already have accepted the mail,
+so the report is recorded as such and **never** re-sent. This is not a bug to fix.
+If all primary recipients are refused, the report stays `failed` and is retried in
+the next run.
+
 ### SMTP authentication fails
 
 Authentication requires TLS. Set both `SMTP_USERNAME` and `SMTP_PASSWORD`, and
@@ -110,10 +133,12 @@ leave `SMTP_USE_TLS=true`.
 
 ### Mails arrive from the wrong identity
 
-!!! warning "Set `HOSTNAME_OVERRIDE` in a container"
-    Left empty, autodetection falls back to the private container IP unless
-    `PUBLIC_IP_DETECTION` resolves a WAN address. `HOSTNAME_OVERRIDE` is the
-    supported way to keep the reported identity stable.
+!!! tip "Prefer a fixed `HOSTNAME_OVERRIDE`"
+    Automatic detection asks the external services first and also works inside
+    a container while they are reachable. Only when that fails or
+    `PUBLIC_IP_DETECTION=false`, it falls back to a local address, which can be a
+    private container IP. `HOSTNAME_OVERRIDE` is the reliable way to keep the
+    reported identity stable.
 
 ## Metrics backends
 
@@ -132,7 +157,14 @@ since it re-reads the full decision list every time.
 
 ### The abuse reporter exits 1 with a metrics error
 
-The spool has reached 90% of `METRICS_OUTBOX_MAX_ROWS`, so the next prune would
+Check the log for the cause. If it says `QuestDB dedup ... could not be verified`,
+nothing was written and the outbox keeps every point: fix the table (WAL table,
+the abuse-report upsert keys; see
+[Metrics Backends](reference/metrics-backends.md#questdb)) and the next run sends
+the outbox. A `QuestDB TTL ... could not be applied` means the points were
+delivered and are not resent.
+
+Otherwise the spool has reached 90% of `METRICS_OUTBOX_MAX_ROWS`, so the next prune would
 start discarding points. Fix the backend connectivity; the spool drains by itself
 once the backend answers. Raising the bound only buys time.
 
@@ -143,13 +175,26 @@ sqlite3 docker/data/abuse_alerts.db \
   "SELECT COUNT(*), MIN(created_at), MAX(created_at) FROM metrics_outbox;"
 ```
 
-### The exporter hangs or aborts under cron
+### The InfluxDB exporter warns about its connection
 
-!!! warning "The external TLS check needs a terminal"
-    With `METRICS_BACKEND=influxdb2` and `INFLUXDB_USE_HTTPS=true`, each run checks
-    TLS against `www.howsmyssl.com`. On failure it asks interactively whether to
-    continue; without a terminal it aborts the run. The check does not run for
-    `questdb`.
+Plain HTTP (`INFLUXDB_USE_HTTPS=false`) and `INFLUXDB_VALIDATE_CERTIFICATE=false`
+only log a warning; the run continues. The exporter has no TLS self-test and no
+prompt, so it behaves the same under cron. A server that rejects the TLS handshake
+fails the write and the run exits `1`.
+
+### Unsupported QuestDB version
+
+```text
+2026-11-19 12:24:36 UTC | ERROR    | crowdsec_metrics | Unsupported QuestDB version at http://localhost:9000: found 9.3.4, required 10.x; nothing was written
+```
+
+Both tools support **QuestDB 10.x only** and check the server with
+`SELECT build()` before the first DDL or write. The run exits `1` and nothing is
+written, also when the version cannot be read (server unreachable, error
+response, unexpected answer; `found unknown`). Upgrade the server to 10.x; the
+next run passes. The reporter keeps every point in its SQLite outbox meanwhile.
+Nothing is migrated: data stored by an older server stays with that server. The
+check is skipped for `METRICS_BACKEND=influxdb2` and `none`.
 
 ### QuestDB startup abort
 
@@ -160,10 +205,13 @@ scheme comes from `QUESTDB_USE_HTTPS` and the port from `QUESTDB_PORT`.
 
 ### Duplicate rows accumulate in QuestDB
 
-Deduplication is declared after each write with
-`ALTER TABLE ... DEDUP ENABLE UPSERT KEYS(...)`, and a failure there only logs a
-**warning** — the rows are stored either way. Check the logs for that warning and
-confirm QuestDB 7.3+ with a WAL table.
+The exporter and the abuse reporter verify deduplication before the first write
+of each table and write nothing when they cannot (`QuestDB dedup ... could not be verified`, exit
+`1`). Duplicates therefore come from rows stored *before* dedup was enabled:
+enabling it does not remove them. The exporter logs a warning when it enables
+dedup on an existing table. See the
+[cleanup runbook](reference/metrics-backends.md#removing-duplicates-stored-before-dedup-was-enabled).
+Requirement: a WAL table on QuestDB 10.x. Data stored by an older server is not migrated.
 
 ### Two alerts collapsed into one row
 
@@ -212,14 +260,8 @@ after the GeoIP step, so the database is present by then and `unknown` means the
 ASN genuinely is not in it.
 
 If *every* entry reads `unknown`, the ASN database is not being read at all —
-check that the GeoIP step reported `✓ GeoIP databases ready (City + ASN)` and that
+check that the GeoIP step reported `GeoIP databases ready (City + ASN)` and that
 `GEOIP_DIR` points where the entrypoint seeded the baseline.
-
-!!! note "This used to be an ordering bug"
-    Earlier versions printed the table with the rest of the startup
-    configuration, before the databases were ensured, so a cold start listed every
-    entry as `unknown`. Guarded by
-    `WhitelistAsnTableOrderTest` in `tests/test_main.py`.
 
 ### Enrichment is empty on a fresh container
 
@@ -247,13 +289,11 @@ directory is leftover and can be deleted.
 
 pip 25.1 or newer is required for PEP 735 groups. Upgrade pip inside the venv.
 
-### One pytest test always fails locally
-
-`test_entrypoint_rejects_non_integer_run_jitter` fails on any host without `gosu`
-and the `app` user. The baseline is 124 passed, 1 failed; any *other* failure is a
-real regression. See [Testing](development/testing.md).
-
-### `mkdocs build --strict` fails
+### `zensical build --strict` fails
 
 Usually a broken internal link, or a new page missing from the `nav` in
-`docs/mkdocs.yml`.
+`zensical.toml`. Run the clean strict build from the repository root:
+
+```bash
+zensical build --config-file zensical.toml --strict --clean
+```

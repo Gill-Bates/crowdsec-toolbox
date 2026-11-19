@@ -30,200 +30,6 @@
     "cursorSync": "Crosshair",
     "editable": true,
     "elements": {
-      "panel-18": {
-        "kind": "Panel",
-        "spec": {
-          "id": 18,
-          "title": "Top Endpoints | Path / Verb / Status",
-          "description": "",
-          "links": [],
-          "data": {
-            "kind": "QueryGroup",
-            "spec": {
-              "queries": [
-                {
-                  "kind": "PanelQuery",
-                  "spec": {
-                    "query": {
-                      "kind": "DataQuery",
-                      "group": "questdb-questdb-datasource",
-                      "version": "v0",
-                      "datasource": {
-                        "name": "${datasource}"
-                      },
-                      "spec": {
-                        "format": 1,
-                        "queryType": "sql",
-                        "rawSql": "SELECT coalesce(nullif(http_path, ''), '(unknown)') AS \"Path\", coalesce(nullif(http_verb, ''), '(unknown)') AS \"Verb\", coalesce(nullif(http_status, ''), '(unknown)') AS \"Status\", count() AS \"Requests\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\", count_distinct(nullif(target_fqdn, '')) AS \"Targets\"\nFROM \"${table}_events\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\nGROUP BY http_path, http_verb, http_status\nORDER BY \"Requests\" DESC\nLIMIT 100;"
-                      }
-                    },
-                    "refId": "A",
-                    "hidden": false
-                  }
-                }
-              ],
-              "transformations": [],
-              "queryOptions": {
-                "maxDataPoints": 400,
-                "interval": "1m"
-              }
-            }
-          },
-          "vizConfig": {
-            "kind": "VizConfig",
-            "group": "table",
-            "version": "13.0.2",
-            "spec": {
-              "options": {
-                "cellHeight": "sm",
-                "enablePagination": true,
-                "showHeader": true
-              },
-              "fieldConfig": {
-                "defaults": {
-                  "unit": "short",
-                  "decimals": 0,
-                  "min": 0,
-                  "thresholds": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "value": 0,
-                        "color": "blue"
-                      }
-                    ]
-                  },
-                  "color": {
-                    "mode": "palette-classic"
-                  },
-                  "noValue": "—",
-                  "custom": {
-                    "align": "auto",
-                    "cellOptions": {
-                      "type": "auto"
-                    },
-                    "footer": {
-                      "reducers": []
-                    },
-                    "inspect": false
-                  }
-                },
-                "overrides": [
-                  {
-                    "matcher": {
-                      "id": "byName",
-                      "options": "Path"
-                    },
-                    "properties": [
-                      {
-                        "id": "custom.width",
-                        "value": 420
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          }
-        }
-      },
-      "panel-19": {
-        "kind": "Panel",
-        "spec": {
-          "id": 19,
-          "title": "Top Target FQDNs | Requests",
-          "description": "",
-          "links": [],
-          "data": {
-            "kind": "QueryGroup",
-            "spec": {
-              "queries": [
-                {
-                  "kind": "PanelQuery",
-                  "spec": {
-                    "query": {
-                      "kind": "DataQuery",
-                      "group": "questdb-questdb-datasource",
-                      "version": "v0",
-                      "datasource": {
-                        "name": "${datasource}"
-                      },
-                      "spec": {
-                        "format": 1,
-                        "queryType": "sql",
-                        "rawSql": "SELECT coalesce(nullif(target_fqdn, ''), '(unknown)') AS \"Target FQDN\", count() AS \"Requests\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\", count_distinct(nullif(http_path, '')) AS \"Distinct Paths\", count_distinct(nullif(scenario, '')) AS \"Scenarios\"\nFROM \"${table}_events\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\nGROUP BY target_fqdn\nORDER BY \"Requests\" DESC\nLIMIT 50;"
-                      }
-                    },
-                    "refId": "A",
-                    "hidden": false
-                  }
-                }
-              ],
-              "transformations": [],
-              "queryOptions": {
-                "maxDataPoints": 400,
-                "interval": "1m"
-              }
-            }
-          },
-          "vizConfig": {
-            "kind": "VizConfig",
-            "group": "table",
-            "version": "13.0.2",
-            "spec": {
-              "options": {
-                "cellHeight": "sm",
-                "enablePagination": true,
-                "showHeader": true
-              },
-              "fieldConfig": {
-                "defaults": {
-                  "unit": "short",
-                  "decimals": 0,
-                  "min": 0,
-                  "thresholds": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "value": 0,
-                        "color": "blue"
-                      }
-                    ]
-                  },
-                  "color": {
-                    "mode": "palette-classic"
-                  },
-                  "noValue": "—",
-                  "custom": {
-                    "align": "auto",
-                    "cellOptions": {
-                      "type": "auto"
-                    },
-                    "footer": {
-                      "reducers": []
-                    },
-                    "inspect": false
-                  }
-                },
-                "overrides": [
-                  {
-                    "matcher": {
-                      "id": "byName",
-                      "options": "Target FQDN"
-                    },
-                    "properties": [
-                      {
-                        "id": "custom.width",
-                        "value": 300
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          }
-        }
-      },
       "panel-10": {
         "kind": "Panel",
         "spec": {
@@ -403,7 +209,7 @@
                       "spec": {
                         "format": 1,
                         "queryType": "sql",
-                        "rawSql": "WITH country_counts AS (\n    SELECT\n        coalesce(nullif(country, ''), '(unknown)') AS country,\n        count() AS alerts\n    FROM \"${table}\"\n    WHERE $__timeFilter(timestamp)\n      AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n      AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n      AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\n    GROUP BY country\n),\nranked AS (\n    SELECT\n        country,\n        alerts,\n        row_number() OVER (ORDER BY alerts DESC) AS rn\n    FROM country_counts\n),\ngrouped AS (\n    SELECT\n        CASE\n            WHEN rn <= 5 THEN country\n            ELSE 'Other'\n        END AS country,\n        sum(alerts) AS alerts\n    FROM ranked\n    GROUP BY\n        CASE\n            WHEN rn <= 5 THEN country\n            ELSE 'Other'\n        END\n)\nSELECT\n    CASE\n        WHEN country = 'Other' THEN 'Other'\n        WHEN country ~ '^[A-Za-z]{2}$'\n             AND upper(country) NOT IN ('AP', 'ZZ')\n        THEN concat(\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 1, 1)\n                ) - 1,\n                2\n            ),\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 2, 1)\n                ) - 1,\n                2\n            )\n        )\n        ELSE '🌐'\n    END AS \"Country\",\n    alerts AS \"Alerts\"\nFROM grouped\nORDER BY \"Alerts\" DESC;",
+                        "rawSql": "WITH country_counts AS (\n    SELECT\n        coalesce(nullif(country, ''), '(unknown)') AS country,\n        count() AS alerts\n    FROM \"${table}\"\n    WHERE $__timeFilter(timestamp)\n      AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n      AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n      AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\n    GROUP BY country\n),\nranked AS (\n    SELECT\n        country,\n        alerts,\n        row_number() OVER (ORDER BY alerts DESC) AS rn\n    FROM country_counts\n),\ngrouped AS (\n    SELECT\n        CASE\n            WHEN rn <= 10 THEN country\n            ELSE 'Other'\n        END AS country,\n        sum(alerts) AS alerts\n    FROM ranked\n    GROUP BY\n        CASE\n            WHEN rn <= 10 THEN country\n            ELSE 'Other'\n        END\n)\nSELECT\n    CASE\n        WHEN country = 'Other' THEN 'Other'\n        WHEN country ~ '^[A-Za-z]{2}$'\n             AND upper(country) NOT IN ('AP', 'ZZ')\n        THEN concat(\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 1, 1)\n                ) - 1,\n                2\n            ),\n            substring(\n                '🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰🇱🇲🇳🇴🇵🇶🇷🇸🇹🇺🇻🇼🇽🇾🇿',\n                2 * strpos(\n                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\n                    substring(upper(country), 2, 1)\n                ) - 1,\n                2\n            )\n        )\n        ELSE '🌐'\n    END AS \"Country\",\n    alerts AS \"Alerts\"\nFROM grouped\nORDER BY \"Alerts\" DESC;",
                         "selectedFormat": 2
                       }
                     },
@@ -494,7 +300,7 @@
                       "spec": {
                         "format": 1,
                         "queryType": "sql",
-                        "rawSql": "SELECT coalesce(nullif(as_name, ''), '(unknown)') AS \"Provider\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY as_name\nORDER BY \"Alerts\" DESC\nLIMIT 10;",
+                        "rawSql": "SELECT concat(coalesce(nullif(as_name, ''), '(unknown)'), ' (AS', coalesce(nullif(as_number, ''), 'unknown'), ')') AS \"Provider / ASN\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY as_name, as_number\nORDER BY \"Alerts\" DESC\nLIMIT 10;",
                         "selectedFormat": 2
                       }
                     },
@@ -517,7 +323,7 @@
             "spec": {
               "options": {
                 "orientation": "horizontal",
-                "xField": "Provider",
+                "xField": "Provider / ASN",
                 "showValue": "always",
                 "stacking": "none",
                 "groupWidth": 0.7,
@@ -842,7 +648,7 @@
         "spec": {
           "id": 21,
           "title": "Scenarios by Host",
-          "description": "Overview for the Scenarios per Host table below: alert share per scenario, stacked by host.",
+          "description": "QuestDB filters and aggregates the selected host/scenario rows. Grafana only pivots the returned matrix into host rows and scenario columns.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -861,7 +667,7 @@
                       "spec": {
                         "format": 1,
                         "queryType": "sql",
-                        "rawSql": "SELECT coalesce(nullif(host, ''), '(unknown)') AS \"Host\", coalesce(nullif(scenario, ''), '(unknown)') AS \"Scenario\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY host, scenario\nORDER BY \"Alerts\" DESC\nLIMIT 200;"
+                        "rawSql": "SELECT coalesce(nullif(host, ''), '(unknown)') AS \"Host\", coalesce(nullif(scenario, ''), '(unknown)') AS \"Scenario\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY host, scenario\nORDER BY \"Alerts\" DESC;"
                       }
                     },
                     "refId": "A",
@@ -871,8 +677,12 @@
               ],
               "transformations": [
                 {
-                  "id": "prepareTimeSeries",
-                  "options": {}
+                  "id": "groupingToMatrix",
+                  "options": {
+                    "columnField": "Scenario",
+                    "rowField": "Host",
+                    "valueField": "Alerts"
+                  }
                 }
               ],
               "queryOptions": {
@@ -1066,7 +876,7 @@
                       "spec": {
                         "format": 1,
                         "queryType": "sql",
-                        "rawSql": "SELECT coalesce(nullif(as_name, ''), '(unknown)') AS \"Provider\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY as_name\nORDER BY \"Alerts\" DESC\nLIMIT 15;"
+                        "rawSql": "SELECT concat(coalesce(nullif(as_name, ''), '(unknown)'), ' (AS', coalesce(nullif(as_number, ''), 'unknown'), ')') AS \"Provider / ASN\", count() AS \"Alerts\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring})\nGROUP BY as_name, as_number\nORDER BY \"Alerts\" DESC\nLIMIT 15;"
                       }
                     },
                     "refId": "A",
@@ -1088,7 +898,7 @@
             "spec": {
               "options": {
                 "orientation": "horizontal",
-                "xField": "Provider",
+                "xField": "Provider / ASN",
                 "showValue": "always",
                 "stacking": "none",
                 "groupWidth": 0.7,
@@ -1929,8 +1739,8 @@
         "kind": "Panel",
         "spec": {
           "id": 6,
-          "title": "Active Scenarios",
-          "description": "",
+          "title": "Observed Scenarios",
+          "description": "Distinct scenarios observed in alert records during the selected time range.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -2344,38 +2154,96 @@
             }
           }
         }
+      },
+      "panel-23": {
+        "kind": "Panel",
+        "spec": {
+          "id": 23,
+          "title": "QuestDB Retention and Downsampling",
+          "description": "Exporter-maintained QuestDB state for the selected alert table. Dashboard alert panels query the raw table, not the rollup view. When the selected range exceeds Raw Window, the raw panels show only data retained in that table. A raw_days value of 0 means no TTL is configured.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT profile AS \"Profile\", raw_days AS \"Raw Window (days)\", rollup_interval AS \"Rollup Interval\", rollup_view AS \"Rollup View\", total_ttl AS \"Total Retention\"\nFROM \"_crowdsec_downsampling\"\nWHERE table_name = '${table}'\nLATEST ON timestamp PARTITION BY table_name;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
       }
     },
     "layout": {
       "kind": "GridLayout",
       "spec": {
         "items": [
-          {
-            "kind": "GridLayoutItem",
-            "spec": {
-              "x": 0,
-              "y": 79,
-              "width": 14,
-              "height": 9,
-              "element": {
-                "kind": "ElementReference",
-                "name": "panel-18"
-              }
-            }
-          },
-          {
-            "kind": "GridLayoutItem",
-            "spec": {
-              "x": 14,
-              "y": 79,
-              "width": 10,
-              "height": 9,
-              "element": {
-                "kind": "ElementReference",
-                "name": "panel-19"
-              }
-            }
-          },
           {
             "kind": "GridLayoutItem",
             "spec": {
@@ -2622,6 +2490,19 @@
                 "name": "panel-17"
               }
             }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 79,
+              "width": 24,
+              "height": 5,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-23"
+              }
+            }
           }
         ]
       }
@@ -2677,11 +2558,11 @@
         "spec": {
           "name": "table",
           "current": {
-            "text": "",
-            "value": ""
+            "text": "crowdsec",
+            "value": "crowdsec"
           },
           "label": "Table",
-          "hide": "hideVariable",
+          "hide": "dontHide",
           "refresh": "onDashboardLoad",
           "skipUrlSync": false,
           "query": {
@@ -2694,13 +2575,13 @@
             "spec": {
               "format": 1,
               "queryType": "sql",
-              "rawSql": "SELECT table_name FROM tables() WHERE NOT table_name ~ '_events$' ORDER BY table_name;"
+              "rawSql": "SELECT table_name FROM tables() WHERE NOT table_name ~ '_events$' AND NOT table_name ~ '_rollup_[^_]+_v[0-9]+$' AND NOT table_name ~ '^_' ORDER BY table_name;"
             }
           },
           "regex": "",
           "regexApplyTo": "value",
           "sort": "alphabeticalAsc",
-          "definition": "SELECT table_name FROM tables() WHERE NOT table_name ~ '_events$' ORDER BY table_name;",
+          "definition": "SELECT table_name FROM tables() WHERE NOT table_name ~ '_events$' AND NOT table_name ~ '_rollup_[^_]+_v[0-9]+$' AND NOT table_name ~ '^_' ORDER BY table_name;",
           "options": [],
           "multi": false,
           "includeAll": false,

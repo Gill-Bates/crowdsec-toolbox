@@ -13,10 +13,12 @@ the sibling tool, both backends go through httpx (this project has no
 requests/urllib3 dependency); httpx negotiates TLS 1.2+ by default.
 """
 
+import re
 import socket
 import ssl
 import time
 from datetime import UTC, datetime
+from enum import IntEnum
 from pathlib import Path
 
 import httpx
@@ -103,12 +105,7 @@ def get_source_host() -> str:
 def escape_tag(value: object) -> str:
     """Escape a measurement/tag value for line protocol."""
     text = " ".join(str(value).splitlines())
-    return (
-        text.replace("\\", "\\\\")
-        .replace(",", "\\,")
-        .replace("=", "\\=")
-        .replace(" ", "\\ ")
-    )
+    return text.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
 
 
 def escape_string_field(value: object) -> str:
@@ -145,9 +142,7 @@ def format_report_line(
     }
     if host:
         tags["host"] = host
-    tags_str = ",".join(
-        f"{key}={escape_tag(value)}" for key, value in tags.items() if value
-    )
+    tags_str = ",".join(f"{key}={escape_tag(value)}" for key, value in tags.items() if value)
     fields = [
         f"alert_id={int(alert_id)}i",
         f"abuse_email={escape_string_field(recipient)}",
@@ -191,9 +186,7 @@ def _post(
     for attempt in range(attempts):
         try:
             with httpx.Client(verify=verify, timeout=REQUEST_TIMEOUT) as client:
-                return client.post(
-                    url, headers=headers, params=params, content=payload, auth=auth
-                )
+                return client.post(url, headers=headers, params=params, content=payload, auth=auth)
         except (httpx.HTTPError, ssl.SSLError) as e:
             if attempt == attempts - 1:
                 raise
@@ -201,8 +194,7 @@ def _post(
             print_log(
                 "WARNING",
                 TAGS["WARNING"],
-                f"Metrics write failed (attempt {attempt + 1}/{attempts}): {e} — "
-                f"retrying in {delay:.1f}s",
+                f"Metrics write failed (attempt {attempt + 1}/{attempts}): {e} — retrying in {delay:.1f}s",
             )
             time.sleep(delay)
     # Unreachable: the final attempt either returns or raises.
@@ -234,9 +226,7 @@ def send_to_influxdb(payload: str) -> bool:
         return False
     if response.status_code == 204:
         return True
-    print_database_error(
-        0, f"InfluxDB API error: {response.status_code} - {response.text[:500]}"
-    )
+    print_database_error(0, f"InfluxDB API error: {response.status_code} - {response.text[:500]}")
     return False
 
 
@@ -273,34 +263,78 @@ def send_to_questdb(payload: str) -> bool:
         return False
     if response.status_code in (200, 204):
         return True
-    print_database_error(
-        0, f"QuestDB API error: {response.status_code} - {response.text[:500]}"
-    )
+    print_database_error(0, f"QuestDB API error: {response.status_code} - {response.text[:500]}")
     return False
 
 
-def write_points(lines: list[str]) -> bool:
+class WriteStatus(IntEnum):
+    """Outcome of a bare write; the int values keep `if write_points(...)` meaningful.
+
+    "Data written" and "database correctly configured" are separate facts: a
+    failed TTL after an accepted batch is WRITTEN_TTL_FAILED, never NOT_WRITTEN,
+    so the delivered rows are not sent again for a DDL failure.
+    """
+
+    NOT_WRITTEN = 0
+    OK = 1
+    WRITTEN_TTL_FAILED = 2
+
+
+def write_points(lines: list[str]) -> WriteStatus:
     """Send all points in one request to the configured backend.
 
-    Returns True when there is nothing to send or the backend accepted the
-    batch. Callers that must not lose the points use `flush_points()`, which
-    persists them first; this function is the bare write.
+    Truthy when there is nothing to send or the backend accepted the batch.
+    For QuestDB the table gate (`ensure_questdb_table`) runs first and raises
+    MetricsGateError without writing anything when the server is not QuestDB 10.x
+    or dedup cannot be verified.
+    Callers that must not lose the points use `flush_points()`, which persists
+    them first; this function is the bare write.
     """
     if not lines:
-        return True
+        return WriteStatus.OK
     payload = "\n".join(lines)
+    status = WriteStatus.OK
     if METRICS_BACKEND == "questdb":
-        ok = send_to_questdb(payload)
-        if ok:
-            ensure_questdb_ttl(QUESTDB_TABLE)
-            ensure_questdb_dedup(QUESTDB_TABLE, DEDUP_KEYS)
+        if not ensure_questdb_version():
+            raise MetricsGateError(
+                f"QuestDB version check failed; {len(lines)} point(s) were not written (they stay in the outbox)"
+            )
+        if not ensure_questdb_table(QUESTDB_TABLE, DEDUP_KEYS):
+            raise MetricsGateError(
+                f"QuestDB dedup on {QUESTDB_TABLE!r} could not be verified; {len(lines)} point(s) were not written "
+                "(they stay in the outbox). See the duplicate cleanup runbook in docs/reference/metrics-backends.md"
+            )
+        if not send_to_questdb(payload):
+            return WriteStatus.NOT_WRITTEN
+        if not ensure_questdb_ttl(QUESTDB_TABLE):
+            status = WriteStatus.WRITTEN_TTL_FAILED
     elif METRICS_BACKEND == "influxdb2":
-        ok = send_to_influxdb(payload)
+        if not send_to_influxdb(payload):
+            return WriteStatus.NOT_WRITTEN
     else:
-        return True
-    if ok:
-        print_config_info(f"✓ {len(lines)} report point(s) written to {METRICS_BACKEND}")
-    return ok
+        return WriteStatus.OK
+    print_config_info(f"Wrote {len(lines)} report point(s) to {METRICS_BACKEND}")
+    return status
+
+
+class MetricsError(RuntimeError):
+    """Base of the metrics failures that must fail the run (exit 1)."""
+
+
+class MetricsGateError(MetricsError):
+    """The QuestDB dedup gate failed: nothing was written, the outbox rows are kept."""
+
+
+class MetricsTtlError(MetricsError):
+    """The batch was written and acknowledged, but the configured QuestDB TTL was not applied."""
+
+
+class MetricsLostError(MetricsError):
+    """Points were neither persisted to the outbox nor accepted by the backend."""
+
+
+class MetricsPrunedError(MetricsLostError):
+    """Undelivered points were dropped from the outbox by its row or age bound."""
 
 
 def flush_points(lines: list[str] | None = None) -> bool:
@@ -316,9 +350,21 @@ def flush_points(lines: list[str] | None = None) -> bool:
     the same row. That is what makes it safe to resend the whole spool rather
     than track which point of a batch failed.
 
-    Returns True when nothing is outstanding afterwards. A False return means the
-    points are still spooled, not that they are lost — the caller decides whether
-    a deferred batch is worth failing the run for.
+    Returns True when metrics are disabled, nothing was pending, or the backend
+    acknowledged the sent batch (rows beyond the batch limit may remain spooled).
+    A False return means the points are still spooled, not lost — the caller
+    decides whether a deferred batch is worth failing the run for. Raises
+    MetricsLostError when the spool failed and the direct write failed too:
+    nothing durable exists, and MetricsPrunedError when the bounds dropped
+    undelivered rows. Either is raised only after the remaining rows were
+    flushed, once per run however many losses it saw.
+
+    Two further failures are distinct from an outage and from loss. A failed
+    QuestDB dedup gate raises MetricsGateError before anything is written: the
+    outbox is untouched, because writing without verified dedup would store
+    points that later replays duplicate. A failed TTL after an acknowledged
+    batch raises MetricsTtlError once the delivered rows were deleted; they are
+    never resent for that reason.
     """
     if not METRICS_ENABLED:
         return True
@@ -330,34 +376,65 @@ def flush_points(lines: list[str] | None = None) -> bool:
 
     # Bound the spool before reading it, so a long outage cannot grow the
     # database without limit.
-    prune_metric_outbox(METRICS_OUTBOX_MAX_ROWS, METRICS_OUTBOX_MAX_AGE_DAYS)
+    pruned = prune_metric_outbox(METRICS_OUTBOX_MAX_ROWS, METRICS_OUTBOX_MAX_AGE_DAYS)
+    try:
+        status = _send_spooled(lines, spooled)
+    except MetricsError as e:
+        if pruned:
+            raise type(e)(f"{e}; {pruned} undelivered point(s) were also dropped from the outbox") from e
+        raise
+    ok = bool(status)
+    if pruned:
+        # Pruned rows were never acknowledged by the backend, so they are lost.
+        raise MetricsPrunedError(
+            f"{pruned} undelivered metrics point(s) were dropped from the outbox "
+            f"(METRICS_OUTBOX_MAX_ROWS={METRICS_OUTBOX_MAX_ROWS}, "
+            f"METRICS_OUTBOX_MAX_AGE_DAYS={METRICS_OUTBOX_MAX_AGE_DAYS})"
+        )
+    if status == WriteStatus.WRITTEN_TTL_FAILED:
+        raise MetricsTtlError(
+            f"QuestDB TTL {QUESTDB_TTL!r} could not be applied to {QUESTDB_TABLE!r}; the points were written "
+            "and are not sent again"
+        )
+    return ok
 
+
+def _send_spooled(lines: list[str] | None, spooled: bool) -> WriteStatus:
+    """Send the spooled rows (or the bare lines when spooling failed)."""
     if not spooled:
-        return write_points(lines or [])
+        try:
+            status = write_points(lines or [])
+        except MetricsGateError as e:
+            # Not spooled and not written: the gate failure is a real loss here.
+            raise MetricsLostError(
+                f"{len(lines or [])} metrics point(s) could neither be spooled nor written: {e}"
+            ) from e
+        if status:
+            return status
+        raise MetricsLostError(f"{len(lines or [])} metrics point(s) could neither be spooled nor written")
 
     # A batch cap keeps one run from building a multi-megabyte request after a
     # long outage; the remainder goes out on the following run.
     pending = load_metric_points(_FLUSH_BATCH_LIMIT)
     if not pending:
-        return True
+        return WriteStatus.OK
 
     ids = [row_id for row_id, _ in pending]
-    if not write_points([line for _, line in pending]):
+    # A MetricsGateError propagates from here with every row still in the outbox.
+    status = write_points([line for _, line in pending])
+    if not status:
         print_log(
             "WARNING",
             TAGS["WARNING"],
-            f"{len(pending)} metrics point(s) stay in the outbox and will be "
-            f"retried on the next run (nothing lost)",
+            f"{len(pending)} metrics point(s) stay in the outbox and will be retried on the next run (nothing lost)",
         )
-        return False
+        return WriteStatus.NOT_WRITTEN
 
     delete_metric_points(ids)
     remaining = count_metric_points()
     if remaining:
-        print_config_info(
-            f"{remaining} spooled metrics point(s) left for the next run"
-        )
-    return True
+        print_config_info(f"{remaining} spooled metrics point(s) left for the next run")
+    return status
 
 
 def _quote_ident(name: str) -> str:
@@ -366,71 +443,227 @@ def _quote_ident(name: str) -> str:
     return f'"{escaped}"'
 
 
-def _run_questdb_exec(query: str, *, warning_prefix: str) -> bool:
+def _quote_literal(value: str) -> str:
+    """Single-quote a QuestDB string literal, doubling embedded quotes."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+# Bounded backoff for transient /exec failures (transport errors, 5xx, 429).
+# A 4xx is a definite answer and is never retried.
+_RETRY_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
+# The WAL apply of an ALTER can lag behind its HTTP response; the gate polls
+# the metadata this many times, this long apart, before giving up.
+_VERIFY_POLLS = 5
+_VERIFY_INTERVAL_SECONDS = 1.0
+
+
+def _query_exec(query: str, *, warning_prefix: str, retries: int = 0) -> list | None:
     """Run a statement against QuestDB's `/exec` SQL endpoint.
 
-    Returns True on HTTP 200, False otherwise. Failures are only warned about,
-    never raised: callers use this for post-write DDL (TTL, dedup) where the
-    rows themselves are already stored.
+    Returns the result rows (an empty list for DDL) on HTTP 200, None
+    otherwise. Failures are only warned about, never raised: callers decide
+    what a failed statement means. With `retries`, transport errors, 5xx and
+    429 are repeated with a bounded backoff; any other status is final.
     """
     protocol = "https" if QUESTDB_USE_HTTPS else "http"
     url = f"{protocol}://{QUESTDB_URL}:{QUESTDB_PORT}/exec"
     headers, auth = _questdb_auth()
+    response = None
+    for attempt in range(retries + 1):
+        try:
+            with httpx.Client(verify=QUESTDB_VALIDATE_CERTIFICATE, timeout=REQUEST_TIMEOUT) as client:
+                response = client.get(url, params={"query": query}, headers=headers, auth=auth)
+            if response.status_code == 200:
+                break
+            problem = f"{response.status_code} - {response.text[:300]}"
+            transient = response.status_code == 429 or response.status_code >= 500
+        except httpx.HTTPError as e:
+            problem, transient = str(e), True
+        if not transient or attempt == retries:
+            print_log("WARNING", TAGS["WARNING"], f"{warning_prefix}: {problem}")
+            return None
+        print_log("INFO", TAGS["INFO"], f"{warning_prefix}: {problem} - retrying ({attempt + 1}/{retries})")
+        time.sleep(_RETRY_BACKOFF_SECONDS[min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)])
     try:
-        with httpx.Client(
-            verify=QUESTDB_VALIDATE_CERTIFICATE, timeout=REQUEST_TIMEOUT
-        ) as client:
-            response = client.get(
-                url, params={"query": query}, headers=headers, auth=auth
-            )
-    except httpx.HTTPError as e:
-        print_log("WARNING", TAGS["WARNING"], f"{warning_prefix}: {e}")
-        return False
-    if response.status_code != 200:
-        print_log(
-            "WARNING",
-            TAGS["WARNING"],
-            f"{warning_prefix}: {response.status_code} - {response.text[:300]}",
-        )
-        return False
-    return True
+        payload = response.json()
+    except ValueError:
+        return []
+    dataset = payload.get("dataset") if isinstance(payload, dict) else None
+    return dataset if isinstance(dataset, list) else []
 
 
 def ensure_questdb_ttl(table: str) -> bool:
     """Apply QUESTDB_TTL to the table via QuestDB's /exec SQL endpoint.
 
     ILP auto-creates tables without a TTL, so this runs after every successful
-    write; ALTER TABLE ... SET TTL is idempotent. Needs QuestDB 8.3+ and a
-    partitioned table (ILP tables are partitioned by DAY). Failure only warns:
-    the data itself is already stored.
+    write; ALTER TABLE ... SET TTL is idempotent. Needs a
+    partitioned table (ILP tables are partitioned by DAY). Returns False when a
+    configured TTL could not be set; the data is already stored and is never
+    resent for that reason.
     """
     if not QUESTDB_TTL:
         return True
     query = f"ALTER TABLE {_quote_ident(table)} SET TTL {QUESTDB_TTL}"
-    return _run_questdb_exec(
-        query, warning_prefix=f"QuestDB TTL not applied to {table!r}"
+    return _query_exec(query, warning_prefix=f"QuestDB TTL not applied to {table!r}") is not None
+
+
+# Per-process outcome of the table gate; the container starts a new process per run.
+_GATE_RESULTS: dict[str, bool] = {}
+
+_VERIFIED, _PENDING, _FAILED = "verified", "pending", "failed"
+
+
+def _verify_dedup(table: str, keys: tuple[str, ...]) -> tuple[str, str]:
+    """Check the table's WAL flag, dedup flag, key set and mode from QuestDB metadata.
+
+    Returns (verdict, detail). `_PENDING` means the metadata may still be
+    catching up with the ALTER; `_FAILED` is final.
+    """
+    literal = _quote_literal(table)
+    state = _query_exec(
+        f"SELECT dedup, walEnabled FROM tables() WHERE table_name = {literal}",
+        warning_prefix=f"QuestDB table state of {table!r} not readable",
+        retries=len(_RETRY_BACKOFF_SECONDS),
     )
+    if state is None:
+        return _FAILED, "table state not readable"
+    if not state:
+        return _PENDING, "table is not listed yet"
+    dedup, wal_enabled = state[0][:2]
+    if wal_enabled is not True:
+        return _FAILED, "table is not a WAL table, so DEDUP cannot apply"
+    if dedup is not True:
+        return _PENDING, "dedup is not active yet"
+
+    rows = _query_exec(
+        f'SELECT "column" FROM table_columns({literal}) WHERE upsertKey = true',
+        warning_prefix=f"QuestDB upsert keys of {table!r} not readable",
+        retries=len(_RETRY_BACKOFF_SECONDS),
+    )
+    if rows is None:
+        return _FAILED, "upsert keys not readable"
+    actual = {str(row[0]) for row in rows if row}
+    expected = set(keys)
+    if actual != expected:
+        return _PENDING, (
+            f"upsert keys differ: missing {sorted(expected - actual)}, unexpected {sorted(actual - expected)}"
+        )
+
+    # The mode is only readable through SHOW CREATE TABLE; where it cannot be
+    # read, the key check above stands, since ENABLE UPSERT KEYS sets the mode.
+    ddl = _query_exec(
+        f"SHOW CREATE TABLE {_quote_ident(table)}",
+        warning_prefix=f"QuestDB DDL of {table!r} not readable, dedup mode not checked",
+    )
+    if ddl and ddl[0] and "DEDUP SKIP" in str(ddl[0][0]).upper():
+        return _FAILED, "dedup runs in SKIP mode, UPSERT is required"
+    return _VERIFIED, ""
 
 
-def ensure_questdb_dedup(table: str, keys: tuple[str, ...]) -> bool:
-    """Enable QuestDB row deduplication on the table's upsert keys.
+def _provision_table(table: str, keys: tuple[str, ...]) -> bool:
+    """Create the table with its dedup keys, enable dedup and verify it; see `ensure_questdb_table`."""
+    quoted_table = _quote_ident(table)
+    quoted_keys = ", ".join(_quote_ident(key) for key in keys)
+    retries = len(_RETRY_BACKOFF_SECONDS)
 
-    ILP auto-creates tables append-only, so a repeated write of the same point
-    would add a copy. This runs after every successful write; `DEDUP ENABLE` is
-    idempotent and re-declaring the same keys is a no-op. Needs QuestDB 7.3+
-    and a WAL table (ILP tables are WAL). The designated timestamp is always
-    part of the key set and must be listed first. Failure only warns: the rows
-    themselves are already stored.
+    before = _query_exec(
+        f"SELECT dedup FROM tables() WHERE table_name = {_quote_literal(table)}",
+        warning_prefix=f"QuestDB table state of {table!r} not readable",
+        retries=retries,
+    )
+    if before is None:
+        return False
+    had_duplicate_risk = bool(before) and before[0][0] is False
 
-    InfluxDB 2.x needs no equivalent — it overwrites a point that repeats an
+    # Only the key columns are declared; ILP adds every other column on first write.
+    # Empty tags are omitted from a line, so a key column would otherwise be missing.
+    columns = ", ".join(f"{_quote_ident(key)} {'TIMESTAMP' if i == 0 else 'SYMBOL'}" for i, key in enumerate(keys))
+    create = (
+        f"CREATE TABLE IF NOT EXISTS {quoted_table} ({columns}) TIMESTAMP({_quote_ident(keys[0])}) "
+        f"PARTITION BY DAY WAL DEDUP UPSERT KEYS({quoted_keys})"
+    )
+    if _query_exec(create, warning_prefix=f"QuestDB table {table!r} not created", retries=retries) is None:
+        return False
+    alter = f"ALTER TABLE {quoted_table} DEDUP ENABLE UPSERT KEYS({quoted_keys})"
+    if _query_exec(alter, warning_prefix=f"QuestDB dedup not enabled on {table!r}", retries=retries) is None:
+        return False
+
+    verdict, detail = _PENDING, ""
+    for poll in range(_VERIFY_POLLS):
+        verdict, detail = _verify_dedup(table, keys)
+        if verdict != _PENDING:
+            break
+        if poll < _VERIFY_POLLS - 1:
+            time.sleep(_VERIFY_INTERVAL_SECONDS)
+    if verdict != _VERIFIED:
+        print_log("ERROR", TAGS["ERROR"], f"QuestDB dedup on {table!r} could not be verified: {detail}")
+        return False
+
+    print_log("INFO", TAGS["INFO"], f"QuestDB dedup verified on {table!r}: {', '.join(keys)}")
+    if had_duplicate_risk:
+        print_log(
+            "WARNING",
+            TAGS["WARNING"],
+            f"Dedup was just enabled on existing table {table!r}: rows stored earlier are NOT deduplicated. "
+            "See the duplicate cleanup runbook in docs/reference/metrics-backends.md",
+        )
+    return True
+
+
+def ensure_questdb_table(table: str, keys: tuple[str, ...]) -> bool:
+    """Make sure the table exists with verified deduplication before it is written.
+
+    ILP auto-creates a table without dedup, so a write that precedes this gate
+    can store a first batch that later replays duplicate. The gate runs
+    `CREATE TABLE IF NOT EXISTS` with only the key columns, re-declares
+    `DEDUP ENABLE UPSERT KEYS` (WAL table) and reads the flags,
+    key set and mode back; any mismatch, including a table another tool owns
+    with different keys, fails it. The caller must not write on False. The
+    designated timestamp is `keys[0]`. The result is cached per table and process.
+    Enabling dedup does not remove rows stored before; that is a manual step.
+
+    InfluxDB 2.x needs no equivalent: it overwrites a point that repeats an
     existing series and timestamp.
     """
     if not keys:
         return True
-    quoted_keys = ", ".join(_quote_ident(key) for key in keys)
-    query = (
-        f"ALTER TABLE {_quote_ident(table)} DEDUP ENABLE UPSERT KEYS({quoted_keys})"
+    if table not in _GATE_RESULTS:
+        _GATE_RESULTS[table] = _provision_table(table, keys)
+    return _GATE_RESULTS[table]
+
+
+REQUIRED_QUESTDB_MAJOR = 10
+_BUILD_VERSION = re.compile(r"\bQuestDB\s+(\d+)\.(\d+)(?:\.(\d+))?")
+# Per-process verdict of the version check, keyed by nothing: one server per process.
+_VERSION_RESULT: dict[str, bool] = {}
+
+
+def ensure_questdb_version() -> bool:
+    """Accept only a QuestDB server of major version 10; the verdict is cached per process.
+
+    Reads `SELECT build()` via `/exec` (transient errors are retried). An
+    unreachable server, an error response, an unparsable answer and any other
+    major version are rejected, and the caller must not write anything.
+    """
+    if "ok" in _VERSION_RESULT:
+        return _VERSION_RESULT["ok"]
+    rows = _query_exec(
+        "SELECT build()",
+        warning_prefix="QuestDB version not readable",
+        retries=len(_RETRY_BACKOFF_SECONDS),
     )
-    return _run_questdb_exec(
-        query, warning_prefix=f"QuestDB dedup not enabled on {table!r}"
-    )
+    match = _BUILD_VERSION.search(str(rows[0][0])) if rows and rows[0] else None
+    version = ".".join(part for part in match.groups() if part is not None) if match else None
+    ok = match is not None and int(match.group(1)) == REQUIRED_QUESTDB_MAJOR
+    if ok:
+        print_log("INFO", TAGS["INFO"], f"QuestDB version {version} accepted")
+    else:
+        protocol = "https" if QUESTDB_USE_HTTPS else "http"
+        print_log(
+            "ERROR",
+            TAGS["ERROR"],
+            f"Unsupported QuestDB version at {protocol}://{QUESTDB_URL}:{QUESTDB_PORT}: "
+            f"found {version or 'unknown'}, required {REQUIRED_QUESTDB_MAJOR}.x; nothing was written",
+        )
+    _VERSION_RESULT["ok"] = ok
+    return ok

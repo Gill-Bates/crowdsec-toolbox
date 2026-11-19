@@ -15,7 +15,7 @@ from .database import get_cached_abuse_contact, set_cached_abuse_contact
 from .dns_utils import get_effective_nameservers
 from .logger import print_abuse_contact_found, print_dns_query
 
-# Python 3.13 removed IPv6Address.is_6to4 and .is_teredo; check by prefix instead
+# ipaddress has no boolean flag for 6to4/Teredo, so detect them by prefix
 _6TO4_NETWORK = ipaddress.IPv6Network("2002::/16")
 _TEREDO_NETWORK = ipaddress.IPv6Network("2001::/32")
 
@@ -64,11 +64,7 @@ def get_ip_prefix(ip: str) -> str | None:
     For IPv4: /24 subnet
     For IPv6: /48 or /64 subnet depending on the address type
 
-    Args:
-        ip: IP address string
-
-    Returns:
-        Network prefix string suitable for cache key, or None if invalid
+    Returns None for an invalid address.
     """
     try:
         ip_obj = ipaddress.ip_address(ip)
@@ -80,8 +76,7 @@ def get_ip_prefix(ip: str) -> str | None:
         # 6to4 and Teredo pack the real endpoint into the low bits, so a /48
         # would collapse unrelated hosts onto one cache key. Use /64 for those.
         network = ipaddress.IPv6Network(f"{ip}/48", strict=False)
-        if (network.network_address in _6TO4_NETWORK
-                or network.network_address in _TEREDO_NETWORK):
+        if network.network_address in _6TO4_NETWORK or network.network_address in _TEREDO_NETWORK:
             network = ipaddress.IPv6Network(f"{ip}/64", strict=False)
         return str(network.network_address)
 
@@ -91,8 +86,13 @@ def get_ip_prefix(ip: str) -> str | None:
 
 def query_abuse_contact_dns(ip: str) -> str | None:
     """
-    Query Abuse Contact DB via DNS for a specific IP address.
-    Returns abuse contact email or None if not found.
+    Query the Abusix contact DB via DNS for a specific IP address.
+
+    Returns the validated, comma-joined contact address(es), or None if the IP
+    is invalid or has no usable contact.
+
+    Raises:
+        AbuseContactDnsError: on an operational DNS failure (not NXDOMAIN/NoAnswer).
     """
     try:
         ip_obj = ipaddress.ip_address(ip)
@@ -108,10 +108,7 @@ def query_abuse_contact_dns(ip: str) -> str | None:
         try:
             answers = _resolver.resolve(query, "TXT")
             for rdata in answers:
-                contact = "".join(
-                    s.decode("utf-8") if isinstance(s, bytes) else s
-                    for s in rdata.strings
-                ).strip()
+                contact = "".join(s.decode("utf-8") if isinstance(s, bytes) else s for s in rdata.strings).strip()
                 # Validate through the same path the send uses. The result is
                 # cached positively, so accepting anything containing '@' would
                 # pin an unsendable address for the whole cache TTL instead of
@@ -138,6 +135,9 @@ def extract_abuse_contact(ip: str) -> str | None:
 
     Returns:
         Abuse contact email or None if not found
+
+    Raises:
+        AbuseContactDnsError: if the DNS lookup fails; nothing is cached then.
     """
     ip_prefix = get_ip_prefix(ip)
     if not ip_prefix:

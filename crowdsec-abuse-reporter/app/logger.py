@@ -5,6 +5,7 @@
 #
 
 import logging
+import os
 import re
 import sys
 from datetime import UTC, datetime
@@ -21,24 +22,27 @@ COLORS = {
     "RESET": "\033[0m",  # Reset
 }
 
-# Log level tags for structured output. Also maps stdlib logging level names, so
-# `logger.*` records render with the same tags as the app's own print_* output.
+# Level-column values. Also maps stdlib logging level names, so `logger.*`
+# records render like the app's own print_* output; CRITICAL maps to ERROR.
 TAGS = {
-    "DEBUG": "[DEBUG]",
-    "INFO": "[INFO]",
-    "WARNING": "[WARNING]",
-    "ERROR": "[ERROR]",
-    "CRITICAL": "[ERROR]",
-    "PROCESSING": "[PROCESS]",
-    "DNS_QUERY": "[DNS]",
-    "MAIL": "[MAIL]",
-    "MAIL_SENT": "[MAIL]",  # Uses same tag as MAIL for consistency
+    "DEBUG": "DEBUG",
+    "INFO": "INFO",
+    "WARNING": "WARNING",
+    "ERROR": "ERROR",
+    "CRITICAL": "ERROR",
+    "PROCESSING": "PROCESS",
+    "DNS_QUERY": "DNS",
+    "MAIL": "MAIL",
+    "MAIL_SENT": "MAIL",
 }
+
+LOG_SOURCE = "crowdsec_abuse"
+_STDERR_LEVELS = {"WARNING", "ERROR", "CRITICAL"}
 
 
 def format_timestamp() -> str:
-    """Return formatted timestamp for logs."""
-    return datetime.now(UTC).strftime("%Y%m%d %H:%M:%S UTC")
+    """Return the UTC timestamp of a log line."""
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _sanitize_log_message(message: object) -> str:
@@ -46,57 +50,53 @@ def _sanitize_log_message(message: object) -> str:
     return str(message).replace("\r", "\\r").replace("\n", "\\n")
 
 
+def _format_line(tag: str, message: str) -> str:
+    return f"{format_timestamp()} | {tag:<8} | {LOG_SOURCE} | {_sanitize_log_message(message)}"
+
+
 def print_log(level: str, tag: str, message: str) -> None:
-    """Print a timestamped, tagged log line.
+    """Print one log line: `<UTC time> | LEVEL | crowdsec_abuse | message`.
 
-    ``level`` selects both the colour (via COLORS) and the stream: ERROR goes to
-    stderr, everything else to stdout. ``tag`` is the displayed label, which is
-    usually TAGS[level] but not always (mail errors log as [MAIL], not [ERROR]).
-    Colours are dropped automatically when the stream is not a TTY.
+    ``level`` selects colour and stream (WARNING and above go to stderr);
+    ``tag`` is the level-column value, usually TAGS[level] (mail errors log as
+    MAIL on stderr). Colour only on a TTY with NO_COLOR unset.
     """
-    timestamp = format_timestamp()
-    color_code = COLORS.get(level, COLORS["INFO"])
-    output_stream = sys.stderr if level == "ERROR" else sys.stdout
-
-    # Disable colors when output is not a TTY (cron, file redirect, etc.)
-    if not output_stream.isatty():
-        color_code = ""
-        reset_code = ""
-    else:
-        reset_code = COLORS["RESET"]
-
-    safe_message = _sanitize_log_message(message)
-    formatted_message = f"{color_code}{timestamp} {tag:12} {safe_message}{reset_code}"
-    print(formatted_message, file=output_stream)
+    stream = sys.stderr if level in _STDERR_LEVELS else sys.stdout
+    line = _format_line(tag, message)
+    if stream.isatty() and not os.environ.get("NO_COLOR"):
+        line = f"{COLORS.get(level, COLORS['INFO'])}{line}{COLORS['RESET']}"
+    print(line, file=stream)
 
 
 class _AppLogFormatter(logging.Formatter):
-    """Format stdlib logging records like the app's own print_* output, so
-    `logger.*` calls in crowdsec.py / reportbody.py look identical to the rest."""
+    """Render a stdlib record as one app log line, traceback appended after ` | `."""
 
     def format(self, record: logging.LogRecord) -> str:
-        tag = TAGS.get(record.levelname, TAGS["INFO"])
         message = _sanitize_log_message(record.getMessage())
-
-        # Without this, logger.exception() would drop the traceback entirely —
-        # the one thing worth having when an unattended run fails. Escaped to
-        # stay single-line like every other entry.
+        # Without this, logger.exception() would drop the traceback entirely.
         if record.exc_info:
             message = f"{message} | {_sanitize_log_message(self.formatException(record.exc_info))}"
         if record.stack_info:
             message = f"{message} | {_sanitize_log_message(record.stack_info)}"
+        return _format_line(TAGS.get(record.levelname, TAGS["INFO"]), message)
 
-        return f"{format_timestamp()} {tag:12} {message}"
+
+class _SplitStreamHandler(logging.Handler):
+    """WARNING and above to stderr, the rest to stdout; colour only on a TTY."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            stream = sys.stderr if record.levelname in _STDERR_LEVELS else sys.stdout
+            line = self.format(record)
+            if stream.isatty() and not os.environ.get("NO_COLOR"):
+                line = f"{COLORS.get(record.levelname, COLORS['INFO'])}{line}{COLORS['RESET']}"
+            print(line, file=stream)
+        except Exception:
+            self.handleError(record)
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """Configure root logging once so module-level ``logger.*`` calls are
-    actually emitted.
-
-    Without this, Python's logging defaults to WARNING with no handler, so every
-    ``logger.info()`` / ``logger.debug()`` trace (e.g. in crowdsec.py) is
-    silently dropped and `docker logs` shows almost nothing. Idempotent.
-    """
+    """Configure root logging once so module-level ``logger.*`` calls are emitted. Idempotent."""
     root = logging.getLogger()
     if getattr(root, "_app_logging_configured", False):
         return
@@ -105,7 +105,7 @@ def setup_logging(level: str = "INFO") -> None:
     if not isinstance(resolved, int):
         resolved = logging.INFO
 
-    handler = logging.StreamHandler(sys.stdout)
+    handler = _SplitStreamHandler()
     handler.setFormatter(_AppLogFormatter())
 
     root.handlers.clear()
@@ -116,7 +116,7 @@ def setup_logging(level: str = "INFO") -> None:
     for noisy in ("httpx", "httpcore", "urllib3", "asyncio"):
         logging.getLogger(noisy).setLevel(max(resolved, logging.WARNING))
 
-    root._app_logging_configured = True
+    root._app_logging_configured = True  # noqa: SLF001 marker attribute on the root logger
 
 
 def split_recipients(recipient_string: str) -> list[str]:
@@ -146,10 +146,8 @@ def format_recipients_display(recipients: list[str], max_length: int = 40) -> st
     return recipient_str
 
 
-def print_processing(
-    alert_index: int, total_alerts: int, ip: str, scenario: str
-) -> None:
-    """Print processing progress with nice formatting."""
+def print_processing(alert_index: int, total_alerts: int, ip: str, scenario: str) -> None:
+    """Print the progress line for one alert."""
     progress = f"{alert_index}/{total_alerts}"
     message = f"Processing {progress} - {ip} ({scenario})"
     print_log("PROCESSING", TAGS["PROCESSING"], message)
@@ -176,9 +174,7 @@ def print_abuse_contact_found(ip: str, contact: str) -> None:
     print_log("INFO", TAGS["INFO"], message)
 
 
-def print_mail_sent(
-    recipient: str, alert_id: int | None = None, processing_time: float | None = None
-) -> None:
+def print_mail_sent(recipient: str, alert_id: int | None = None, processing_time: float | None = None) -> None:
     message = f"Mail sent to {recipient}"
     if alert_id is not None:
         message += f" (Alert ID: {alert_id})"
@@ -187,11 +183,8 @@ def print_mail_sent(
     print_log("MAIL_SENT", TAGS["MAIL_SENT"], message)
 
 
-def print_mail_error(
-    recipient: str, error_msg: str, alert_id: int | None = None
-) -> None:
+def print_mail_error(recipient: str, error_msg: str, alert_id: int | None = None) -> None:
     """Print mail sending error."""
-    # Clean up error message for better display
     if "SMTP error:" in error_msg:
         error_msg = error_msg.replace("SMTP error:", "").strip()
 
@@ -225,9 +218,7 @@ def print_no_contact_found(ip: str, alert_id: int | None = None) -> None:
     print_log("WARNING", TAGS["WARNING"], message)
 
 
-def print_dns_error(
-    ip: str, error_details: str, alert_id: int | None = None
-) -> None:
+def print_dns_error(ip: str, error_details: str, alert_id: int | None = None) -> None:
     """Print DNS error information."""
     if alert_id:
         message = f"Alert {alert_id}: DNS error for {ip} - {error_details}"
@@ -264,7 +255,7 @@ def print_debug(message: str) -> None:
 
 def print_summary_header(message: str) -> None:
     """Print summary header."""
-    print_log("INFO", TAGS["INFO"], f"=== {message} ===")
+    print_log("INFO", TAGS["INFO"], message)
 
 
 def print_stat_item(label: str, value: str, indent: int = 1) -> None:

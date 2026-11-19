@@ -5,10 +5,11 @@
 #
 
 """
-InfluxDB integration module.
-Handles data formatting and communication with InfluxDB 2.x.
+InfluxDB integration: line protocol formatting and writes to InfluxDB 2.x.
 """
 
+import math
+import re
 import ssl
 from datetime import UTC, datetime
 
@@ -27,20 +28,14 @@ from .config import (
     INFLUXDB_VALIDATE_CERTIFICATE,
     REQUEST_TIMEOUT,
 )
-from .logger import print_error, print_info, print_success
+from .logger import print_error, print_info, print_success, print_warning
 
 
 class TLS12Adapter(HTTPAdapter):
-    """HTTPAdapter that enforces TLS 1.2+ with secure ciphers"""
+    """HTTPAdapter that enforces TLS 1.2+ with the configured cipher list."""
 
     def init_poolmanager(self, *args, **kwargs):
-        """
-        Initialize pool manager with hardened TLS configuration.
-
-        Args:
-            *args: Variable length argument list
-            **kwargs: Arbitrary keyword arguments
-        """
+        """Initialize the pool manager with a hardened TLS context."""
         context = create_urllib3_context(
             ssl_minimum_version=ssl.TLSVersion.TLSv1_2,
             ssl_maximum_version=ssl.TLSVersion.TLSv1_3,
@@ -51,15 +46,9 @@ class TLS12Adapter(HTTPAdapter):
 
 
 def create_secure_session() -> requests.Session:
-    """
-    Create a requests session with hardened TLS configuration.
-
-    Returns:
-        Configured session with TLS 1.2+ enforcement
-    """
+    """Create a requests session whose http and https adapters enforce TLS 1.2+."""
     session = requests.Session()
 
-    # Add TLS 1.2+ adapter
     adapter = TLS12Adapter()
     session.mount("https://", adapter)
     session.mount("http://", adapter)
@@ -67,119 +56,81 @@ def create_secure_session() -> requests.Session:
     return session
 
 
-def verify_tls_configuration() -> bool:
-    """
-    Verify that the TLS configuration meets security requirements.
+# Line breaks and other C0 controls (tab excepted) cannot be represented in a
+# tag value, and InfluxDB rejects "\n" in field values too: one such value
+# would split a line and invalidate the whole batch.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
-    Returns:
-        True if TLS configuration is secure, False otherwise
-    """
-    # Check available TLS versions
-    test_session = None
-    try:
-        # Test cipher suite with a secure session
-        test_session = create_secure_session()
-        test_response = test_session.get(
-            "https://www.howsmyssl.com/a/check", timeout=10
-        )
 
-        if test_response.status_code == 200:
-            ssl_info = test_response.json()
-            tls_version = ssl_info.get("tls_version")
-            rating = ssl_info.get("rating")
-
-            print_info(f"TLS version: {tls_version}")
-            print_info(f"Security rating: {rating}")
-
-            # Check if TLS 1.2 or higher is used
-            if tls_version and any(
-                version in tls_version for version in ["TLS 1.2", "TLS 1.3"]
-            ):
-                print_success("TLS 1.2 or higher is available")
-                return True
-            else:
-                print_error("TLS 1.2 or higher is not available")
-                return False
-        else:
-            print_error(f"TLS test failed with status: {test_response.status_code}")
-            return False
-
-    except ssl.SSLError as e:
-        print_error(f"SSL/TLS error during verification: {e}")
-        return False
-    except requests.exceptions.RequestException as e:
-        print_error(f"Connection error during TLS verification: {e}")
-        return False
-    finally:
-        if test_session is not None:
-            test_session.close()
+def _strip_control_chars(value: str) -> str:
+    """Replace line breaks and other control characters with a single space each."""
+    return _CONTROL_CHARS.sub(" ", value)
 
 
 def escape_influxdb_value(value: str) -> str:
-    """
-    Escape special characters for InfluxDB tags and measurements.
+    """Escape comma, equals sign and space for tag values and measurements.
 
-    Args:
-        value: String value to escape
-
-    Returns:
-        Escaped string safe for InfluxDB
+    Control characters are replaced by a space first (deterministic, so dedup keys stay stable).
     """
     if not value:
         return ""
-    value_str = str(value)
+    value_str = _strip_control_chars(str(value))
     return value_str.replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
 
 
 def escape_influxdb_string_field(value: str) -> str:
-    """
-    Escape string field values for InfluxDB line protocol.
-
-    Args:
-        value: String value to escape
-
-    Returns:
-        Properly quoted and escaped string
-    """
+    """Return value as a quoted line-protocol string field, escaping backslash and quote."""
     if not value:
         return '""'
     # Backslashes first: escaping quotes first would double the escape character.
-    value_str = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    value_str = _strip_control_chars(str(value)).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{value_str}"'
 
 
-def format_influxdb_line_protocol(
-    alert: dict, hostname: str, *, host: str | None = None
-) -> str:
+def _coordinate(value: object, limit: float) -> float | None:
+    """Return a finite coordinate within +/-limit, or None when it is unknown or invalid.
+
+    An unknown coordinate is omitted instead of replaced by 0.0, which would be a real
+    point in the Gulf of Guinea; `nan`/`inf` are not valid line protocol numbers.
     """
-    Convert a CrowdSec alert into InfluxDB Line Protocol format.
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and abs(number) <= limit else None
+
+
+def format_influxdb_line_protocol(alert: dict, hostname: str, *, host: str | None = None) -> str | None:
+    """Convert a CrowdSec alert into one InfluxDB line protocol line.
+
+    Returns None (after a warning) when `start_at` is missing or unparsable:
+    the current time would defeat deduplication, so the caller skips the alert
+    and rates the run as failed. Missing or invalid coordinates are left out of
+    the point; the other fields are still written.
 
     Args:
         alert: Alert dictionary from CrowdSec
-        hostname: Hostname for measurement
+        hostname: Used as the measurement name
         host: Optional source host tag, used to separate QuestDB instances
-
-    Returns:
-        Formatted line protocol string
     """
     measurement = escape_influxdb_value(hostname)
 
-    # Build tags dictionary
     tags = {
         "ip_address": escape_influxdb_value(alert.get("ip_address", "")),
         "as_name": escape_influxdb_value(alert.get("as_name", "")) or "unknown",
-        "as_number": escape_influxdb_value(str(alert.get("as_number", 0))),
+        "as_number": escape_influxdb_value(str(alert.get("as_number") or 0)),
         "country": escape_influxdb_value(alert.get("country", "")),
         "scenario": escape_influxdb_value(alert.get("scenario", "")),
     }
     if host:
         tags["host"] = escape_influxdb_value(host)
 
-    # Build fields dictionary
     fields = {
         "events_count": alert.get("events_count", 0),
-        "latitude": float(alert.get("latitude", 0.0)),
-        "longitude": float(alert.get("longitude", 0.0)),
+        "latitude": _coordinate(alert.get("latitude"), 90.0),
+        "longitude": _coordinate(alert.get("longitude"), 180.0),
         "message": escape_influxdb_string_field(alert.get("message", "")),
         "abuse_email": escape_influxdb_string_field(alert.get("abuse_email", "")),
         "alert_id": int(alert.get("alert_id", 0)),
@@ -190,14 +141,15 @@ def format_influxdb_line_protocol(
     # coerce defensively before parsing.
     try:
         timestamp_str = str(alert.get("start_at") or "").replace("Z", "+00:00")
-        timestamp = int(datetime.fromisoformat(timestamp_str).timestamp() * 1e9)
-    except ValueError:
-        # Fallback to current time if parsing fails.
-        # utcnow() returned a naive datetime whose .timestamp() was interpreted as
-        # local time, which skewed the InfluxDB timestamp on non-UTC hosts.
-        timestamp = int(datetime.now(UTC).timestamp() * 1e9)
+        parsed = datetime.fromisoformat(timestamp_str)
+        if parsed.tzinfo is None:
+            # Naive values are UTC, like in events.py; local time would skew the dedup key.
+            parsed = parsed.replace(tzinfo=UTC)
+        timestamp = int(parsed.timestamp() * 1e9)
+    except (ValueError, OverflowError):
+        print_warning(f"Skipping alert {alert.get('alert_id')!r}: no parseable start_at")
+        return None
 
-    # Build line protocol components
     tags_str = ",".join([f"{k}={v}" for k, v in tags.items() if v])
     fields_str = ",".join([f"{k}={v}" for k, v in fields.items() if v is not None])
 
@@ -209,14 +161,9 @@ def format_influxdb_line_protocol(
 
 
 def send_to_influxdb(line_protocol_data: str) -> bool:
-    """
-    Send line protocol data to InfluxDB 2.x API with hardened TLS.
+    """Send line protocol data to the InfluxDB 2.x write API (hardened TLS over HTTPS).
 
-    Args:
-        line_protocol_data: Data formatted in line protocol
-
-    Returns:
-        True if successful, False otherwise
+    Returns True on HTTP 204, False on any failure.
     """
     protocol = "https" if INFLUXDB_USE_HTTPS else "http"
     url = f"{protocol}://{INFLUXDB_URL}:{INFLUXDB_PORT}/api/v2/write"
@@ -234,9 +181,8 @@ def send_to_influxdb(line_protocol_data: str) -> bool:
 
     session = None
     try:
-        print_info(f"Sending data to InfluxDB at {url} with hardened TLS...")
+        print_info(f"Writing data to InfluxDB at {url} with hardened TLS")
 
-        # Create secure session for HTTPS, normal for HTTP
         if INFLUXDB_USE_HTTPS:
             session = create_secure_session()
         else:
@@ -252,11 +198,10 @@ def send_to_influxdb(line_protocol_data: str) -> bool:
         )
 
         if response.status_code == 204:
-            print_success("Data successfully sent to InfluxDB")
+            print_success("Wrote data to InfluxDB")
             return True
-        else:
-            print_error(f"InfluxDB API error: {response.status_code} - {response.text}")
-            return False
+        print_error(f"InfluxDB API error: {response.status_code} - {response.text}")
+        return False
 
     except ssl.SSLError as e:
         print_error(f"SSL/TLS error: {e}")
@@ -265,9 +210,7 @@ def send_to_influxdb(line_protocol_data: str) -> bool:
         print_error(f"Connection error to InfluxDB: {e}")
         return False
     except Exception as e:
-        # Last-resort guard so an unexpected error is logged and turned into a
-        # clean False instead of crashing the run; more specific excepts above
-        # handle the expected cases.
+        # Last resort: an unexpected error fails the write instead of crashing the run.
         print_error(f"Unexpected error sending to InfluxDB: {e}")
         return False
     finally:

@@ -1,0 +1,7 @@
+# CI helper scripts sit outside both tools, so ruff would fall back to its defaults here.
+# Inherit the shared root baseline instead of keeping another copy.
+extend = "../../ruff.toml"
+
+[lint.per-file-ignores]
+# Writing to stdout/stderr is the job of these scripts (workflow commands, step summaries).
+"*.py" = ["T20"]

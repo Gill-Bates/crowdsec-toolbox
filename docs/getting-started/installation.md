@@ -16,11 +16,11 @@ installable packages; the manifest exists only to declare
 | `crowdsec-abuse-reporter/pyproject.toml` | `default` | `dnspython`, `geoip2`, `httpx` |
 | | `dev` | `pytest`, `ruff` |
 | `crowdsec-metrics-exporter/pyproject.toml` | `default` | `httpx`, `requests`, `urllib3` |
-| | `dev` | `ruff` |
-| `docs/pyproject.toml` | `default` | MkDocs Material toolchain |
+| | `dev` | `pytest`, `ruff` |
+| `docs/pyproject.toml` | `default` | Zensical site builder |
 
 Each manifest also carries its own `[project].version` and its own
-`[tool.ruff]` configuration, including the deliberate `BLE001` ignore.
+`[tool.ruff]` section, which extends the shared root `ruff.toml` (deliberate `BLE001` ignore).
 
 !!! note "The runtime group is called `default` in both tools"
     The group name is per-manifest, so both tools use `default` for their runtime
@@ -72,22 +72,22 @@ existing environment variable wins over the file.
 
 ```bash
 cd /opt/crowdsec-toolbox/crowdsec-metrics-exporter
-source setup.conf   # creates and activates the venv at /opt/jobs/crowdsec_influx
+python3 -m venv /opt/jobs/crowdsec_influx
+source /opt/jobs/crowdsec_influx/bin/activate
+pip install --upgrade pip
 pip install --group pyproject.toml:default
 cp docker/settings.env.example settings.env
 # edit settings.env with your CrowdSec and InfluxDB/QuestDB details
 python main.py
 ```
 
-!!! note "`source setup.conf`, not `bash setup.conf`"
-    This tool's `setup.conf` contains only the two venv lines and must be
-    sourced. Running it with `bash` activates the venv in a subshell that exits
-    immediately. It now also installs the `default` group from this tool's own
-    `pyproject.toml`, so the explicit `pip install` above is redundant after a
-    successful source.
+!!! note "`setup.conf` is not a pure setup script"
+    The root `setup.conf` holds these venv lines (production section) next to the
+    `docker buildx build ... --push` commands, so running or sourcing the whole
+    file builds and pushes the images. Run only the venv lines.
 
-    The venv path also deviates from its sibling: `/opt/jobs/crowdsec_influx`
-    with `bin/activate`, not `.venv/bin/activate`.
+    The venv path deviates from its sibling: `/opt/jobs/crowdsec_influx` with
+    `bin/activate`, not `.venv/bin/activate`.
 
 !!! warning "Importing the exporter's config has side effects"
     `app.config` calls its own settings loader at import time with
@@ -107,7 +107,7 @@ so scheduling is cron's job:
 * * * * * cd /opt/crowdsec-toolbox/crowdsec-metrics-exporter && /opt/jobs/crowdsec_influx/bin/python main.py
 ```
 
-The `RUN_INTERVAL`, `RUN_EVERY_HOUR`, `RUN_ONCE`, `RUN_JITTER` and
+The `RUN_INTERVAL`, `RUN_EVERY_HOUR`, `RUN_ONCE` and
 `METRICS_INTERVAL` variables are read by the container entrypoints, **not** by
 the applications. A host run ignores them entirely.
 
@@ -119,7 +119,7 @@ the container health checks able to detect a broken run.
 | Code | crowdsec-abuse-reporter | crowdsec-metrics-exporter |
 |---|---|---|
 | `0` | Normal run; per-report DNS or send failures still exit 0 | Success, including "nothing new to export" |
-| `1` | Hard failure: config, GeoIP cold start, DB init, LAPI fetch, database error | TLS check, LAPI fetch or backend write failed |
+| `1` | Hard failure: config, GeoIP cold start, DB init, LAPI fetch, database error | LAPI fetch, backend write, QuestDB version (not 10.x), dedup gate or TTL failed |
 | `130` | Interrupted | — |
 
 ## Next steps

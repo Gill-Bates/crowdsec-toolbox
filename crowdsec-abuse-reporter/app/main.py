@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parseaddr
 
-from app.abuse import send_abuse_mail
+from app.abuse import UncertainSendError, send_abuse_mail
 from app.abuse import split_recipients as _split_abuse_contacts
 from app.abusix import extract_abuse_contact, get_active_nameservers
 from app.banner import print_banner
@@ -83,6 +83,10 @@ from app.logger import (
     setup_logging,
 )
 from app.metrics import (
+    MetricsError,
+    MetricsGateError,
+    WriteStatus,
+    ensure_questdb_version,
     flush_points,
     format_report_line,
     get_source_host,
@@ -121,7 +125,7 @@ def _validate_email(value: str | None) -> str | None:
 
 @dataclass
 class ProcessResult:
-    """Result container for alert processing with enhanced metadata."""
+    """Outcome of processing one alert."""
 
     success: bool
     alert_id: int | None = None
@@ -139,7 +143,7 @@ class ProcessResult:
 
 @dataclass
 class ProcessingStats:
-    """Enhanced statistics container with performance metrics."""
+    """Per-run outcome counters and timing."""
 
     mails_sent: int = 0
     no_contact: int = 0
@@ -156,25 +160,15 @@ class ProcessingStats:
     start_time: float = 0.0
 
     def handled_alerts(self) -> int:
-        """Count of alerts that were actually handled (sent, no contact, or errored).
+        """Count alerts that were handled (sent, no contact, DNS or send error).
 
-        Note: already_processed, invalid_ips, invalid_alert_ids, and skipped_due_to_limit are excluded
-        as they represent alerts that were filtered before handling.
+        Alerts filtered out before handling (already processed, invalid IP or ID,
+        skipped by the limit) are excluded.
         """
-        return (
-            self.mails_sent
-            + self.no_contact
-            + self.dns_errors
-            + self.send_errors
-        )
+        return self.mails_sent + self.no_contact + self.dns_errors + self.send_errors
 
     def total_errors(self) -> int:
-        return (
-            self.dns_errors
-            + self.send_errors
-            + self.database_errors
-            + self.metrics_errors
-        )
+        return self.dns_errors + self.send_errors + self.database_errors + self.metrics_errors
 
     def average_processing_time(self) -> float:
         total = self.handled_alerts()
@@ -185,30 +179,24 @@ class ProcessingStats:
 
 
 class GracefulInterruptHandler:
-    """Handle graceful shutdown on interrupt signals."""
+    """Context manager that records SIGINT/SIGTERM so the current step can finish."""
 
     def __init__(self):
         self.interrupted = False
         self.original_handlers = {}
 
     def __enter__(self):
-        self.original_handlers[signal.SIGINT] = signal.signal(
-            signal.SIGINT, self.handler
-        )
-        self.original_handlers[signal.SIGTERM] = signal.signal(
-            signal.SIGTERM, self.handler
-        )
+        self.original_handlers[signal.SIGINT] = signal.signal(signal.SIGINT, self.handler)
+        self.original_handlers[signal.SIGTERM] = signal.signal(signal.SIGTERM, self.handler)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         for sig, handler in self.original_handlers.items():
             signal.signal(sig, handler)
 
-    def handler(self, signum, frame):
+    def handler(self, signum, _frame):
         self.interrupted = True
-        print_config_info(
-            f"Received interrupt signal {signum}, finishing current operation..."
-        )
+        print_config_info(f"Received interrupt signal {signum}, finishing current operation")
 
 
 def get_alert_id(alert: dict) -> int | None:
@@ -244,11 +232,11 @@ def _alert_source(alert: dict) -> dict:
 
 
 def get_alert_ip(alert: dict) -> str:
-    """Enhanced IP extraction with layered fallbacks.
+    """Return the offending IP, or 'unknown'.
 
     CrowdSec data can surface the source IP in multiple places depending on the
-    producer and API shape: `source.ip`, `source.value` (when `scope=Ip`), or
-    as `source_ip` in alert metadata/context.
+    producer and API shape: `source.ip`, `source.value` (when `scope=Ip`), the
+    top-level `value`, or `source_ip` in alert context/metadata.
     """
     source = _alert_source(alert)
     ip = source.get("ip")
@@ -289,7 +277,7 @@ def get_alert_ip(alert: dict) -> str:
 
 
 def get_alert_scenario(alert: dict) -> str:
-    """Enhanced scenario extraction with fallback."""
+    """Return the scenario name, or 'unknown'."""
     return alert.get("scenario", "unknown") or "unknown"
 
 
@@ -330,22 +318,14 @@ def build_alert_overview_rows(
     decisions: list[dict], limit: int = 10
 ) -> list[tuple[int, str, int | None, str, int | None]]:
     """Return aligned rows for the startup overview table."""
-    top_countries = _rank_top_items(
-        [get_alert_country(alert) for alert in decisions], limit=limit
-    )
-    top_patterns = _rank_top_items(
-        [get_alert_scenario(alert) for alert in decisions], limit=limit
-    )
+    top_countries = _rank_top_items([get_alert_country(alert) for alert in decisions], limit=limit)
+    top_patterns = _rank_top_items([get_alert_scenario(alert) for alert in decisions], limit=limit)
 
     row_count = max(len(top_countries), len(top_patterns))
     rows: list[tuple[int, str, int | None, str, int | None]] = []
     for index in range(row_count):
-        country, country_count = (
-            top_countries[index] if index < len(top_countries) else ("", None)
-        )
-        pattern, pattern_count = (
-            top_patterns[index] if index < len(top_patterns) else ("", None)
-        )
+        country, country_count = top_countries[index] if index < len(top_countries) else ("", None)
+        pattern, pattern_count = top_patterns[index] if index < len(top_patterns) else ("", None)
         rows.append((index + 1, country, country_count, pattern, pattern_count))
     return rows
 
@@ -365,16 +345,11 @@ def print_alert_overview_table(decisions: list[dict], limit: int = 10) -> None:
         *(len(_truncate_display(pattern or "", 36)) for _, _, _, pattern, _ in rows),
     )
 
-    print()
     print_summary_header("CURRENT ACTIVE REPORTABLE SIGNALS")
     print_config_info(
-        f"  {'#':>2}  {'Country':<{country_width}}  {'Count':>5}  "
-        f"{'Attack pattern':<{pattern_width}}  {'Count':>5}"
+        f"  {'#':>2}  {'Country':<{country_width}}  {'Count':>5}  {'Attack pattern':<{pattern_width}}  {'Count':>5}"
     )
-    print_config_info(
-        f"  {'-' * 2}  {'-' * country_width}  {'-' * 5}  "
-        f"{'-' * pattern_width}  {'-' * 5}"
-    )
+    print_config_info(f"  {'-' * 2}  {'-' * country_width}  {'-' * 5}  {'-' * pattern_width}  {'-' * 5}")
 
     for rank, country, country_count, pattern, pattern_count in rows:
         country_display = _truncate_display(country or "", 18)
@@ -469,7 +444,7 @@ def get_alert_confidence(alert: dict) -> float:
 
 
 def get_subnet_prefix_length(ip: str) -> int:
-    """Enhanced subnet prefix determination with validation."""
+    """Return the dedup prefix length for the IP's family, or 0 if it is not an IP."""
     try:
         ip_obj = ipaddress.ip_address(ip)
         if ip_obj.version == 4:
@@ -480,7 +455,10 @@ def get_subnet_prefix_length(ip: str) -> int:
 
 
 def is_valid_public_ip(ip: str, alert_id: int = 0) -> bool:
-    """Check if IP is valid and public (not internal/private)."""
+    """Return True for a globally routable, non-multicast IP.
+
+    Logs a skip message for an internal address.
+    """
     if ip == "unknown":
         return False
 
@@ -497,9 +475,11 @@ def is_valid_public_ip(ip: str, alert_id: int = 0) -> bool:
 def deduplicate_and_filter_alerts(
     decisions: list[dict], processed_alert_ids: set[tuple[int, str]]
 ) -> tuple[list[dict], int, int, int, int]:
-    """
-    Combined deduplication and filtering in one pass for better performance.
-    Uses separate policies for IPv4 and IPv6 subnets.
+    """Filter and subnet-deduplicate decisions in one pass.
+
+    Skips invalid IDs, already processed pairs, whitelisted ASNs and non-public
+    IPs. Keeps one alert per IPv4 /24 or IPv6 /48 (highest confidence, then
+    newest ID) and caps the result at MAX_ALERTS_PER_RUN.
 
     Returns:
         Tuple of (
@@ -526,7 +506,6 @@ def deduplicate_and_filter_alerts(
             print_config_info(f"Skipping alert with invalid ID for IP {ip}")
             continue
 
-        # Skip already processed reports (keyed per alert + IP)
         if (alert_id, ip) in processed_alert_ids:
             continue
 
@@ -537,19 +516,16 @@ def deduplicate_and_filter_alerts(
             whitelisted_count += 1
             continue
 
-        # Skip invalid/internal IPs
         if not is_valid_public_ip(ip, alert_id):
             invalid_ip_count += 1
             continue
 
-        # Deduplicate by subnet with IP version-specific policies
         prefix_length = get_subnet_prefix_length(ip)
         if prefix_length > 0:
             try:
                 network = ipaddress.ip_network(f"{ip}/{prefix_length}", strict=False)
                 prefix = str(network.network_address)
 
-                # Separate handling for IPv4 and IPv6
                 if network.version == 4:
                     subnet_dict = ipv4_subnet_to_alert
                 else:
@@ -565,17 +541,13 @@ def deduplicate_and_filter_alerts(
                     existing_conf = get_alert_confidence(existing_alert)
                     existing_alert_id = get_alert_id(existing_alert) or 0
 
-                    if current_conf > existing_conf or (
-                        current_conf == existing_conf
-                        and alert_id > existing_alert_id
-                    ):
+                    if current_conf > existing_conf or (current_conf == existing_conf and alert_id > existing_alert_id):
                         subnet_dict[prefix] = alert
             except (ValueError, TypeError):
                 alerts_to_process.append(alert)
         else:
             alerts_to_process.append(alert)
 
-    # Add deduplicated alerts to final list
     alerts_to_process.extend(ipv4_subnet_to_alert.values())
     alerts_to_process.extend(ipv6_subnet_to_alert.values())
 
@@ -615,9 +587,7 @@ def sanitize_header_value(value: object) -> str:
     return sanitized or "unknown"
 
 
-def send_abuse_report(
-    alert: dict, recipient: str, hostname: str
-) -> tuple[bool, str | None]:
+def send_abuse_report(alert: dict, recipient: str, hostname: str) -> tuple[bool, str | None]:
     """Send abuse report email and return success status with error message."""
     ip = sanitize_header_value(get_alert_ip(alert))
     scenario = sanitize_header_value(get_alert_scenario(alert))
@@ -641,10 +611,8 @@ def send_abuse_report(
         return False, f"Failed to build or send report: {e}"
 
 
-def handle_processing_error(
-    alert: dict, error_type: str, error_details: str, processing_time: float
-) -> ProcessResult:
-    """Handle and log processing errors consistently with proper alert reference."""
+def handle_processing_error(alert: dict, error_type: str, error_details: str, processing_time: float) -> ProcessResult:
+    """Log a DNS or no-contact error and return the failed ProcessResult."""
     alert_id = get_alert_id(alert)
     ip = get_alert_ip(alert)
     scenario = get_alert_scenario(alert)
@@ -678,9 +646,7 @@ def _sqlite_payload(value: str | None) -> str | None:
     return None if value is None else ""
 
 
-def build_report_point(
-    alert: dict, result: "ProcessResult", hostname: str, timestamp: datetime | None = None
-) -> str:
+def build_report_point(alert: dict, result: "ProcessResult", hostname: str, timestamp: datetime | None = None) -> str:
     """Line-protocol point for one finalized report."""
     return format_report_line(
         measurement_name(hostname),
@@ -699,21 +665,38 @@ def build_report_point(
     )
 
 
-def process_single_alert(
-    alert: dict, alert_index: int, total_alerts: int, hostname: str
-) -> ProcessResult:
-    """Process a single alert with improved structure."""
+def _whitelisted_asn_for_alert(alert: dict, ip: str) -> str:
+    """Return the whitelisted ASN matching this alert, or '' when none matches.
+
+    CrowdSec may omit as_number; the local GeoIP ASN database is then the second
+    opinion. An unknown ASN stays reportable: failing closed would silence every
+    report whenever the GeoIP database is missing.
+    """
+    if not WHITELISTED_ASN:
+        return ""
+    candidates = [normalize_asn(get_alert_asn(alert))]
+    try:
+        from app.geoip import lookup as geoip_lookup
+
+        geo_asn = geoip_lookup(ip).get("asn")
+        if geo_asn:
+            candidates.append(normalize_asn(geo_asn))
+    except Exception as exc:
+        print_debug(f"GeoIP ASN check skipped for {ip}: {exc}")
+    return next((asn for asn in candidates if asn and asn in WHITELISTED_ASN), "")
+
+
+def process_single_alert(alert: dict, alert_index: int, total_alerts: int, hostname: str) -> ProcessResult:
+    """Run the claim, contact lookup, send and finalize steps for one alert."""
     alert_id = get_alert_id(alert)
     ip = get_alert_ip(alert)
     scenario = get_alert_scenario(alert)
 
     # Hard safety net: a whitelisted ASN must NEVER trigger a mail, even if it
     # somehow slipped past the upstream filter (e.g. enrichment changed the ASN).
-    asn = normalize_asn(get_alert_asn(alert))
-    if asn and asn in WHITELISTED_ASN:
-        print_config_info(
-            f"Blocked whitelisted ASN AS{asn} before send (Alert {alert_id})"
-        )
+    asn = _whitelisted_asn_for_alert(alert, ip)
+    if asn:
+        print_config_info(f"Blocked whitelisted ASN AS{asn} before send (Alert {alert_id})")
         return ProcessResult(
             success=False,
             alert_id=alert_id,
@@ -741,9 +724,7 @@ def process_single_alert(
         recipient = _validate_email(recipient)
     if not recipient:
         processing_time = time.monotonic() - start_time
-        return handle_processing_error(
-            alert, "no_contact", f"No valid abuse contact for {ip}", processing_time
-        )
+        return handle_processing_error(alert, "no_contact", f"No valid abuse contact for {ip}", processing_time)
 
     # Step 2: Claim the alert atomically right before sending. This is the
     # idempotency guard: only the claim owner sends, so a crash mid-send or two
@@ -778,9 +759,7 @@ def process_single_alert(
 
     if not claimed:
         processing_time = time.monotonic() - start_time
-        print_config_info(
-            f"Skipping Alert {alert_id} for {ip}: already sent or in-flight"
-        )
+        print_config_info(f"Skipping Alert {alert_id} for {ip}: already sent or in-flight")
         return ProcessResult(
             success=False,
             alert_id=alert_id,
@@ -805,14 +784,13 @@ def process_single_alert(
             _sqlite_payload(scenario),
             success,
             None if success or METRICS_ENABLED else error_msg,
+            outcome_unknown=isinstance(error_msg, UncertainSendError),
         )
     except Exception as e:
         # The send outcome is already decided; a failed finalize leaves the row
         # 'pending', which is never auto-resent (at-most-once preserved).
         db_error = True
-        print_database_error(
-            alert_id, f"Failed to finalize alert after send: {e}"
-        )
+        print_database_error(alert_id, f"Failed to finalize alert after send: {e}")
 
     # Step 5: Build result
     if success:
@@ -827,20 +805,19 @@ def process_single_alert(
             db_error=db_error,
             finalized=True,
         )
-    else:
-        print_mail_error(recipient, error_msg, alert_id)
-        return ProcessResult(
-            success=False,
-            alert_id=alert_id,
-            ip=ip,
-            scenario=scenario,
-            recipient=recipient,
-            error_type="send_error",
-            error_details=error_msg,
-            processing_time=processing_time,
-            db_error=db_error,
-            finalized=True,
-        )
+    print_mail_error(recipient, error_msg, alert_id)
+    return ProcessResult(
+        success=False,
+        alert_id=alert_id,
+        ip=ip,
+        scenario=scenario,
+        recipient=recipient,
+        error_type="send_error",
+        error_details=error_msg,
+        processing_time=processing_time,
+        db_error=db_error,
+        finalized=True,
+    )
 
 
 def sleep_between_mails(
@@ -848,8 +825,7 @@ def sleep_between_mails(
     last_result_success: bool,
     interrupt_handler: "GracefulInterruptHandler",
 ) -> None:
-    """
-    Sleep between mails based on configuration and last result.
+    """Sleep between mails after a successful send, if rate limiting is configured.
 
     Args:
         has_more_alerts: Whether another alert will be processed afterwards
@@ -883,34 +859,25 @@ def interruptible_sleep(seconds: int, interrupt_handler: "GracefulInterruptHandl
 
 
 def _print_summary_section(title: str, rows: list[tuple[str, str]]) -> None:
-    """Render a compact, readable summary section without log timestamps."""
-    print(f"\n{title}")
-    print("-" * len(title))
-
+    """Log a summary section as regular INFO lines."""
+    print_config_info(f"{title}:")
     label_width = max((len(label) for label, _ in rows), default=0)
     for label, value in rows:
-        print(f"  {label:<{label_width}} : {value}")
+        print_config_info(f"  {label:<{label_width}} : {value}")
 
 
-def _print_sent_email_summary(
-    mails_sent_details: list[tuple[int, str, str, str]], limit: int = 5
-) -> None:
-    """Render the sent-mail list in a terminal-friendly summary format."""
+def _print_sent_email_summary(mails_sent_details: list[tuple[int, str, str, str]], limit: int = 5) -> None:
+    """Log the sent-mail list as regular INFO lines."""
     if not mails_sent_details:
         return
 
-    print(f"\nSent emails ({len(mails_sent_details)})")
-    print("-" * len(f"Sent emails ({len(mails_sent_details)})"))
-
-    for index, (alert_id, ip, scenario, recipient) in enumerate(
-        mails_sent_details[:limit], start=1
-    ):
-        print(f"  {index}. Alert #{alert_id} | {ip} | {scenario}")
-        print(f"     Recipients: {recipient}")
+    print_config_info(f"Sent emails ({len(mails_sent_details)}):")
+    for index, (alert_id, ip, scenario, recipient) in enumerate(mails_sent_details[:limit], start=1):
+        print_config_info(f"  {index}. Alert #{alert_id} | {ip} | {scenario} | Recipients: {recipient}")
 
     remaining = len(mails_sent_details) - limit
     if remaining > 0:
-        print(f"  ... {remaining} more entr{'y' if remaining == 1 else 'ies'} not shown")
+        print_config_info(f"  ... {remaining} more entr{'y' if remaining == 1 else 'ies'} not shown")
 
 
 def print_detailed_summary(
@@ -919,10 +886,8 @@ def print_detailed_summary(
     unique_alerts: int,
     mails_sent_details: list[tuple[int, str, str, str]],
 ) -> None:
-    """Enhanced summary with performance metrics."""
-    print("\n" + "=" * 60)
-    print("RUN SUMMARY")
-    print("=" * 60)
+    """Print the end-of-run summary: overview, results, timing and sent mails."""
+    print_config_info("Run summary")
 
     overview_rows = [
         ("Total alerts from CrowdSec", str(total_alerts)),
@@ -997,7 +962,15 @@ def _run_metrics_snapshot(hostname: str) -> int:
                 processing_time=0.0,
             )
         )
-    return 0 if write_points(lines) else 1
+    try:
+        status = write_points(lines)
+    except MetricsGateError as e:
+        # Nothing was written: the snapshot is superseded by the next one.
+        print_database_error(0, str(e))
+        return 1
+    if status == WriteStatus.WRITTEN_TTL_FAILED:
+        print_database_error(0, "Metrics snapshot was written, but the QuestDB TTL could not be applied")
+    return 0 if status == WriteStatus.OK else 1
 
 
 def _metrics_outbox_is_saturated() -> bool:
@@ -1011,6 +984,15 @@ def _metrics_outbox_is_saturated() -> bool:
     if METRICS_OUTBOX_MAX_ROWS <= 0:
         return False
     return count_metric_points() >= int(METRICS_OUTBOX_MAX_ROWS * 0.9)
+
+
+def _early_exit_code() -> int:
+    """Exit code for a run that ends before processing any alert.
+
+    The outbox saturation escalation must hold on these paths too: a backend
+    outage does not pause just because there is nothing new to report.
+    """
+    return 1 if METRICS_ENABLED and _metrics_outbox_is_saturated() else 0
 
 
 def main() -> int:
@@ -1036,13 +1018,17 @@ _run_state_ready = False
 
 
 def _run(started_at: str) -> int:
-    """Enhanced main function with graceful interruption handling and immediate persistence."""
+    """Execute one run and return its process exit code (0, 1 or 130)."""
     global _run_state_ready
     _run_state_ready = False
     # Configure logging first so module-level logger.* traces are visible
     # (e.g. in `docker logs`) — otherwise INFO/DEBUG are silently dropped.
     setup_logging(LOG_LEVEL)
     print_banner()
+
+    # Refuse an unsupported QuestDB before any mail, SQLite write or outbox flush.
+    if METRICS_BACKEND == "questdb" and not ensure_questdb_version():
+        return 1
 
     # Ensure the DB connection is closed cleanly on every exit path —
     # normal return, early error return, unhandled exception, or SIGTERM.
@@ -1054,10 +1040,9 @@ def _run(started_at: str) -> int:
             # the reporting identity for QuestDB: measurement_name() ignores
             # `hostname` there and uses QUESTDB_TABLE instead (metrics.py), so
             # calling get_node_ip() would just be a redundant public-IP lookup
-            # on every METRICS_INTERVAL tick, alongside the one the main
-            # run_once loop already performs in entrypoint.sh. InfluxDB 2.x
-            # does use `hostname` as the measurement name, so it still needs
-            # the real lookup.
+            # on every METRICS_INTERVAL tick, on top of the one each full run
+            # (run_once in entrypoint.sh) already performs. InfluxDB 2.x uses
+            # `hostname` as the measurement name, so it still needs the lookup.
             if METRICS_BACKEND == "questdb":
                 return _run_metrics_snapshot(HOSTNAME_OVERRIDE.strip())
             return _run_metrics_snapshot(HOSTNAME_OVERRIDE.strip() or get_node_ip())
@@ -1068,39 +1053,34 @@ def _run(started_at: str) -> int:
         # see a private bridge IP like 10.30.0.5).
         hostname = HOSTNAME_OVERRIDE.strip() or get_node_ip()
 
-        # Initialize statistics with start time
         stats = ProcessingStats()
         stats.start_time = time.monotonic()
 
-        print_config_info("Starting CrowdSec Abuse Mail export...")
+        print_config_info("Starting CrowdSec abuse mail export")
         print_summary_header("DNS-BASED PROCESSING")
-        print_config_info(f"✓ Reporting from: {hostname}")
-        print_config_info("✓ Smart subnet deduplication")
-        print_config_info(f"✓ IPv4 prefix length: /{IPV4_PREFIX_LENGTH}")
-        print_config_info(f"✓ IPv6 prefix length: /{IPV6_PREFIX_LENGTH}")
-        print_config_info("✓ DNS-based Abuse Contact DB queries")
-        print_config_info(
-            f"✓ DNS resolvers: {', '.join(get_active_nameservers()) or 'system'}"
-        )
-        print_config_info("✓ Full IPv4/IPv6 Dual-Stack support")
-        print_config_info("✓ Immediate database persistence")
-        print_config_info("✓ Internal networks are automatically skipped")
-        print_config_info("✓ X-ARF attachment included")
+        print_config_info(f"Reporting from: {hostname}")
+        print_config_info("Smart subnet deduplication")
+        print_config_info(f"IPv4 prefix length: /{IPV4_PREFIX_LENGTH}")
+        print_config_info(f"IPv6 prefix length: /{IPV6_PREFIX_LENGTH}")
+        print_config_info("DNS-based Abuse Contact DB queries")
+        print_config_info(f"DNS resolvers: {', '.join(get_active_nameservers()) or 'system'}")
+        print_config_info("Full IPv4/IPv6 Dual-Stack support")
+        print_config_info("Immediate database persistence")
+        print_config_info("Internal networks are automatically skipped")
+        print_config_info("X-ARF attachment included")
 
         if MAX_ALERTS_PER_RUN:
-            print_config_info(f"✓ Alert limit: {MAX_ALERTS_PER_RUN} per run")
+            print_config_info(f"Alert limit: {MAX_ALERTS_PER_RUN} per run")
         if SLEEP_BETWEEN_MAILS > 0:
-            print_config_info(f"✓ Rate limiting: {SLEEP_BETWEEN_MAILS}s between emails")
+            print_config_info(f"Rate limiting: {SLEEP_BETWEEN_MAILS}s between emails")
         if MAIL_CHUNK_SIZE > 0:
-            chunk_msg = f"✓ Chunked sending: {MAIL_CHUNK_SIZE} mails per chunk"
+            chunk_msg = f"Chunked sending: {MAIL_CHUNK_SIZE} mails per chunk"
             if SLEEP_BETWEEN_CHUNKS > 0:
                 chunk_msg += f", {SLEEP_BETWEEN_CHUNKS}s between chunks"
             print_config_info(chunk_msg)
-        print_config_info("✓ Idempotent delivery (no duplicate reports in normal operation)")
+        print_config_info("Idempotent delivery (no duplicate reports in normal operation)")
         if METRICS_ENABLED:
-            print_config_info(
-                f"✓ Metrics backend: {METRICS_BACKEND} (SQLite keeps control data only)"
-            )
+            print_config_info(f"Metrics backend: {METRICS_BACKEND} (SQLite keeps control data only)")
 
         print_config_info("============================")
 
@@ -1111,12 +1091,17 @@ def _run(started_at: str) -> int:
         # run forever without GeoIP enrichment.
         try:
             from app.geoip import ensure_geoip_databases
+
             _geo_result = ensure_geoip_databases()
             if _geo_result.get("city") and _geo_result.get("asn"):
-                print_config_info("✓ GeoIP databases ready (City + ASN)")
+                print_config_info("GeoIP databases ready (City + ASN)")
             else:
                 missing = [k for k, v in _geo_result.items() if not v]
-                print_config_info(f"⚠ GeoIP databases unavailable: {', '.join(missing)} — enrichment skipped")
+                print_log(
+                    "WARNING",
+                    TAGS["WARNING"],
+                    f"GeoIP databases unavailable: {', '.join(missing)} — enrichment skipped",
+                )
         except GeoIPUnavailableError as e:
             print_config_info(f"ERROR: {e}")
             return 1
@@ -1136,16 +1121,13 @@ def _run(started_at: str) -> int:
         # first action is to download it.
         print_whitelisted_asn_table()
 
-        # Initialize database
         try:
             init_db()
         except Exception as e:
             print_database_error(0, f"Failed to initialize database: {e}")
             return 1
         _run_state_ready = True
-        set_run_state(
-            {"last_run_started_at": started_at, "metrics_backend": METRICS_BACKEND}
-        )
+        set_run_state({"last_run_started_at": started_at, "metrics_backend": METRICS_BACKEND})
 
         # Prune records older than DB_RETENTION_DAYS (non-fatal).
         if DB_RETENTION_DAYS > 0:
@@ -1172,11 +1154,12 @@ def _run(started_at: str) -> int:
         if METRICS_ENABLED:
             outstanding = count_metric_points()
             if outstanding:
-                print_config_info(
-                    f"Retrying {outstanding} spooled metrics point(s) from an "
-                    f"earlier run"
-                )
-                flush_points()
+                print_config_info(f"Retrying {outstanding} spooled metrics point(s) from an earlier run")
+                try:
+                    flush_points()
+                except MetricsError as e:
+                    stats.metrics_errors += 1
+                    print_database_error(0, str(e))
 
         # Lifetime statistics — shown once per run so trends are visible in logs.
         try:
@@ -1186,10 +1169,7 @@ def _run(started_at: str) -> int:
                 total = db_stats["total"]
                 failed = db_stats.get("failed", 0)
                 failed_suffix = f" ({failed} failed)" if failed else ""
-                print()
-                print_config_info(
-                    f"Historical totals: {sent} mails sent / {total} total reports{failed_suffix}"
-                )
+                print_config_info(f"Historical totals: {sent} mails sent / {total} total reports{failed_suffix}")
         except Exception as e:
             print_database_error(0, f"Failed to display historical totals: {e}")
 
@@ -1197,38 +1177,32 @@ def _run(started_at: str) -> int:
         # Distinguish a real fetch/parse failure from CrowdSec genuinely having
         # no decisions, so a broken LAPI call is never silently treated as
         # "nothing to report".
-        print()
-        print_config_info("Connecting to CrowdSec LAPI and fetching active decisions...")
+        print_config_info("Retrieving alerts with active decisions from CrowdSec LAPI")
         try:
             decisions = get_crowdsec_decisions()
         except CrowdSecFetchError as e:
             print_config_info(f"ERROR: Could not fetch CrowdSec decisions: {e}")
             if e.hint:
-                print_config_info(f"HINT: {e.hint}")
+                print_config_info(f"Hint: {e.hint}")
             return 1
         except Exception as e:
-            print_config_info(
-                f"ERROR: Unexpected error while fetching CrowdSec decisions: {e}"
-            )
+            print_config_info(f"ERROR: Unexpected error while fetching CrowdSec decisions: {e}")
             return 1
 
         if not decisions:
             print_config_info("CrowdSec returned no decisions — nothing to report")
-            return 0
+            return _early_exit_code()
         print_debug(f"Retrieved {len(decisions)} alerts from CrowdSec")
         print_alert_overview_table(decisions)
 
         # Batch check processed reports. Idempotency is per (alert, IP) because
         # one alert can carry several bans (different IPs).
         alert_keys = [
-            (alert_id, get_alert_ip(alert))
-            for alert in decisions
-            if (alert_id := get_alert_id(alert)) is not None
+            (alert_id, get_alert_ip(alert)) for alert in decisions if (alert_id := get_alert_id(alert)) is not None
         ]
         processed_alert_ids = batch_check_processed_alerts(alert_keys)
         stats.already_processed = len(processed_alert_ids)
 
-        # Combined deduplication and filtering
         (
             alerts_to_process,
             invalid_ip_count,
@@ -1241,9 +1215,7 @@ def _run(started_at: str) -> int:
         stats.skipped_due_to_limit = skipped_count
         stats.whitelisted_asns = whitelisted_count
 
-        # Early exit if no alerts to process
         if not alerts_to_process:
-            print()
             print_config_info("No alerts require processing after filtering")
             print_stat_item("Total alerts", str(len(decisions)))
             print_stat_item("Already processed", str(stats.already_processed))
@@ -1255,11 +1227,9 @@ def _run(started_at: str) -> int:
             if stats.skipped_due_to_limit:
                 print_stat_item("Skipped due to limit", str(stats.skipped_due_to_limit))
             print_config_info("Processing completed successfully!")
-            return 0
+            return _early_exit_code()
 
-        print_config_info(
-            f"After filtering: {len(alerts_to_process)} alerts require processing"
-        )
+        print_config_info(f"After filtering: {len(alerts_to_process)} alerts require processing")
 
         # Process alerts in chunks with optional throttling between chunks
         mails_sent_details: list[tuple[int, str, str, str]] = []
@@ -1270,24 +1240,19 @@ def _run(started_at: str) -> int:
 
         for chunk_index, chunk in enumerate(chunks):
             if interrupt_handler.interrupted:
-                print_config_info("Interrupt received, stopping processing...")
+                print_config_info("Interrupt received, stopping processing")
                 break
 
             if len(chunks) > 1:
-                print_config_info(
-                    f"Processing chunk {chunk_index + 1}/{len(chunks)} "
-                    f"({len(chunk)} alerts)"
-                )
+                print_config_info(f"Processing chunk {chunk_index + 1}/{len(chunks)} ({len(chunk)} alerts)")
 
             for alert in chunk:
                 if interrupt_handler.interrupted:
-                    print_config_info("Interrupt received, stopping processing...")
+                    print_config_info("Interrupt received, stopping processing")
                     break
 
                 processed += 1
-                result = process_single_alert(
-                    alert, processed, total_to_process, hostname
-                )
+                result = process_single_alert(alert, processed, total_to_process, hostname)
 
                 stats.total_processing_time += result.processing_time
 
@@ -1296,15 +1261,11 @@ def _run(started_at: str) -> int:
                         metric_lines.append(build_report_point(alert, result, hostname))
                     except (TypeError, ValueError) as e:
                         stats.metrics_errors += 1
-                        print_database_error(
-                            result.alert_id or 0, f"Failed to build metrics point: {e}"
-                        )
+                        print_database_error(result.alert_id or 0, f"Failed to build metrics point: {e}")
 
                 # Update statistics for real-time display
                 if result.success and result.recipient:
-                    mails_sent_details.append(
-                        (result.alert_id, result.ip, result.scenario, result.recipient)
-                    )
+                    mails_sent_details.append((result.alert_id, result.ip, result.scenario, result.recipient))
                     stats.mails_sent += 1
                 elif result.error_type == "no_contact":
                     stats.no_contact += 1
@@ -1326,11 +1287,7 @@ def _run(started_at: str) -> int:
 
             # Throttle between chunks (skip after the final chunk)
             is_last_chunk = chunk_index == len(chunks) - 1
-            if (
-                SLEEP_BETWEEN_CHUNKS > 0
-                and not is_last_chunk
-                and not interrupt_handler.interrupted
-            ):
+            if SLEEP_BETWEEN_CHUNKS > 0 and not is_last_chunk and not interrupt_handler.interrupted:
                 print_config_info(
                     f"Chunk {chunk_index + 1}/{len(chunks)} complete — "
                     f"throttling {SLEEP_BETWEEN_CHUNKS}s before next chunk..."
@@ -1344,12 +1301,20 @@ def _run(started_at: str) -> int:
         # else. A deferred batch is therefore a warning, not a run failure; the
         # outbox bounds in config.py decide when a prolonged outage becomes one
         # (see _metrics_outbox_is_saturated).
-        if METRICS_ENABLED and not flush_points(metric_lines):
+        flushed = True
+        if METRICS_ENABLED:
+            try:
+                flushed = flush_points(metric_lines)
+            except MetricsError as e:
+                # Lost or pruned points, a failed QuestDB dedup gate (rows stay
+                # in the outbox) or a failed TTL: none may exit 0.
+                stats.metrics_errors += 1
+                print_database_error(0, str(e))
+        if not flushed:
             print_log(
                 "WARNING",
                 TAGS["WARNING"],
-                f"Metrics points are queued for the next run "
-                f"({METRICS_BACKEND} unreachable); mails were sent",
+                f"Metrics points are queued for the next run ({METRICS_BACKEND} unreachable); mails were sent",
             )
             # Escalate only once the spool is close to its bound, i.e. when the
             # next prune would start discarding points for real. A single
@@ -1359,10 +1324,7 @@ def _run(started_at: str) -> int:
             if _metrics_outbox_is_saturated():
                 stats.metrics_errors += 1
 
-        # Final summary
-        print_detailed_summary(
-            stats, len(decisions), len(alerts_to_process), mails_sent_details
-        )
+        print_detailed_summary(stats, len(decisions), len(alerts_to_process), mails_sent_details)
 
         error_count = stats.total_errors()
         status = "with warnings" if error_count > 0 else "successfully"

@@ -25,7 +25,6 @@ def print_banner(version: str | None = None, git_sha: str | None = None) -> None
         version = _DEFAULT_VERSION
     if git_sha is None:
         git_sha = _DEFAULT_GIT_SHA
-    # Check if we have color support
     is_tty = sys.stdout.isatty()
 
     if is_tty:
@@ -61,7 +60,8 @@ def print_banner(version: str | None = None, git_sha: str | None = None) -> None
     def center_below_banner(text: str) -> str:
         return (" " * min_indent) + text.center(visual_width)
 
-    print(f"{CYAN}{BOLD}{banner}{RESET}")
+    print(f"{CYAN}{BOLD}" + "\n".join(lines) + f"{RESET}")
     print(f"{WHITE}{center_below_banner(title_text)}{RESET}")
     print(f"{GRAY}{center_below_banner(version_text)}{RESET}")
-    print(f"{GRAY}{center_below_banner(disclaimer_text)}{RESET}\n")
+    print(f"{GRAY}{center_below_banner(disclaimer_text)}{RESET}")
+    print()

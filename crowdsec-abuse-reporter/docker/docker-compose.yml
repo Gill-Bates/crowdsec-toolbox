@@ -4,8 +4,17 @@ services:
     container_name: crowdsec-abuse-reporter
     env_file:
       - ./settings.env
-    init: true
-    restart: always
+    # tini is PID 1 inside the image (see Dockerfile ENTRYPOINT), so Compose adds no init of its own.
+    # Continuous operation; a one-shot run must use
+    # `docker compose run --rm -e RUN_ONCE=true crowdsec-abuse-reporter` (run creates the
+    # container with restart "no"); RUN_ONCE=true under `up` would restart after every exit 0.
+    restart: unless-stopped
+    stop_grace_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     read_only: true
     cap_drop:
       - ALL
@@ -16,12 +25,6 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 128
-    environment:
-      - TZ=Europe/Berlin
-      - RUN_EVERY_HOUR=6
-      - METRICS_INTERVAL=60
-      - RUN_ONCE=false
-      - RUN_JITTER=300
     volumes:
       - ./data:/data
       - /etc/hostname:/run/host/hostname:ro

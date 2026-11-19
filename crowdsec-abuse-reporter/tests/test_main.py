@@ -11,7 +11,7 @@ import unittest
 from contextlib import ExitStack, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["SMTP_PASSWORD"] = ""
@@ -43,6 +43,19 @@ class DummyInterruptHandler:
 
 
 class MainHelpersTest(unittest.TestCase):
+    def test_geoip_asn_whitelist_blocks_send_when_crowdsec_supplies_no_asn(self):
+        alert = {"id": 9, "source": {"ip": "203.0.113.5"}, "scenario": "s"}
+        with (
+            patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881"})),
+            patch.dict(sys.modules, {"app.geoip": MagicMock(lookup=lambda _ip: {"asn": 8881})}),
+            patch.object(crowdsec_main, "extract_abuse_contact") as contact,
+            patch.object(crowdsec_main, "send_abuse_report") as send,
+        ):
+            result = crowdsec_main.process_single_alert(alert, 1, 1, "host")
+        self.assertEqual(result.error_type, "whitelisted")
+        contact.assert_not_called()
+        send.assert_not_called()
+
     def test_get_alert_id_rejects_missing_invalid_and_non_positive_values(self):
         self.assertIsNone(crowdsec_main.get_alert_id({}))
         self.assertIsNone(crowdsec_main.get_alert_id({"id": "nope"}))
@@ -52,9 +65,7 @@ class MainHelpersTest(unittest.TestCase):
 
     def test_get_alert_ip_falls_back_to_value_context_and_meta(self):
         self.assertEqual(
-            crowdsec_main.get_alert_ip(
-                {"source": {"scope": "Ip", "value": "202.191.58.34"}}
-            ),
+            crowdsec_main.get_alert_ip({"source": {"scope": "Ip", "value": "202.191.58.34"}}),
             "202.191.58.34",
         )
         self.assertEqual(
@@ -62,9 +73,7 @@ class MainHelpersTest(unittest.TestCase):
             "198.51.100.7",
         )
         self.assertEqual(
-            crowdsec_main.get_alert_ip(
-                {"events": [{"meta": [{"key": "source_ip", "value": "203.0.113.9"}]}]}
-            ),
+            crowdsec_main.get_alert_ip({"events": [{"meta": [{"key": "source_ip", "value": "203.0.113.9"}]}]}),
             "203.0.113.9",
         )
 
@@ -75,8 +84,8 @@ class MainHelpersTest(unittest.TestCase):
             {"id": 42, "source": {"ip": "9.9.9.9"}, "scenario": "two"},
         ]
 
-        alerts, invalid_ips, invalid_ids, skipped, whitelisted = (
-            crowdsec_main.deduplicate_and_filter_alerts(decisions, set())
+        alerts, invalid_ips, invalid_ids, skipped, whitelisted = crowdsec_main.deduplicate_and_filter_alerts(
+            decisions, set()
         )
 
         self.assertEqual(len(alerts), 1)
@@ -91,16 +100,14 @@ class MainHelpersTest(unittest.TestCase):
         self.assertFalse(crowdsec_main.is_valid_public_ip("100.64.0.1", 11))
         self.assertTrue(crowdsec_main.is_valid_public_ip("8.8.8.8", 12))
 
-    def test_build_whitelisted_asn_rows_uses_alert_provider_names(self):
+    def test_build_whitelisted_asn_rows_prefers_local_db_names_over_alert_names(self):
         decisions = [
             {"source": {"as_number": "8881", "as_name": "1&1 Versatel"}},
             {"source": {"as_number": "3209", "as_name": "Vodafone"}},
         ]
 
         with (
-            patch.object(
-                crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167", "3209"})
-            ),
+            patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167", "3209"})),
             patch.dict(
                 sys.modules,
                 {
@@ -126,9 +133,7 @@ class MainHelpersTest(unittest.TestCase):
 
     def test_build_whitelisted_asn_rows_uses_local_asn_db_names(self):
         with (
-            patch.object(
-                crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167", "3209"})
-            ),
+            patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167", "3209"})),
             patch.dict(
                 sys.modules,
                 {
@@ -168,9 +173,7 @@ class MainHelpersTest(unittest.TestCase):
             rows = crowdsec_main.build_whitelisted_asn_rows()
 
         self.assertEqual(rows, [("AS8881", "unknown")])
-        debug.assert_called_once_with(
-            "ASN provider lookup failed: ASN database unavailable"
-        )
+        debug.assert_called_once_with("ASN provider lookup failed: ASN database unavailable")
 
     def test_build_whitelisted_asn_rows_reports_alert_lookup_failure(self):
         def fail_lookup(_ip):
@@ -180,22 +183,53 @@ class MainHelpersTest(unittest.TestCase):
             patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881"})),
             patch.dict(
                 sys.modules,
-                {
-                    "app.geoip": types.SimpleNamespace(
-                        lookup_asn_providers=lambda _asns: {}, lookup=fail_lookup
-                    )
-                },
+                {"app.geoip": types.SimpleNamespace(lookup_asn_providers=lambda _asns: {}, lookup=fail_lookup)},
             ),
             patch.object(crowdsec_main, "print_debug") as debug,
         ):
-            rows = crowdsec_main.build_whitelisted_asn_rows(
-                [{"source": {"ip": "203.0.113.1", "as_number": "8881"}}]
-            )
+            rows = crowdsec_main.build_whitelisted_asn_rows([{"source": {"ip": "203.0.113.1", "as_number": "8881"}}])
 
         self.assertEqual(rows, [("AS8881", "unknown")])
-        debug.assert_called_once_with(
-            "GeoIP lookup failed for 203.0.113.1: GeoIP reader unavailable"
+        debug.assert_called_once_with("GeoIP lookup failed for 203.0.113.1: GeoIP reader unavailable")
+
+    def test_build_whitelisted_asn_rows_falls_back_to_alert_as_name(self):
+        decisions = [{"source": {"as_number": "8881", "as_name": "1&1 Versatel"}}]
+
+        with (
+            patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167"})),
+            patch.dict(sys.modules, {"app.geoip": types.SimpleNamespace(lookup_asn_providers=lambda _asns: {})}),
+        ):
+            rows = crowdsec_main.build_whitelisted_asn_rows(decisions)
+
+        self.assertEqual(rows, [("AS8881", "1&1 Versatel"), ("AS51167", "unknown")])
+
+    def test_build_whitelisted_asn_rows_falls_back_to_geoip_provider(self):
+        decisions = [{"source": {"ip": "203.0.113.1", "as_number": "8881"}}]
+        geoip = types.SimpleNamespace(
+            lookup_asn_providers=lambda _asns: {},
+            lookup=lambda _ip: {"provider": "Versatel via GeoIP"},
         )
+
+        with (
+            patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881"})),
+            patch.dict(sys.modules, {"app.geoip": geoip}),
+        ):
+            rows = crowdsec_main.build_whitelisted_asn_rows(decisions)
+
+        self.assertEqual(rows, [("AS8881", "Versatel via GeoIP")])
+
+    def test_whitelist_check_ignores_other_asns_and_fails_open_without_geoip(self):
+        alert = {"source": {"ip": "203.0.113.5"}}
+        with patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881"})):
+            with patch.dict(sys.modules, {"app.geoip": MagicMock(lookup=lambda _ip: {"asn": 64500})}):
+                self.assertEqual(crowdsec_main._whitelisted_asn_for_alert(alert, "203.0.113.5"), "")
+            with (
+                patch.dict(sys.modules, {"app.geoip": MagicMock(lookup=MagicMock(side_effect=RuntimeError("no db")))}),
+                patch.object(crowdsec_main, "print_debug"),
+            ):
+                self.assertEqual(crowdsec_main._whitelisted_asn_for_alert(alert, "203.0.113.5"), "")
+                matching = {"source": {"ip": "203.0.113.5", "as_number": "8881"}}
+                self.assertEqual(crowdsec_main._whitelisted_asn_for_alert(matching, "203.0.113.5"), "8881")
 
     def test_build_alert_overview_rows_ranks_countries_and_patterns(self):
         decisions = [
@@ -243,9 +277,7 @@ class MainHelpersTest(unittest.TestCase):
 
     def test_print_whitelisted_asn_table_prints_local_provider_names(self):
         with (
-            patch.object(
-                crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167", "3209"})
-            ),
+            patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167", "3209"})),
             patch.object(
                 crowdsec_main,
                 "build_whitelisted_asn_rows",
@@ -295,9 +327,8 @@ class MainHelpersTest(unittest.TestCase):
         )
 
         subject = mock_send_abuse_mail.call_args.kwargs["subject"]
-        # Invariant: subject must be a single line with no CR/LF characters.
-        # We do not assert the exact string because that would lock in the
-        # current (weak) sanitization strategy and block future improvements.
+        # Assert only the invariant (single line, no CR/LF), not the exact string,
+        # so the sanitization strategy can change.
         self.assertNotIn("\n", subject)
         self.assertNotIn("\r", subject)
         self.assertEqual(subject.splitlines(), [subject])
@@ -356,7 +387,7 @@ class MainHelpersTest(unittest.TestCase):
                 )
 
         output = buffer.getvalue()
-        self.assertIn("RUN SUMMARY", output)
+        self.assertIn("Run summary", output)
         self.assertIn("Overview", output)
         self.assertIn("Eligible after filtering   : 1", output)
         self.assertIn("Results", output)
@@ -372,10 +403,7 @@ class MainHelpersTest(unittest.TestCase):
             total_processing_time=6.0,
             start_time=0.0,
         )
-        mails = [
-            (index, f"198.51.100.{index}", f"scenario-{index}", "abuse@example.com")
-            for index in range(1, 7)
-        ]
+        mails = [(index, f"198.51.100.{index}", f"scenario-{index}", "abuse@example.com") for index in range(1, 7)]
 
         with patch.object(crowdsec_main.time, "monotonic", return_value=12.0):
             buffer = StringIO()
@@ -409,9 +437,7 @@ class MainHelpersTest(unittest.TestCase):
         )
 
         with (
-            patch.object(
-                crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler
-            ),
+            patch.object(crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler),
             patch.object(crowdsec_main, "print_banner"),
             patch.object(crowdsec_main, "print_summary_header"),
             patch.object(crowdsec_main, "print_stat_item"),
@@ -420,17 +446,13 @@ class MainHelpersTest(unittest.TestCase):
             patch.object(crowdsec_main, "init_db"),
             patch.object(crowdsec_main, "get_node_ip", return_value="127.0.0.1"),
             patch.object(crowdsec_main, "get_crowdsec_decisions", return_value=alerts),
-            patch.object(
-                crowdsec_main, "batch_check_processed_alerts", return_value=set()
-            ),
+            patch.object(crowdsec_main, "batch_check_processed_alerts", return_value=set()),
             patch.object(
                 crowdsec_main,
                 "deduplicate_and_filter_alerts",
                 return_value=([alerts[0]], 0, 0, 0, 0),
             ),
-            patch.object(
-                crowdsec_main, "process_single_alert", return_value=result
-            ) as mock_process_single_alert,
+            patch.object(crowdsec_main, "process_single_alert", return_value=result) as mock_process_single_alert,
         ):
             crowdsec_main.main()
 
@@ -439,9 +461,7 @@ class MainHelpersTest(unittest.TestCase):
         self.assertEqual(stats.database_errors, 1)
 
     def test_main_exits_cleanly_with_hint_on_lapi_credentials_error(self):
-        fake_geoip = types.SimpleNamespace(
-            ensure_geoip_databases=lambda: {"city": True, "asn": True}
-        )
+        fake_geoip = types.SimpleNamespace(ensure_geoip_databases=lambda: {"city": True, "asn": True})
         fetch_error = crowdsec_main.CrowdSecFetchError(
             "LAPI authentication failed with HTTP 403 (Forbidden).",
             hint=(
@@ -456,9 +476,7 @@ class MainHelpersTest(unittest.TestCase):
             patch.object(crowdsec_main, "print_banner"),
             patch.object(crowdsec_main, "print_summary_header"),
             patch.object(crowdsec_main, "print_config_info") as mock_print_config_info,
-            patch.object(
-                crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler
-            ),
+            patch.object(crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler),
             patch.object(crowdsec_main, "init_db"),
             patch.object(crowdsec_main, "get_node_ip", return_value="127.0.0.1"),
             patch.object(
@@ -477,21 +495,18 @@ class MainHelpersTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         printed_messages = [call.args[0] for call in mock_print_config_info.call_args_list]
         self.assertIn(
-            "ERROR: Could not fetch CrowdSec decisions: "
-            "LAPI authentication failed with HTTP 403 (Forbidden).",
+            "ERROR: Could not fetch CrowdSec decisions: LAPI authentication failed with HTTP 403 (Forbidden).",
             printed_messages,
         )
         self.assertIn(
-            "HINT: Use `docker exec -it <your crowdsec container name> "
+            "Hint: Use `docker exec -it <your crowdsec container name> "
             "cat /etc/crowdsec/local_api_credentials.yaml` to inspect the "
             "generated credentials.",
             printed_messages,
         )
 
     def test_main_prints_whitelisted_asn_table_before_fetch(self):
-        fake_geoip = types.SimpleNamespace(
-            ensure_geoip_databases=lambda: {"city": True, "asn": True}
-        )
+        fake_geoip = types.SimpleNamespace(ensure_geoip_databases=lambda: {"city": True, "asn": True})
 
         with (
             patch.dict(sys.modules, {"app.geoip": fake_geoip}),
@@ -500,9 +515,7 @@ class MainHelpersTest(unittest.TestCase):
             patch.object(crowdsec_main, "print_stat_item"),
             patch.object(crowdsec_main, "print_detailed_summary"),
             patch.object(crowdsec_main, "print_config_info") as mock_print_config_info,
-            patch.object(
-                crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler
-            ),
+            patch.object(crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler),
             patch.object(crowdsec_main, "init_db"),
             patch.object(crowdsec_main, "get_node_ip", return_value="127.0.0.1"),
             patch.object(
@@ -515,12 +528,8 @@ class MainHelpersTest(unittest.TestCase):
                 "get_crowdsec_decisions",
                 side_effect=crowdsec_main.CrowdSecFetchError("boom"),
             ),
-            patch.object(
-                crowdsec_main, "batch_check_processed_alerts", return_value=set()
-            ),
-            patch.object(
-                crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167"})
-            ),
+            patch.object(crowdsec_main, "batch_check_processed_alerts", return_value=set()),
+            patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset({"8881", "51167"})),
             patch.object(
                 crowdsec_main,
                 "build_whitelisted_asn_rows",
@@ -540,18 +549,12 @@ class MainHelpersTest(unittest.TestCase):
         self.assertIn("  AS51167  Contabo GmbH", printed_messages)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WhitelistAsnTableOrderTest(unittest.TestCase):
     """The whitelist table must be printed after the GeoIP databases are ready.
 
-    Provider names are resolved from the local ASN MMDB. Printing the table with
-    the rest of the startup configuration listed every entry as "unknown"
-    whenever that database was not on disk yet — a cold start without an image
-    baseline, or a run whose first action is to download it. The lookup itself
-    was never broken, only its position in the sequence.
+    Provider names are resolved from the local ASN MMDB. Printed earlier, every
+    entry shows as "unknown" while that database is not on disk yet (cold start
+    without an image baseline, or a first run that downloads it).
     """
 
     def test_table_is_printed_after_geoip_is_ensured(self):
@@ -565,30 +568,34 @@ class WhitelistAsnTableOrderTest(unittest.TestCase):
         )
 
         quiet = [
-            "print_banner", "print_summary_header", "print_config_info",
-            "print_database_error", "get_alert_stats",
+            "print_banner",
+            "print_summary_header",
+            "print_config_info",
+            "print_database_error",
+            "get_alert_stats",
         ]
         with ExitStack() as stack:
             stack.enter_context(patch.dict(sys.modules, {"app.geoip": fake_geoip}))
             for name in quiet:
                 stack.enter_context(patch.object(crowdsec_main, name))
-            stack.enter_context(patch.object(
-                crowdsec_main, "print_whitelisted_asn_table",
-                side_effect=lambda *a, **k: calls.append("table"),
-            ))
-            stack.enter_context(patch.object(
-                crowdsec_main, "get_node_ip", return_value="203.0.113.1"
-            ))
+            stack.enter_context(
+                patch.object(
+                    crowdsec_main,
+                    "print_whitelisted_asn_table",
+                    side_effect=lambda *_a, **_k: calls.append("table"),
+                )
+            )
+            stack.enter_context(patch.object(crowdsec_main, "get_node_ip", return_value="203.0.113.1"))
             # Stops the run right after the two calls under test, so the rest of
             # the pipeline needs no mocking.
-            stack.enter_context(patch.object(
-                crowdsec_main, "init_db", side_effect=RuntimeError("stop here")
-            ))
-            stack.enter_context(patch.object(
-                crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler
-            ))
+            stack.enter_context(patch.object(crowdsec_main, "init_db", side_effect=RuntimeError("stop here")))
+            stack.enter_context(patch.object(crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler))
             stack.enter_context(redirect_stdout(StringIO()))
             code = crowdsec_main.main()
 
         self.assertEqual(code, 1)
         self.assertEqual(calls, ["geoip", "table"])
+
+
+if __name__ == "__main__":
+    unittest.main()

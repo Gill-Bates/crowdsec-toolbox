@@ -27,16 +27,17 @@ same data again and the result is identical. See
 
 - A CrowdSec instance whose Local API is reachable over HTTP, plus watcher
   credentials
-- An InfluxDB 2.x write endpoint, or a QuestDB instance with ILP-over-HTTP
-  enabled (default port `9000`)
-- Python 3.13+ with the `metrics-exporter` dependency group installed
+- An InfluxDB 2.x write endpoint, or a **QuestDB 10.x** instance with
+  ILP-over-HTTP enabled (default port `9000`); other QuestDB versions are
+  rejected at startup with exit `1`
+- Python 3.13+ with the `default` dependency group of `crowdsec-metrics-exporter/pyproject.toml` installed
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Success, including a run that found nothing new to export |
-| `1` | The TLS check, the LAPI fetch or a backend write failed |
+| `1` | The LAPI fetch or a backend write failed (including a rejected TLS handshake); for QuestDB, the server is not a 10.x release (nothing is written), the deduplication gate could not be verified (nothing is written) or a configured `QUESTDB_TTL` could not be set (the data is kept and not sent again); or the data is incomplete: event details could not be fetched, the alert fetch hit its ceiling, an alert or event has no usable timestamp, or an alert or decision has a missing or invalid `id` and was skipped. Valid records are still exported, but the heartbeat is not refreshed. An invalid timeout setting also exits `1` with a `Config Error` before any fetch |
 
 `main()` returns the code and `__main__` passes it to `sys.exit()`, so cron and
 the container health check can both detect a failed run.
@@ -52,6 +53,9 @@ The alert pass carries aggregate information only. The per-event pass adds
 request-level detail — HTTP verb, path, status, target FQDN — at a much higher
 volume. See [Per-Event Export](events.md).
 
+The passes are independent: if the alert table fails, the events pass still runs,
+and the run exits `1` when either failed.
+
 ## Known limitations
 
 !!! warning "`get_abuse_contact()` is a stub"
@@ -61,16 +65,20 @@ volume. See [Per-Event Export](events.md).
     abuse-contact resolution lives in the
     [abuse reporter](../abuse-reporter/index.md).
 
-- **No test suite exists** for this tool, and none should be added without an
-  explicit request. A real run needs a reachable CrowdSec instance and a live
-  backend, so there is no meaningful local smoke test.
-- With `METRICS_BACKEND=influxdb2` and `INFLUXDB_USE_HTTPS=true`, each run checks
-  TLS against `www.howsmyssl.com`. If that check fails the script asks
-  interactively whether to continue; without a terminal (cron) it aborts the run.
-  The check does not run for `questdb`.
-- The QuestDB backend relies on ILP-over-HTTP to auto-create the table and
-  columns on first write. TTL and deduplication are declared *afterwards*; a
-  failure there only logs a warning, since the data itself is already stored.
+- The test suite is offline: config parsing, line-protocol escaping,
+  LAPI fetch completeness and the QuestDB deduplication gate against an
+  in-memory fake. A real run still needs a reachable CrowdSec instance and a
+  live backend, so there is no local smoke test and no test may use the network.
+- With `METRICS_BACKEND=influxdb2`, plain HTTP and
+  `INFLUXDB_VALIDATE_CERTIFICATE=false` only log a warning on every run. There
+  is no separate TLS self-test and no prompt: the write itself performs the
+  handshake and exits `1` when it is rejected.
+- The QuestDB backend creates the table with its dedup keys and verifies
+  deduplication *before* the first write of each table (see
+  [Metrics Backends](../reference/metrics-backends.md#questdb)). TTL and the
+  optional downsampling rollup view are declared *afterwards*. A failed TTL
+  exits `1`; the data stays stored and is not sent again. A failed rollup only
+  logs an error and leaves the full raw TTL in place.
 
 ## This is the less maintained tool
 
@@ -85,9 +93,9 @@ volume. See [Per-Event Export](events.md).
     - Importing `app.config` has side effects: it loads `settings.env` at import
       time with `override=True`, so for this tool the file beats an existing
       environment variable.
-    - `setup.conf` creates the venv at `/opt/jobs/crowdsec_influx` and activates
-      it via `bin/activate`, not `.venv/bin/activate`, and documents no cron
-      entry.
+    - The production venv in the root `setup.conf` lives at
+      `/opt/jobs/crowdsec_influx` and is activated via `bin/activate`, not
+      `.venv/bin/activate`; `setup.conf` documents no cron entry.
 
 ## Documentation
 

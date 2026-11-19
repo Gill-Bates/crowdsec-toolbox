@@ -1,59 +1,113 @@
 ---
 hide:
-  - navigation
+  - toc
 ---
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Gill-Bates/crowdsec-toolbox/main/.github/img/crowdsec_toolbox_black.svg" width="300" alt="CrowdSec Toolbox" class="cst-logo-light">
-  <img src="https://raw.githubusercontent.com/Gill-Bates/crowdsec-toolbox/main/.github/img/crowdsec_toolbox_white.svg" width="300" alt="CrowdSec Toolbox" class="cst-logo-dark">
-</p>
+<section class="cst-hero" aria-labelledby="home-title">
+<div class="cst-hero-brand">
+  <img src="https://raw.githubusercontent.com/Gill-Bates/crowdsec-toolbox/main/.github/img/crowdsec_toolbox_black.svg#only-light" width="72" height="70" alt="CrowdSec Toolbox" class="cst-logo">
+  <img src="https://raw.githubusercontent.com/Gill-Bates/crowdsec-toolbox/main/.github/img/crowdsec_toolbox_white.svg#only-dark" width="72" height="70" alt="CrowdSec Toolbox" class="cst-logo">
+  <span class="cst-eyebrow">Security automation · CrowdSec Toolbox</span>
+</div>
 
-<p align="center">
-  <strong>Turn CrowdSec decisions into action and insight</strong>
-</p>
+<div class="cst-hero-copy">
+  <h1 id="home-title">Turn security decisions into actionable signals.</h1>
+  <p>Report malicious activity, export security metrics, and gain better visibility into what CrowdSec is blocking.</p>
+  <div class="cst-hero-actions">
+    <a href="getting-started/index.md" class="md-button md-button--primary cst-button-primary">Get Started</a>
+    <a href="#tools" class="md-button cst-button-secondary">Explore the Tools</a>
+  </div>
+</div>
+</section>
 
-<p align="center">
-  <a href="https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
-  <a href="https://github.com/Gill-Bates/crowdsec-toolbox"><img src="https://img.shields.io/badge/Python-3.13%2B-3776AB?logo=python&logoColor=white" alt="Python 3.13 or newer"></a>
-  <a href="https://github.com/Gill-Bates/crowdsec-toolbox"><img src="https://img.shields.io/badge/Deployment-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose deployment"></a>
-</p>
+## Two tools, one source
 
----
+CrowdSec Toolbox reads decisions from the CrowdSec Local API. Choose the reporter
+to send abuse reports, the exporter to send time-series metrics, or run both.
 
-## What is CrowdSec Toolbox?
+<h2 id="tools">Choose a workflow</h2>
 
-CrowdSec can identify and block hostile traffic. CrowdSec Toolbox helps you use
-those decisions *after* they are made: send an abuse report to the responsible
-network contact, or export decision data to the time-series backend you already
-monitor.
+<div class="grid cards cst-product-grid" markdown>
 
-The repository holds two standalone tools. They share a dependency manifest and
-these docs, but no application code — each one deploys, upgrades and fails
-independently of the other, and you can run only the part you need.
-
-<div class="grid cards" markdown>
-
--   :material-email-alert:{ .lg .middle } **crowdsec-abuse-reporter**
+-   :material-email-alert:{ .cst-product-icon } **Abuse Reporter**
 
     ---
 
-    Fetches bans from the CrowdSec Local API, enriches each source IP with
-    GeoIP data, resolves the responsible abuse contact through the Abusix DNS
-    database, and emails an X-ARF v4 report. SQLite guarantees every ban is
-    reported at most once.
+    Turns CrowdSec bans into X-ARF v4 reports. It enriches source IPs with GeoIP,
+    resolves the responsible abuse contact through Abusix DNS, and records each
+    `(AlertId, IPAddress)` pair in SQLite so it is reported at most once.
 
-    [:octicons-arrow-right-24: Abuse Reporter](abuse-reporter/index.md)
+    `X-ARF v4` · `GeoIP enrichment` · `At-most-once delivery`
 
--   :material-chart-line:{ .lg .middle } **crowdsec-metrics-exporter**
+    [Explore Abuse Reporter](abuse-reporter/index.md){ .cst-card-link }
+
+-   :material-chart-line:{ .cst-product-icon } **Metrics Exporter**
 
     ---
 
-    Reads the alerts behind the active decisions from the Local API and writes
-    them to InfluxDB 2.x or QuestDB on every run. Keeps no local state — both
-    backends deduplicate, so a repeated run is a no-op.
+    Reads alerts behind active decisions from the CrowdSec Local API and writes
+    them to InfluxDB 2.x or QuestDB. Both backends deduplicate repeated exports;
+    the exporter keeps no persistent local state.
 
-    [:octicons-arrow-right-24: Metrics Exporter](metrics-exporter/index.md)
+    `InfluxDB 2.x` · `QuestDB 10.x` · `Backend deduplication`
 
+    [Explore Metrics Exporter](metrics-exporter/index.md){ .cst-card-link }
+
+</div>
+
+## Built for real-world operations
+
+<div class="grid cards cst-feature-grid" markdown>
+
+-   :material-docker:{ .cst-feature-icon } **Flexible Deployment**
+
+    Run the tools with Docker Compose or directly on a host with cron.
+
+    [Deployment options](getting-started/installation.md){ .cst-card-link }
+
+-   :material-view-dashboard:{ .cst-feature-icon } **Grafana Dashboards**
+
+    Import the shipped dashboards for decision, report, and event data.
+
+    [Dashboard reference](reference/dashboards.md){ .cst-card-link }
+
+-   :material-check-decagram:{ .cst-feature-icon } **Reliable Processing**
+
+    The reporter uses an at-most-once claim protocol; the exporter relies on
+    backend deduplication for repeated points.
+
+    [Report delivery](abuse-reporter/delivery.md){ .cst-card-link } · [Metric deduplication](reference/metrics-backends.md#deduplication){ .cst-card-link }
+
+-   :material-shield-check:{ .cst-feature-icon } **Security by Design**
+
+    Both tools authenticate directly to the CrowdSec Local API and do not mount
+    the Docker socket.
+
+    [Security model](reference/security.md){ .cst-card-link }
+
+</div>
+
+## Data flow
+
+These ordered paths show which systems each tool reads from and writes to.
+
+<div class="cst-flow-grid">
+  <section class="cst-flow" aria-labelledby="flow-abuse-title">
+    <h3 id="flow-abuse-title">Abuse reporting</h3>
+    <ol class="cst-flow-steps">
+      <li>CrowdSec LAPI</li>
+      <li>Abuse Reporter</li>
+      <li>X-ARF email</li>
+    </ol>
+  </section>
+  <section class="cst-flow" aria-labelledby="flow-metrics-title">
+    <h3 id="flow-metrics-title">Metrics export</h3>
+    <ol class="cst-flow-steps">
+      <li>CrowdSec LAPI</li>
+      <li>Metrics Exporter</li>
+      <li>InfluxDB 2.x / QuestDB</li>
+    </ol>
+  </section>
 </div>
 
 ## At a glance
@@ -62,54 +116,48 @@ independently of the other, and you can run only the part you need.
 |---|---|---|
 | **What it does** | Turns CrowdSec bans into abuse reports | Exports CrowdSec decisions as time series |
 | **Source** | CrowdSec Local API (LAPI), direct | CrowdSec Local API (LAPI), direct |
-| **Output** | X-ARF v4 email to the abuse contact | InfluxDB 2.x or QuestDB (line protocol over HTTP) |
+| **Output** | X-ARF v4 email to the abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
 | **Enrichment** | GeoIP (GeoLite2 City + ASN) | — |
 | **Contact lookup** | Abusix DNS abuse-contact database | — |
 | **Idempotency** | SQLite, at-most-once per `(AlertId, IPAddress)` | Backend-side deduplication, no local state |
 | **Local state** | SQLite database, heartbeat files | None beyond a heartbeat on tmpfs |
 | **Runs as** | Docker container, or cron/host script | Docker container, or cron/host script |
-| **Tests** | pytest suite | None |
+| **Tests** | pytest suite | pytest suite (pure logic) |
 
 !!! info "Neither tool needs the Docker socket"
     Both reach CrowdSec over the Local API and authenticate with their own
-    watcher credentials. An earlier version of the exporter shelled out to
-    `docker exec <container> cscli ...`, which required mounting
-    `/var/run/docker.sock` — equivalent to root on the host. That path is gone
-    and must not be reintroduced.
+    watcher credentials. An earlier exporter version used `docker exec` and
+    required mounting `/var/run/docker.sock`; that path has been removed.
 
 ## Quick start
 
-Both tools deploy the same way: copy the environment template, fill in your
-CrowdSec credentials, start the Compose stack.
+Start with the abuse reporter's Compose deployment:
 
 ```bash
 git clone https://github.com/Gill-Bates/crowdsec-toolbox.git
 cd crowdsec-toolbox/crowdsec-abuse-reporter/docker
 cp settings.env.example settings.env
-# edit settings.env: LAPI credentials, SMTP server, sender address
+# Fill in CrowdSec credentials, SMTP server, and sender address.
 docker compose pull && docker compose up -d
 ```
 
-[:material-rocket-launch: Installation Guide](getting-started/installation.md){ .md-button .md-button--primary }
-[:material-docker: Docker Deployment](getting-started/docker.md){ .md-button }
+[:material-rocket-launch: Installation Guide](getting-started/installation.md){ .md-button .md-button--primary .cst-button-primary }
+[:material-docker: Docker Deployment](getting-started/docker.md){ .md-button .cst-button-secondary }
 
 ## Grafana dashboards
 
-Both tools ship ready-made dashboards in their `grafana/` directory. Import the
-JSON, pick your data source, and you have a working view of what CrowdSec is
-blocking — no provisioning and no plugins beyond the data source itself.
-
-[:material-view-dashboard: Dashboard Reference](reference/dashboards.md){ .md-button }
+Both tools ship ready-made QuestDB dashboards in their `grafana/` directories.
+Import the JSON, choose a QuestDB data source and table, then follow the
+[dashboard reference](reference/dashboards.md) for requirements and filters.
 
 ## Where to go next
 
-- [Metrics Backends](reference/metrics-backends.md) — the InfluxDB and QuestDB
-  variables, deduplication and retention behaviour both tools share
-- [Delivery Guarantees](abuse-reporter/delivery.md) — the at-most-once contract
-  that decides whether an abuse mail may be sent
-- [Health Checks](reference/health.md) — what "healthy" means for each container
-- [Security Model](reference/security.md) — privilege drop, capabilities, secret handling
-- [Build Pipelines](development/pipelines.md) — what CI gates and how images are published
+- [Getting Started](getting-started/index.md) — shared prerequisites and deployment choices
+- [Metrics Backends](reference/metrics-backends.md) — point schemas, deduplication, and retention
+- [Delivery Guarantees](abuse-reporter/delivery.md) — the report at-most-once contract
+- [Health Checks](reference/health.md) — what makes each container healthy
+- [Security Model](reference/security.md) — privilege boundaries and secret handling
+- [Build Pipelines](development/pipelines.md) — CI gates and image releases
 
 !!! important
     *CrowdSec Toolbox* is an independent community project. It is not affiliated

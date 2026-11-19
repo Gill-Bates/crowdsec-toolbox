@@ -1,0 +1,411 @@
+{
+  "apiVersion": "dashboard.grafana.app/v2",
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "crowdsec-questdb-events"
+  },
+  "spec": {
+    "annotations": [
+      {
+        "kind": "AnnotationQuery",
+        "spec": {
+          "query": {
+            "kind": "DataQuery",
+            "group": "grafana",
+            "version": "v0",
+            "spec": {}
+          },
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "builtIn": true
+        }
+      }
+    ],
+    "cursorSync": "Crosshair",
+    "editable": true,
+    "elements": {
+      "panel-1": {
+        "kind": "Panel",
+        "spec": {
+          "id": 1,
+          "title": "Top Endpoints | Path / Verb / Status",
+          "description": "Optional per-event data. Requires EVENTS_ENABLED=true and an events table with the referenced metadata columns populated. The event schema has no country field, so this dashboard has no country filter.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(http_path, ''), '(unknown)') AS \"Path\", coalesce(nullif(http_verb, ''), '(unknown)') AS \"Verb\", coalesce(nullif(http_status, ''), '(unknown)') AS \"Status\", count() AS \"Requests\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\", count_distinct(nullif(target_fqdn, '')) AS \"Targets\"\nFROM \"${event_table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\nGROUP BY http_path, http_verb, http_status\nORDER BY \"Requests\" DESC\nLIMIT 100;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Path"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 420
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "panel-2": {
+        "kind": "Panel",
+        "spec": {
+          "id": 2,
+          "title": "Top Target FQDNs | Requests",
+          "description": "Optional per-event data. Requires EVENTS_ENABLED=true and an events table with the referenced metadata columns populated. The event schema has no country field, so this dashboard has no country filter.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "questdb-questdb-datasource",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "format": 1,
+                        "queryType": "sql",
+                        "rawSql": "SELECT coalesce(nullif(target_fqdn, ''), '(unknown)') AS \"Target FQDN\", count() AS \"Requests\", count_distinct(nullif(ip_address, '')) AS \"Source IPs\", count_distinct(nullif(http_path, '')) AS \"Distinct Paths\", count_distinct(nullif(scenario, '')) AS \"Scenarios\"\nFROM \"${event_table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\nGROUP BY target_fqdn\nORDER BY \"Requests\" DESC\nLIMIT 50;"
+                      }
+                    },
+                    "refId": "A",
+                    "hidden": false
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {
+                "maxDataPoints": 400,
+                "interval": "1m"
+              }
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.2",
+            "spec": {
+              "options": {
+                "cellHeight": "sm",
+                "enablePagination": true,
+                "showHeader": true
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "decimals": 0,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": 0,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "noValue": "—",
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "footer": {
+                      "reducers": []
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Target FQDN"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 300
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "layout": {
+      "kind": "GridLayout",
+      "spec": {
+        "items": [
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 0,
+              "y": 0,
+              "width": 14,
+              "height": 12,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-1"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 14,
+              "y": 0,
+              "width": 10,
+              "height": 12,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-2"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "links": [],
+    "liveNow": false,
+    "preload": false,
+    "tags": [
+      "crowdsec",
+      "questdb",
+      "security",
+      "host-analysis",
+      "events"
+    ],
+    "timeSettings": {
+      "timezone": "browser",
+      "from": "now-7d",
+      "to": "now",
+      "autoRefresh": "5m",
+      "autoRefreshIntervals": [
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h"
+      ],
+      "hideTimepicker": false,
+      "fiscalYearStartMonth": 0
+    },
+    "title": "CrowdSec · Metrics Exporter Events",
+    "variables": [
+      {
+        "kind": "DatasourceVariable",
+        "spec": {
+          "name": "datasource",
+          "pluginId": "questdb-questdb-datasource",
+          "refresh": "onDashboardLoad",
+          "regex": "",
+          "current": {
+            "text": "",
+            "value": ""
+          },
+          "options": [],
+          "multi": false,
+          "includeAll": false,
+          "label": "QuestDB",
+          "hide": "dontHide",
+          "skipUrlSync": false,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "event_table",
+          "current": {
+            "text": "crowdsec_events",
+            "value": "crowdsec_events"
+          },
+          "label": "Events table",
+          "hide": "dontHide",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "format": 1,
+              "queryType": "sql",
+              "rawSql": "SELECT table_name FROM tables() WHERE table_name ~ '_events$' ORDER BY table_name;"
+            }
+          },
+          "regex": "",
+          "regexApplyTo": "value",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT table_name FROM tables() WHERE table_name ~ '_events$' ORDER BY table_name;",
+          "options": [],
+          "multi": false,
+          "includeAll": false,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "host",
+          "current": {
+            "text": "",
+            "value": ""
+          },
+          "label": "Host",
+          "hide": "dontHide",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "format": 1,
+              "queryType": "sql",
+              "rawSql": "SELECT DISTINCT coalesce(nullif(host, ''), '(unknown)') AS value FROM \"${event_table}\" ORDER BY value;"
+            }
+          },
+          "regex": "",
+          "regexApplyTo": "value",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT DISTINCT coalesce(nullif(host, ''), '(unknown)') AS value FROM \"${event_table}\" ORDER BY value;",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allowCustomValue": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "scenario",
+          "current": {
+            "text": "",
+            "value": ""
+          },
+          "label": "Scenario",
+          "hide": "dontHide",
+          "refresh": "onDashboardLoad",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "questdb-questdb-datasource",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "format": 1,
+              "queryType": "sql",
+              "rawSql": "SELECT DISTINCT coalesce(nullif(scenario, ''), '(unknown)') AS value FROM \"${event_table}\" ORDER BY value;"
+            }
+          },
+          "regex": "",
+          "regexApplyTo": "value",
+          "sort": "alphabeticalAsc",
+          "definition": "SELECT DISTINCT coalesce(nullif(scenario, ''), '(unknown)') AS value FROM \"${event_table}\" ORDER BY value;",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allowCustomValue": false
+        }
+      }
+    ]
+  }
+}

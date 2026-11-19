@@ -1,0 +1,120 @@
+[project]
+site_name = "CrowdSec Toolbox Documentation"
+site_description = "Turn CrowdSec decisions into abuse reports and time-series metrics"
+site_author = "Gill-Bates"
+site_url = "https://gill-bates.github.io/crowdsec-toolbox/"
+repo_name = "Gill-Bates/crowdsec-toolbox"
+repo_url = "https://github.com/Gill-Bates/crowdsec-toolbox"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+use_directory_urls = true
+copyright = "Copyright &copy; 2026 Gill-Bates | Licensed under MIT"
+extra_css = ["stylesheets/extra.css"]
+exclude_docs = """
+AGENTS.md
+pyproject.toml
+"""
+not_in_nav = "license.md"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting Started" = [
+    { "Overview" = "getting-started/index.md" },
+    { "Installation" = "getting-started/installation.md" },
+    { "Docker Deployment" = "getting-started/docker.md" },
+  ] },
+  { "Abuse Reporter" = [
+    { "Overview" = "abuse-reporter/index.md" },
+    { "Configuration" = "abuse-reporter/configuration.md" },
+    { "Delivery Guarantees" = "abuse-reporter/delivery.md" },
+    { "GeoIP Databases" = "abuse-reporter/geoip.md" },
+  ] },
+  { "Metrics Exporter" = [
+    { "Overview" = "metrics-exporter/index.md" },
+    { "Configuration" = "metrics-exporter/configuration.md" },
+    { "Per-Event Export" = "metrics-exporter/events.md" },
+  ] },
+  { "Reference" = [
+    { "Metrics Backends" = "reference/metrics-backends.md" },
+    { "Grafana Dashboards" = "reference/dashboards.md" },
+    { "Health Checks" = "reference/health.md" },
+    { "Log Format" = "reference/log-format.md" },
+    { "Security Model" = "reference/security.md" },
+  ] },
+  { "Development" = [
+    { "Setup" = "development/setup.md" },
+    { "Testing" = "development/testing.md" },
+    { "Build Pipelines" = "development/pipelines.md" },
+    { "Design System" = "development/design-system.md" },
+  ] },
+  { "Troubleshooting" = "troubleshooting.md" },
+]
+
+[project.theme]
+variant = "classic"
+language = "en"
+font = false
+features = [
+  "navigation.instant",
+  "navigation.tracking",
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.footer",
+  "navigation.prune",
+  "search.suggest",
+  "search.highlight",
+  "search.share",
+  "content.code.copy",
+  "content.code.annotate",
+  "content.tabs.link",
+]
+palette = [
+  { media = "(prefers-color-scheme: light)", scheme = "default", primary = "custom", accent = "custom", toggle = { icon = "material/brightness-7", name = "Switch to dark mode" } },
+  { media = "(prefers-color-scheme: dark)", scheme = "slate", primary = "custom", accent = "custom", toggle = { icon = "material/brightness-4", name = "Switch to light mode" } },
+]
+icon.repo = "fontawesome/brands/github"
+icon.edit = "material/pencil"
+icon.view = "material/eye"
+
+[project.plugins.search]
+separator = '[\s\-\.]+'
+
+[project.plugins.minify]
+minify_html = true
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+toc.permalink = true
+toc.toc_depth = 3
+pymdownx.betterem.smart_enable = "all"
+pymdownx.caret = {}
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.mark = {}
+pymdownx.smartsymbols = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true
+pymdownx.tasklist.custom_checkbox = true
+pymdownx.tilde = {}
+
+[project.extra]
+homepage = "https://gill-bates.github.io/crowdsec-toolbox/"
+generator = false
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/Gill-Bates"

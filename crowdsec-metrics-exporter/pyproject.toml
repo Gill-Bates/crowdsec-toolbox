@@ -1,6 +1,6 @@
 [project]
 name = "crowdsec-metrics-exporter"
-version = "1.0.1"
+version = "1.0.2"
 description = "CrowdSec decisions to InfluxDB 2.x or QuestDB time series"
 license = "MIT"
 readme = "README.md"
@@ -9,20 +9,30 @@ requires-python = ">=3.13"
 [dependency-groups]
 # Runtime dependencies for metrics exporter
 default = [
-    "httpx",
-    "requests",
-    "urllib3",
+    "httpx==0.28.1",
+    "requests==2.34.2",
+    "urllib3==2.8.0",
 ]
-# Development dependencies (linting)
+# Development dependencies (testing, linting). Pinned on purpose: none of it ships in
+# an image, so a ruff release that changes its rules must not fail CI on untouched code.
 dev = [
-    "ruff",
+    "pytest==9.2.0",
+    "ruff==0.17.5",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
-# Build and scan artefacts of the docs pipeline; they hold no source of ours.
-extend-exclude = ["site", ".docs-scan"]
+# Shared baseline lives in the repository root; only tool-specific ignores stay here.
+extend = "../ruff.toml"
 
-[tool.ruff.lint]
-# BLE001 (blind `except Exception`) is deliberate at collector and outer-loop
-# boundaries so one bad decision cannot kill the run.
-ignore = ["BLE001"]
+[tool.ruff.lint.per-file-ignores]
+# Assertions are the direct contract checks in pytest cases; tests also poke private members.
+"tests/*.py" = ["S101", "SLF001"]
+
+# The run summary is printed to the console on purpose.
+"main.py" = ["T201"]
+# Identifiers come from validated configuration and go through the quoting helpers.
+"app/questdb.py" = ["S608"]

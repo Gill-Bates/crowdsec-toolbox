@@ -35,9 +35,10 @@ potentially different contact.
 | Metrics only | `METRICS_ONLY=true` | Exports current decisions as points with `status=observed`, sends **no mail** |
 | One-shot | `RUN_ONCE=true` (container) | One run, then exit |
 
-In the container both loops run concurrently: reports go out on the
-`RUN_EVERY_HOUR` schedule while the entrypoint's separate `METRICS_INTERVAL`
-loop writes snapshots every minute.
+In the container, the scheduled report loop, the CrowdSec LAPI heartbeat loop,
+and—when metrics are enabled—the separate metrics snapshot loop run alongside
+each other. Their intervals come from `settings.env`; see
+[Container scheduling](configuration.md#container-scheduling).
 
 !!! note "Snapshot volume scales with ban duration"
     Each metrics-only run writes one point per active decision, so the point
@@ -48,7 +49,7 @@ loop writes snapshots every minute.
 | Code | Meaning |
 |---|---|
 | `0` | Normal run. Per-report DNS or send failures still exit 0. |
-| `1` | Hard failure: configuration, GeoIP cold start, database init, LAPI fetch, or a database error |
+| `1` | Hard failure: configuration, GeoIP cold start, database init, LAPI fetch, a database error, metrics lost (outbox and backend both failed, or undelivered points dropped by the outbox bounds), a QuestDB server that is not 10.x, a QuestDB dedup gate that cannot be verified (nothing written, outbox kept), a QuestDB TTL that cannot be applied, or outbox saturation |
 | `130` | Interrupted |
 
 The container entrypoint refreshes `/data/heartbeat` only on exit 0, which is

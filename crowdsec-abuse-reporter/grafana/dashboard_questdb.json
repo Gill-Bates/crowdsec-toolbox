@@ -903,7 +903,7 @@
             "value": "crowdsec-abuse"
           },
           "label": "Table",
-          "hide": "hideVariable",
+          "hide": "dontHide",
           "refresh": "onDashboardLoad",
           "skipUrlSync": false,
           "query": {
@@ -916,12 +916,12 @@
             "spec": {
               "queryType": "sql",
               "format": 1,
-              "rawSql": "SELECT table_name FROM tables() ORDER BY table_name;"
+              "rawSql": "SELECT table_name FROM tables() WHERE NOT table_name ~ '_events$' AND NOT table_name ~ '_rollup_[^_]+_v[0-9]+$' AND NOT table_name ~ '^_' ORDER BY table_name;"
             }
           },
           "regex": "",
           "sort": "alphabeticalAsc",
-          "definition": "SELECT table_name FROM tables() ORDER BY table_name;",
+          "definition": "SELECT table_name FROM tables() WHERE NOT table_name ~ '_events$' AND NOT table_name ~ '_rollup_[^_]+_v[0-9]+$' AND NOT table_name ~ '^_' ORDER BY table_name;",
           "options": [],
           "multi": false,
           "includeAll": false,

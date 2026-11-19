@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 class CrowdSecFetchError(Exception):
     """Raised when decisions cannot be fetched or parsed from CrowdSec.
 
-    Distinguishes a real failure (command error, invalid JSON) from the valid
+    Distinguishes a real failure (LAPI auth/HTTP error, invalid JSON) from the valid
     case of CrowdSec simply having no decisions, so callers do not mistake a
     broken fetch for "nothing to report".
     """
@@ -59,11 +59,15 @@ class CrowdSecFetchError(Exception):
         super().__init__(message)
         self.hint = hint
 
+
 GOOGLE_DNS_IP = "8.8.8.8"
 MAX_RETRIES = 3
 DEFAULT_TIMEOUT = 30
 IP_DETECTION_TIMEOUT = 5
 DEFAULT_ALERT_FETCH_LIMIT = 10_000
+# Hard ceiling for the escalating alert fetch; bounds memory and response size.
+MAX_ALERT_FETCH_LIMIT = 100_000
+_ALERT_FETCH_LIMIT_FACTOR = 10
 
 # External services that echo back the caller's routable public IP as plain
 # text. Tried in order; the first valid public IP wins. Multiple providers add
@@ -100,9 +104,7 @@ def _read_lapi_credentials_file() -> dict[str, str]:
                 continue
             credentials[key] = value.strip().strip('"').strip("'")
     except OSError as e:
-        raise CrowdSecFetchError(
-            f"Failed to read LAPI credentials file {path}: {e}"
-        ) from e
+        raise CrowdSecFetchError(f"Failed to read LAPI credentials file {path}: {e}") from e
 
     return credentials
 
@@ -114,11 +116,7 @@ def _resolve_lapi_credentials() -> dict[str, str]:
         # An explicit env var wins; otherwise CrowdSec's own credentials file
         # decides. The built-in default is last so it can never mask a file that
         # points the watcher at a different LAPI host.
-        "url": (
-            CROWDSEC_LAPI_URL
-            or file_credentials.get("url")
-            or "http://127.0.0.1:8080"
-        ),
+        "url": (CROWDSEC_LAPI_URL or file_credentials.get("url") or "http://127.0.0.1:8080"),
         "machine_id": CROWDSEC_LAPI_MACHINE_ID or file_credentials.get("login", ""),
         "password": CROWDSEC_LAPI_PASSWORD or file_credentials.get("password", ""),
     }
@@ -148,8 +146,7 @@ def _format_lapi_auth_hint() -> str:
     """Return a short operator hint for broken or missing LAPI credentials."""
     return (
         "Verify that `CROWDSEC_LAPI_MACHINE_ID` and `CROWDSEC_LAPI_PASSWORD` "
-        "match the CrowdSec watcher credentials. "
-        + LAPI_CREDENTIALS_HINT
+        "match the CrowdSec watcher credentials. " + LAPI_CREDENTIALS_HINT
     )
 
 
@@ -157,7 +154,7 @@ _RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _LAPI_MAX_ATTEMPTS = 3
 
 
-def _request_with_retry(
+def _request_with_retry(  # noqa: RET503 the loop always returns or raises
     client: httpx.Client, method: str, url: str, **kwargs: Any
 ) -> httpx.Response:
     """Issue a LAPI request, retrying transient transport/5xx failures.
@@ -226,13 +223,10 @@ def _get_lapi_token(client: httpx.Client) -> str:
         if status_code in (401, 403):
             status_label = "Unauthorized" if status_code == 401 else "Forbidden"
             raise CrowdSecFetchError(
-                f"LAPI authentication failed with HTTP {status_code} "
-                f"({status_label}).",
+                f"LAPI authentication failed with HTTP {status_code} ({status_label}).",
                 hint=_format_lapi_auth_hint(),
             ) from e
-        raise CrowdSecFetchError(
-            f"LAPI authentication failed with HTTP {status_code}"
-        ) from e
+        raise CrowdSecFetchError(f"LAPI authentication failed with HTTP {status_code}") from e
     except httpx.HTTPError as e:
         raise CrowdSecFetchError(f"LAPI authentication failed: {e}") from e
 
@@ -245,9 +239,7 @@ def _get_lapi_token(client: httpx.Client) -> str:
     # otherwise raise AttributeError and abort the unattended run outside the
     # CrowdSecFetchError path the caller handles.
     if not isinstance(payload, dict):
-        raise CrowdSecFetchError(
-            "Unexpected LAPI authentication format (expected an object)"
-        )
+        raise CrowdSecFetchError("Unexpected LAPI authentication format (expected an object)")
 
     token = payload.get("token")
     if not token:
@@ -261,9 +253,7 @@ def _alert_has_events(alert: dict[str, Any]) -> bool:
     return isinstance(events, list) and len(events) > 0
 
 
-def _fetch_lapi_alert_detail(
-    client: httpx.Client, token: str, alert_id: Any
-) -> dict[str, Any] | None:
+def _fetch_lapi_alert_detail(client: httpx.Client, token: str, alert_id: Any) -> dict[str, Any] | None:
     """Fetch a single alert's full detail (events + enriched source).
 
     Returns None on any error so the caller can fall back to the summary alert
@@ -288,59 +278,78 @@ def _fetch_lapi_alert_detail(
     return None
 
 
+def _fetch_lapi_alert_page(client: httpx.Client, token: str, limit: int) -> list[dict[str, Any]]:
+    """Fetch active alerts with the given server-side limit and validate the shape."""
+    params = {
+        "has_active_decision": "true",
+        "limit": str(limit),
+    }
+    try:
+        response = _request_with_retry(
+            client,
+            "GET",
+            "/alerts",
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in (401, 403):
+            status_code = e.response.status_code
+            status_label = "Unauthorized" if status_code == 401 else "Forbidden"
+            raise CrowdSecFetchError(
+                f"LAPI alerts fetch failed with HTTP {status_code} ({status_label}).",
+                hint=_format_lapi_auth_hint(),
+            ) from e
+        raise CrowdSecFetchError(
+            f"LAPI alerts fetch failed with HTTP {e.response.status_code}: {e.response.text[:300]}"
+        ) from e
+    except httpx.HTTPError as e:
+        raise CrowdSecFetchError(f"LAPI alerts fetch failed: {e}") from e
+
+    try:
+        alerts = response.json()
+    except ValueError as e:
+        raise CrowdSecFetchError("LAPI alerts response was not valid JSON") from e
+
+    if alerts is None:
+        return []
+    if not isinstance(alerts, list):
+        raise CrowdSecFetchError("Unexpected LAPI alerts format (expected a list)")
+    # Every consumer below calls alert.get(...); a non-object entry would
+    # raise AttributeError instead of the handled CrowdSecFetchError.
+    if not all(isinstance(alert, dict) for alert in alerts):
+        raise CrowdSecFetchError("Unexpected LAPI alerts format (list contains non-object entries)")
+    return alerts
+
+
 def _fetch_lapi_alerts() -> list[dict[str, Any]]:
     """Fetch active alerts from CrowdSec Local API.
 
     The list endpoint returns summary alerts only; when enabled, each alert is
     enriched with its full detail (events, usernames, attack patterns, AS/country)
     via GET /v1/alerts/{id}.
-    """
-    params = {
-        "has_active_decision": "true",
-        "limit": str(DEFAULT_ALERT_FETCH_LIMIT),
-    }
 
+    The LAPI has no client-side offset: it pages internally and returns at most
+    `limit` alerts. A response that fills the limit may be truncated, so the
+    limit is raised stepwise up to MAX_ALERT_FETCH_LIMIT until a response comes
+    back below it, which proves the result set is complete.
+    """
     with _build_lapi_client() as client:
         token = _get_lapi_token(client)
-        try:
-            response = _request_with_retry(
-                client,
-                "GET",
-                "/alerts",
-                params=params,
-                headers={"Authorization": f"Bearer {token}"},
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (401, 403):
-                status_code = e.response.status_code
-                status_label = "Unauthorized" if status_code == 401 else "Forbidden"
-                raise CrowdSecFetchError(
-                    f"LAPI alerts fetch failed with HTTP {status_code} "
-                    f"({status_label}).",
-                    hint=_format_lapi_auth_hint(),
-                ) from e
-            raise CrowdSecFetchError(
-                f"LAPI alerts fetch failed with HTTP {e.response.status_code}: "
-                f"{e.response.text[:300]}"
-            ) from e
-        except httpx.HTTPError as e:
-            raise CrowdSecFetchError(f"LAPI alerts fetch failed: {e}") from e
-
-        try:
-            alerts = response.json()
-        except ValueError as e:
-            raise CrowdSecFetchError("LAPI alerts response was not valid JSON") from e
-
-        if alerts is None:
-            return []
-        if not isinstance(alerts, list):
-            raise CrowdSecFetchError("Unexpected LAPI alerts format (expected a list)")
-        # Every consumer below calls alert.get(...); a non-object entry would
-        # raise AttributeError instead of the handled CrowdSecFetchError.
-        if not all(isinstance(alert, dict) for alert in alerts):
-            raise CrowdSecFetchError(
-                "Unexpected LAPI alerts format (list contains non-object entries)"
-            )
+        limit = DEFAULT_ALERT_FETCH_LIMIT
+        while True:
+            alerts = _fetch_lapi_alert_page(client, token, limit)
+            if len(alerts) < limit:
+                break
+            if limit >= MAX_ALERT_FETCH_LIMIT:
+                logger.warning(
+                    f"LAPI returned {len(alerts)} alerts, the maximum fetch limit; further active alerts "
+                    "may be missing from this run"
+                )
+                break
+            next_limit = min(limit * _ALERT_FETCH_LIMIT_FACTOR, MAX_ALERT_FETCH_LIMIT)
+            logger.info(f"LAPI returned {len(alerts)} alerts, the fetch limit; retrying with limit {next_limit}")
+            limit = next_limit
 
         if not CROWDSEC_FETCH_ALERT_DETAILS:
             return alerts
@@ -350,11 +359,7 @@ def _fetch_lapi_alerts() -> list[dict[str, Any]]:
         fetched = 0
         for alert in alerts:
             alert_id = alert.get("id")
-            needs_detail = (
-                alert_id is not None
-                and fetched < CROWDSEC_DETAIL_LIMIT
-                and not _alert_has_events(alert)
-            )
+            needs_detail = alert_id is not None and fetched < CROWDSEC_DETAIL_LIMIT and not _alert_has_events(alert)
             if needs_detail:
                 detail = _fetch_lapi_alert_detail(client, token, alert_id)
                 fetched += 1
@@ -444,10 +449,7 @@ def get_node_ip() -> str:
         public_ip = _get_public_ip_from_http()
         if public_ip != "unknown":
             return public_ip
-        logger.warning(
-            "Public IP detection failed; falling back to local interface IP "
-            "(may be a private address)"
-        )
+        logger.warning("Public IP detection failed; falling back to local interface IP (may be a private address)")
 
     detection_methods = [
         _get_ip_from_ipv4_global,
@@ -456,11 +458,8 @@ def get_node_ip() -> str:
         _get_ip_from_route,
     ]
 
-    # Execute all detection methods in parallel
     with ThreadPoolExecutor(max_workers=len(detection_methods)) as executor:
-        future_to_method = {
-            executor.submit(method): method.__name__ for method in detection_methods
-        }
+        future_to_method = {executor.submit(method): method.__name__ for method in detection_methods}
 
         for future in as_completed(future_to_method):
             try:
@@ -499,14 +498,7 @@ def _get_ip_from_ipv4_global() -> str:
 
 
 def _get_ip_from_ipv6_global() -> str:
-    """
-    Extract IPv6 address from global scope interfaces.
-
-    Note: This is a best-effort detection. The regex pattern captures
-    the main address portion but may not handle all edge cases like
-    zone identifiers (%eth0 suffixes). For production use with complex
-    IPv6 setups, consider more robust parsing.
-    """
+    """Extract the first IPv6 address from global scope interfaces (best effort)."""
     success, output = _run_command(
         ["ip", "-o", "-6", "addr", "show", "scope", "global"],
         max_retries=1,
@@ -514,7 +506,7 @@ def _get_ip_from_ipv6_global() -> str:
     )
 
     if success and output:
-        # Best effort: captures hex:colon format, ignores zone IDs
+        # Matches the hex:colon form only; zone IDs are not handled.
         ip_match = re.search(r"inet6 ([0-9a-f:]+)", output)
         return ip_match.group(1) if ip_match else "unknown"
     return "unknown"
@@ -522,9 +514,7 @@ def _get_ip_from_ipv6_global() -> str:
 
 def _get_ip_from_hostname() -> str:
     """Extract IP address from hostname command output."""
-    success, output = _run_command(
-        ["hostname", "-I"], max_retries=1, timeout=IP_DETECTION_TIMEOUT
-    )
+    success, output = _run_command(["hostname", "-I"], max_retries=1, timeout=IP_DETECTION_TIMEOUT)
 
     if success and output:
         ips = output.strip().split()
@@ -549,16 +539,15 @@ def _get_ip_from_route() -> str:
 def _run_command(
     cmd: list[str], max_retries: int = MAX_RETRIES, timeout: int = DEFAULT_TIMEOUT
 ) -> tuple[bool, str | None]:
-    """
-    Execute system command with comprehensive error handling and retry logic.
+    """Run a system command, retrying timeouts and non-zero exits with backoff.
 
     Args:
         cmd: Command and arguments as list
-        max_retries: Maximum number of retry attempts
-        timeout: Command execution timeout in seconds
+        max_retries: Total number of attempts
+        timeout: Per-attempt timeout in seconds
 
     Returns:
-        Tuple of (success_status, command_output)
+        (True, stdout) on success, otherwise (False, error message).
     """
     last_error = None
 
@@ -571,7 +560,7 @@ def _run_command(
                 check=True,
                 timeout=timeout,
                 encoding="utf-8",
-                errors="ignore",  # Handle encoding issues gracefully
+                errors="ignore",  # drop undecodable bytes; output is only regex-parsed
             )
             return True, result.stdout
 
@@ -585,9 +574,7 @@ def _run_command(
             if attempt < max_retries - 1:
                 logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
             else:
-                logger.error(
-                    f"Command failed after {max_retries} attempts due to timeout"
-                )
+                logger.error(f"Command failed after {max_retries} attempts due to timeout")
             last_error = error_msg
 
             if attempt < max_retries - 1:
@@ -607,9 +594,7 @@ def _run_command(
                 logger.error(error_msg)
 
             if e.stderr:
-                error_level = (
-                    logger.warning if attempt < max_retries - 1 else logger.error
-                )
+                error_level = logger.warning if attempt < max_retries - 1 else logger.error
                 error_level(f"stderr: {e.stderr.strip()}")
 
             if e.stdout:
@@ -628,11 +613,6 @@ def _run_command(
             else:
                 return False, last_error
 
-        except UnicodeDecodeError as e:
-            error_msg = f"Command output encoding error: {e}"
-            logger.error(error_msg)
-            return False, error_msg
-
     return False, last_error or f"All {max_retries} attempts failed"
 
 
@@ -640,7 +620,7 @@ def check_lapi_health() -> bool:
     """Lightweight LAPI connectivity check (login only, no data fetch).
 
     Returns True when the LAPI is reachable and credentials are accepted.
-    Used by the heartbeat loop between main processing runs.
+    Used by the `python -m app.heartbeat` liveness probe.
 
     The cause is logged so an outage, bad credentials, TLS misconfig, or a code
     defect can be told apart in production instead of all collapsing to False.
@@ -658,26 +638,16 @@ def check_lapi_health() -> bool:
 
 
 def get_crowdsec_alerts() -> list[dict[str, Any]]:
-    """
-    Fetch active CrowdSec alerts through the Local API.
-
-    Returns:
-        List of alert dictionaries
-    """
+    """Fetch active CrowdSec alerts through the Local API."""
     alerts = _fetch_lapi_alerts()
-    logger.info(f"Successfully retrieved {len(alerts)} active alerts from CrowdSec LAPI")
+    logger.info(f"Retrieved {len(alerts)} alerts from CrowdSec LAPI")
     return alerts
 
 
 def _parse_meta_data(meta_list: list[dict[str, Any]]) -> dict[str, Any]:
-    """
-    Parse metadata from key-value pairs to structured dictionary.
+    """Turn a list of {key, value} items into a dict.
 
-    Args:
-        meta_list: List of metadata dictionaries
-
-    Returns:
-        Parsed metadata dictionary
+    String values that look like a JSON array or object are decoded.
     """
     result = {}
     if not isinstance(meta_list, list):
@@ -688,7 +658,6 @@ def _parse_meta_data(meta_list: list[dict[str, Any]]) -> dict[str, Any]:
             key = meta_item["key"]
             value = meta_item["value"]
 
-            # Attempt JSON parsing for structured data
             if isinstance(value, str):
                 value = value.strip()
                 if value.startswith(("[", "{")) and value.endswith(("]", "}")):
@@ -705,26 +674,21 @@ def _parse_meta_data(meta_list: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _extract_context_from_alert(alert: dict[str, Any]) -> dict[str, Any]:
-    """
-    Extract contextual information from alert events.
+    """Merge each event's parsed meta and 'extra' data into one context dict.
 
-    Args:
-        alert: Alert dictionary
-
-    Returns:
-        Context data dictionary
+    Later events override earlier ones on key collisions.
     """
     context_data = {}
 
     if "events" in alert and isinstance(alert["events"], list):
         for event in alert["events"]:
-            # Parse metadata
+            if not isinstance(event, dict):
+                continue
             if "meta" in event and isinstance(event["meta"], list):
                 meta_dict = _parse_meta_data(event["meta"])
                 if meta_dict:
                     context_data.update(meta_dict)
 
-            # Include extra data
             if "extra" in event and isinstance(event["extra"], dict) and event["extra"]:
                 context_data.update(event["extra"])
 
@@ -782,12 +746,10 @@ def _extract_source_ip_from_alert_payload(alert: dict[str, Any]) -> str | None:
 
 
 def get_crowdsec_decisions() -> list[dict[str, Any]]:
-    """
-    Fetch reportable CrowdSec decisions by reading alerts with active decisions
-    from the Local API and deriving one enriched decision per alert.
+    """Derive reportable decisions from alerts with active decisions.
 
-    Returns:
-        List of decision dictionaries (one per alert with an active decision)
+    Returns one enriched decision per non-CAPI ban, so a multi-IP alert yields
+    several entries.
     """
     alerts = get_crowdsec_alerts()
     if not alerts:
@@ -797,11 +759,12 @@ def get_crowdsec_decisions() -> list[dict[str, Any]]:
     decisions: list[dict[str, Any]] = []
     capi_skipped = 0
     for alert in alerts:
-        active_decisions = [
-            decision
-            for decision in alert.get("decisions", [])
-            if isinstance(decision, dict)
-        ]
+        raw_decisions = alert.get("decisions")
+        active_decisions = (
+            [decision for decision in raw_decisions if isinstance(decision, dict)]
+            if isinstance(raw_decisions, list)
+            else []
+        )
         if not active_decisions:
             continue
 
@@ -858,8 +821,8 @@ def get_crowdsec_decisions() -> list[dict[str, Any]]:
             decision["source"] = ban_source
 
             # Keep the originating alert id for display/reference. Idempotency
-            # is per (alert id, IP) in the DB, so exploded reports from the same
-            # alert no longer collide despite sharing this id.
+            # is per (alert id, IP) in the DB, so reports from one alert do not
+            # collide despite sharing this id.
             if alert_id is not None:
                 decision["alert_id"] = alert_id
                 decision["alert_ids"] = [alert_id]
@@ -873,14 +836,13 @@ def get_crowdsec_decisions() -> list[dict[str, Any]]:
             decision["start_at"] = alert.get("start_at")
             decision["stop_at"] = alert.get("stop_at")
             decision["meta"] = alert.get("meta", [])
-            decision["events"] = alert.get("events", [])
+            events = alert.get("events")
+            decision["events"] = events if isinstance(events, list) else []
 
             decisions.append(decision)
 
     if capi_skipped:
         logger.info(f"Skipped {capi_skipped} CAPI (community) bans — not reported")
 
-    logger.info(
-        f"Derived {len(decisions)} reportable decisions from {len(alerts)} active alerts"
-    )
+    logger.info(f"Derived {len(decisions)} reportable decisions from {len(alerts)} active alerts")
     return decisions

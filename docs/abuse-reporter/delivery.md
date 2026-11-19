@@ -23,6 +23,25 @@ Sending is bracketed by two database operations:
 
 A claim failure is treated as a database error, not as "already handled".
 
+## Retention keeps the guarantee
+
+`DB_RETENTION_DAYS` never makes a handled report sendable again. At startup,
+cleanup moves the `(AlertId, IPAddress)` key and status of every expired `sent`
+or `unknown_send_state` row into the table `abuse_alert_tombstones` and deletes
+the original row in the same transaction. A crash in between rolls both back.
+The claim statement refuses a pair with a tombstone, so a concurrent claim
+cannot slip in between check and insert.
+
+| Row | After the retention period |
+|---|---|
+| `sent`, `unknown_send_state` | Details deleted; key and status kept permanently |
+| `pending` | Kept; the reaper moves it to `unknown_send_state` first |
+| `failed` | Deleted; a new claim is the same as the retry it was eligible for |
+
+Tombstones cost about 50 bytes per report, so a million reports need roughly
+50 MB. No setting prunes them. `DB_RETENTION_DAYS=0` disables cleanup and keeps
+every row.
+
 ## Crash recovery does not retry
 
 A row left `pending` by a crash is moved by the reaper to the terminal state
@@ -33,6 +52,16 @@ A row left `pending` by a crash is moved by the reaper to the terminal state
     send a second accusation for the same ban. An unknown outcome is therefore
     resolved as "do not send again", which is exactly what makes the guarantee
     at-most-once rather than exactly-once.
+
+## Connection loss during the send
+
+If the SMTP connection fails after the message transfer has started, the mail
+may already be delivered. The report is stored as `unknown_send_state` and is
+**never** retried, like a crashed claim.
+
+A refusal of only some primary recipients counts as delivered. If *all* primary
+recipients are refused, the report stays `failed` and is retried next run; BCC
+copies that were accepted are then sent again.
 
 ## The key is a pair
 
@@ -69,9 +98,14 @@ atomic compare-and-set.
 | Failure | Effect |
 |---|---|
 | Contact lookup (DNS) fails for one IP | That report is skipped; the run still exits `0` |
-| SMTP send fails for one report | Recorded as failed; the run still exits `0` |
+| SMTP send fails for one report | Recorded as failed (or `unknown_send_state` after a connection loss mid-transfer); the run still exits `0` |
 | Metrics backend write fails | Points stay in the SQLite outbox and are re-sent next run; the run still exits `0`. Mails are **not** resent. |
-| Metrics outbox reaches 90% of its bound | Run exits `1` — a prolonged outage is about to discard points |
+| QuestDB is not a 10.x release | Nothing is written and no mail is sent; the outbox is kept and the run exits `1`. Upgrade the server |
+| QuestDB dedup cannot be verified | Nothing is written and every point stays in the outbox; the run exits `1` at once and retries the gate next run |
+| QuestDB `QUESTDB_TTL` cannot be set after a write | The points were delivered and leave the outbox, they are not resent; the run exits `1` |
+| Metrics outbox reaches 90% of its bound | Run exits `1` — a prolonged outage is about to discard points; also applies when there is nothing to send |
+| Outbox spool and backend write both fail | Points are lost; the run exits `1` |
+| Outbox bounds drop undelivered points | Points are lost; the run exits `1` with the count, once per run; remaining points are still sent |
 | LAPI fetch, DB init or config error | Run exits `1` before any send |
 
 All points of a run are written in one request at the end of the run, even after
@@ -87,6 +121,7 @@ an interrupt.
 
 ## Known test gaps
 
-`reap_stale_pending()` and `cleanup_old_records()` have no direct test coverage,
-and the claim/finalize protocol is covered only indirectly. Treat changes to
-those paths as unguarded and see [Testing](../development/testing.md).
+`reap_stale_pending()` has only indirect test coverage, and the claim/finalize
+protocol is covered mainly through its callers. Retention cleanup and the
+tombstone check are tested in `DatabaseHardeningTest`; see
+[Testing](../development/testing.md).

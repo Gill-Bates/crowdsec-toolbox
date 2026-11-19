@@ -34,16 +34,15 @@ settings.env
 settings-*.env
 BUILD_INFO
 
-# Documentation build output and CI scan artefacts. docs/license.md is
-# generated from the root LICENSE by .github/workflows/docs-build.yml.
+# Documentation build output. docs/license.md is generated from the root
+# LICENSE by .github/workflows/docs-build.yml.
 site/
 docs/license.md
-.docs-scan/
-docs-requirements-frozen.txt
 
-# oh-my-claudecode state
+# Local agent tooling state
 .omc/
 .claude/
+.github/skills/
 
 # Editor, OS, and tooling noise
 .vscode/
@@ -52,3 +51,4 @@ docs-requirements-frozen.txt
 *.swo
 .DS_Store
 Thumbs.db
+*.backup

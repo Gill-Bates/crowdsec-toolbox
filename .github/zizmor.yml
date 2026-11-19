@@ -1,0 +1,15 @@
+# .github/zizmor.yml
+#
+# Configuration of the zizmor job in ci.yml. Every ignore carries its reason.
+rules:
+  # actionlint 1.7.12 rejects the `$/` self-repository syntax with a workflow-call error,
+  # so the reusable call in release.yml keeps the `./` form; revisit when actionlint
+  # supports `$/`.
+  self-repository:
+    ignore:
+      - release.yml
+  # docs-build.yml rebuilds the site after a release. It reads only the conclusion of the
+  # upstream run, checks out the default branch and never executes upstream artifacts.
+  dangerous-triggers:
+    ignore:
+      - docs-build.yml

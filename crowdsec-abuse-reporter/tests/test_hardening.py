@@ -4,16 +4,21 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-import inspect
+import contextlib
 import io
 import json
 import logging
 import os
+import re
+import shutil
 import signal
 import smtplib
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -23,8 +28,6 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["SMTP_PASSWORD"] = ""
-
-import contextlib
 
 from app import (
     abuse,
@@ -42,6 +45,25 @@ from app import main as crowdsec_main
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENTRYPOINT = _REPO_ROOT / "docker" / "entrypoint.sh"
+_STUB_ID = "#!/bin/sh\necho 1000\n"  # non-root uid: skips the chown/gosu branch
+
+
+class _FakeDownloadResponse:
+    """Empty, non-HTML GeoIP download response usable as a context manager."""
+
+    url = geoip.CITY_URL
+
+    def __init__(self):
+        self.headers = {"Content-Type": "application/octet-stream"}
+
+    def read(self, _size):
+        return b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
 
 
 class AbuseHardeningTest(unittest.TestCase):
@@ -60,14 +82,50 @@ class AbuseHardeningTest(unittest.TestCase):
         self.assertFalse(result[0])
         mail_error.assert_called_once()
 
+    def _send_with_sendmail(self, **sendmail_kwargs):
+        server = MagicMock()
+        server.sendmail.configure_mock(**sendmail_kwargs)
+        with (
+            patch.object(abuse, "smtp_connection") as conn,
+            patch.object(abuse, "print_mail_error"),
+            patch.object(abuse.time, "sleep"),
+        ):
+            conn.return_value.__enter__.return_value = server
+            result = abuse.send_abuse_mail("a@example.com", "s", "b", max_retries=3, retry_delay=0)
+        return result, server
+
+    def test_connection_drop_during_transfer_is_never_retried(self):
+        failures = (smtplib.SMTPServerDisconnected("gone"), TimeoutError("timed out"), ConnectionResetError("reset"))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                (ok, err), server = self._send_with_sendmail(side_effect=failure)
+                self.assertFalse(ok)
+                self.assertIsInstance(err, abuse.UncertainSendError)
+                self.assertEqual(server.sendmail.call_count, 1)
+
+    def test_explicit_server_rejection_is_not_marked_uncertain(self):
+        (ok, err), _server = self._send_with_sendmail(side_effect=smtplib.SMTPDataError(554, b"no"))
+        self.assertFalse(ok)
+        self.assertNotIsInstance(err, abuse.UncertainSendError)
+
+    def test_partially_refused_primary_recipients_count_as_delivered(self):
+        refused = {"b@example.com": (550, b"no")}
+        with patch.object(abuse, "smtp_connection") as conn:
+            server = MagicMock()
+            server.sendmail.return_value = refused
+            conn.return_value.__enter__.return_value = server
+            msg = abuse._create_mime_message(["a@example.com", "b@example.com"], "s", "b")
+            abuse._send_smtp_message(msg, ["a@example.com", "b@example.com"], ["a@example.com", "b@example.com"])
+            server.sendmail.return_value = {"a@example.com": (550, b"no"), "b@example.com": (550, b"no")}
+            with self.assertRaises(smtplib.SMTPRecipientsRefused):
+                abuse._send_smtp_message(msg, ["a@example.com", "b@example.com"], ["a@example.com", "b@example.com"])
+
     def test_xarf_attachment_failure_is_logged_once(self):
         with (
             patch.object(abuse, "MIMEApplication", side_effect=ValueError("bad attachment")),
             patch.object(abuse, "print_mail_error") as mail_error,
         ):
-            result = abuse.send_abuse_mail(
-                "a@example.com", "subject", "body", xarf_attachment="{}", max_retries=1
-            )
+            result = abuse.send_abuse_mail("a@example.com", "subject", "body", xarf_attachment="{}", max_retries=1)
 
         self.assertFalse(result[0])
         mail_error.assert_called_once()
@@ -157,40 +215,249 @@ class DatabaseHardeningTest(unittest.TestCase):
 
         fake_conn = FakeConn()
 
-        # 950 (alert_id, ip) pairs. Each pair binds 2 params, so chunks hold
-        # 450 pairs (900 params): 450 + 450 + 50 pairs over three calls.
+        # 950 (alert_id, ip) pairs. Each pair binds 2 params and every query adds
+        # the status params, so a chunk holds (900 - 3) // 2 = 448 pairs: 448 + 448 + 54.
         keys = [(i, f"1.2.3.{i % 256}") for i in range(950)]
         with patch.object(database, "db_read") as mock_db_read:
             mock_db_read.return_value.__enter__.return_value = fake_conn
             database.batch_check_processed_alerts(keys)
 
         calls = fake_conn.cursor_obj.calls
-        # Invariant: large inputs must be split across multiple queries, and no
-        # single query may bind more than SQLITE_PARAM_LIMIT params. We also
-        # verify completeness: every key appears exactly once across all calls.
-        # Params layout: [pair_id, pair_ip, ..., *HANDLED_STATUSES] — the last
-        # len(HANDLED_STATUSES) entries are status filters, not pair data.
+        # Large inputs must be split across queries, none binding more than
+        # SQLITE_PARAM_LIMIT params, and every key must appear exactly once.
+        # Params layout: [pair_id, pair_ip, ..., *HANDLED_STATUSES]; the trailing
+        # status entries are filters, not pair data.
+        # Tombstone lookups bind pair params only and are checked separately.
         n_status = len(database.HANDLED_STATUSES)
+        tombstone_calls = [params for query, params in calls if "abuse_alert_tombstones" in query]
+        calls = [(query, params) for query, params in calls if "abuse_alert_tombstones" not in query]
         self.assertGreater(len(calls), 1)
+        self.assertEqual(len(tombstone_calls), len(calls))
         queried_keys = []
         for _query, params in calls:
             self.assertLessEqual(len(params), database.SQLITE_PARAM_LIMIT)
             pair_params = params[:-n_status]
             self.assertEqual(len(pair_params) % 2, 0)
-            # Verify the trailing entries are exactly the expected status values
             self.assertEqual(params[-n_status:], list(database.HANDLED_STATUSES))
-            queried_keys.extend(
-                (pair_params[i], pair_params[i + 1])
-                for i in range(0, len(pair_params), 2)
-            )
+            queried_keys.extend((pair_params[i], pair_params[i + 1]) for i in range(0, len(pair_params), 2))
         self.assertCountEqual(queried_keys, keys)
+
+    def test_expired_negative_cache_entry_is_a_miss_without_cleanup(self):
+        with self._fresh_db():
+            database.set_cached_abuse_contact("203.0.113.0", None)
+            self.assertEqual(database.get_cached_abuse_contact("203.0.113.0"), (True, None))
+            with database.db_transaction() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO abuse_contacts_cache (ip_prefix, abuse_contact, updated_at) "
+                    "VALUES (?, ?, datetime('now', '-30 days'))",
+                    ("203.0.113.0", database.NEGATIVE_CACHE),
+                )
+            self.assertEqual(database.get_cached_abuse_contact("203.0.113.0"), (False, None))
+
+    def test_finalize_alert_records_unknown_outcome_as_terminal_state(self):
+        with self._fresh_db():
+            self.assertTrue(database.claim_alert_for_send(1, "203.0.113.1", "s"))
+            database.finalize_alert(1, "a@example.com", "203.0.113.1", "s", False, "x", outcome_unknown=True)
+            self.assertFalse(database.claim_alert_for_send(1, "203.0.113.1", "s"))
+            self.assertIn((1, "203.0.113.1"), database.batch_check_processed_alerts([(1, "203.0.113.1")]))
+
+    # Retention cleanup keeps the at-most-once proof.
+
+    _OLD_SCHEMA = """
+        CREATE TABLE abuse_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            AlertId INTEGER NOT NULL,
+            Recipient TEXT NOT NULL,
+            IPAddress TEXT NOT NULL,
+            Scenario TEXT NOT NULL,
+            Sent INTEGER NOT NULL DEFAULT 1 CHECK (Sent IN (0, 1)),
+            Status TEXT NOT NULL DEFAULT 'sent'
+                CHECK (Status IN ('pending', 'sent', 'failed', 'unknown_send_state')),
+            ErrorMessage TEXT,
+            CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UpdatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(AlertId, IPAddress)
+        );
+    """
+
+    @contextlib.contextmanager
+    def _fresh_db(self, old_schema_rows=None):
+        """Temp database; with old_schema_rows it starts on the pre-tombstone schema."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.db"
+            if old_schema_rows is not None:
+                with contextlib.closing(sqlite3.connect(path)) as raw:
+                    raw.executescript(self._OLD_SCHEMA)
+                    raw.executemany(
+                        "INSERT INTO abuse_alerts (AlertId, Recipient, IPAddress, Scenario, Sent, Status, CreatedAt)"
+                        " VALUES (?, 'r@example.com', ?, 's', 0, ?, datetime('now', ?))",
+                        old_schema_rows,
+                    )
+                    raw.commit()
+            database.close_connection()
+            with patch.object(database, "DB_PATH", path), patch.object(database, "_db_initialized", False):
+                database.init_db()
+                try:
+                    yield path
+                finally:
+                    database.close_connection()
+
+    @staticmethod
+    def _age_all(days):
+        with database.db_transaction() as conn:
+            conn.execute("UPDATE abuse_alerts SET CreatedAt = datetime('now', ?)", (f"-{days} days",))
+
+    def test_cleanup_keeps_sent_and_unknown_pairs_unclaimable(self):
+        # Property: retention may delete the row, never the at-most-once proof.
+        with self._fresh_db():
+            for alert_id, outcome_unknown, sent in ((1, False, True), (2, True, False)):
+                self.assertTrue(database.claim_alert_for_send(alert_id, "203.0.113.1", "s"))
+                database.finalize_alert(alert_id, "a@example.com", "203.0.113.1", "s", sent, "x", outcome_unknown)
+            self._age_all(400)
+            self.assertEqual(database.cleanup_old_records(365)[0], 2)
+            with database.db_read() as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM abuse_alerts").fetchone()[0], 0)
+            keys = [(1, "203.0.113.1"), (2, "203.0.113.1")]
+            self.assertEqual(database.batch_check_processed_alerts(keys), set(keys))
+            for alert_id, _ip in keys:
+                self.assertFalse(database.claim_alert_for_send(alert_id, "203.0.113.1", "s"))
+            # Same alert, other IP is a different pair and stays claimable.
+            self.assertTrue(database.claim_alert_for_send(1, "203.0.113.2", "s"))
+
+    def test_cleanup_leaves_pending_and_failed_follows_retry_semantics(self):
+        with self._fresh_db():
+            self.assertTrue(database.claim_alert_for_send(1, "203.0.113.1", "s"))  # stays pending
+            self.assertTrue(database.claim_alert_for_send(2, "203.0.113.1", "s"))
+            database.finalize_alert(2, "a@example.com", "203.0.113.1", "s", False, "smtp down")
+            self._age_all(400)
+            database.cleanup_old_records(365)
+            # pending: untouched, still handled; the reaper then turns it terminal.
+            self.assertEqual(database.batch_check_processed_alerts([(1, "203.0.113.1")]), {(1, "203.0.113.1")})
+            self.assertFalse(database.claim_alert_for_send(1, "203.0.113.1", "s"))
+            self.assertEqual(database.reap_stale_pending(1), 0)  # fresh UpdatedAt
+            with database.db_transaction() as conn:
+                # The update trigger would reset UpdatedAt, so bypass it for the backdating.
+                conn.execute("DROP TRIGGER update_abuse_alerts_timestamp")
+                conn.execute("UPDATE abuse_alerts SET UpdatedAt = datetime('now', '-1 day')")
+            self.assertEqual(database.reap_stale_pending(1), 1)
+            database.cleanup_old_records(365)
+            self.assertFalse(database.claim_alert_for_send(1, "203.0.113.1", "s"))
+            # failed: deleted, not protected; a fresh claim equals the retry.
+            self.assertEqual(database.batch_check_processed_alerts([(2, "203.0.113.1")]), set())
+            self.assertTrue(database.claim_alert_for_send(2, "203.0.113.1", "s"))
+
+    def test_cleanup_disabled_with_zero_retention_changes_nothing(self):
+        with self._fresh_db():
+            self.assertTrue(database.claim_alert_for_send(1, "203.0.113.1", "s"))
+            database.finalize_alert(1, "a@example.com", "203.0.113.1", "s", True)
+            self._age_all(4000)
+            self.assertEqual(database.cleanup_old_records(0), (0, 0))
+            with database.db_read() as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM abuse_alerts").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM abuse_alert_tombstones").fetchone()[0], 0)
+
+    def test_old_schema_migrates_additively_and_loses_no_proof(self):
+        rows = [
+            (1, "198.51.100.1", "sent", "-900 days"),
+            (2, "198.51.100.1", "unknown_send_state", "-900 days"),
+            (3, "198.51.100.1", "pending", "-900 days"),
+            (4, "198.51.100.1", "failed", "-900 days"),
+            (5, "198.51.100.1", "sent", "-1 days"),
+        ]
+        with self._fresh_db(old_schema_rows=rows):
+            with database.db_read() as conn:
+                # abuse_alerts keeps its original table (no rebuild) and its rows.
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM abuse_alerts").fetchone()[0], 5)
+                self.assertIn(
+                    "UNIQUE(AlertId, IPAddress)",
+                    conn.execute("SELECT sql FROM sqlite_master WHERE name='abuse_alerts'").fetchone()[0],
+                )
+            database.init_db()
+            database.cleanup_old_records(365)
+            database.cleanup_old_records(365)  # idempotent
+            keys = [(i, "198.51.100.1") for i in range(1, 6)]
+            self.assertEqual(database.batch_check_processed_alerts(keys), {k for k in keys if k[0] != 4})
+            for alert_id, ip in keys:
+                self.assertEqual(database.claim_alert_for_send(alert_id, ip, "s"), alert_id == 4)
+
+    def test_interrupted_cleanup_rolls_back_tombstones_and_deletes_together(self):
+        with self._fresh_db():
+            self.assertTrue(database.claim_alert_for_send(1, "203.0.113.1", "s"))
+            database.finalize_alert(1, "a@example.com", "203.0.113.1", "s", True)
+            self._age_all(400)
+            real_conn = database.get_connection()
+
+            class FailingOnDelete:
+                def __init__(self, conn):
+                    self._conn = conn
+
+                def cursor(self):
+                    outer = self._conn.cursor()
+
+                    class Cur:
+                        def execute(self, sql, *args):
+                            if sql.lstrip().startswith("DELETE FROM abuse_alerts"):
+                                raise RuntimeError("boom between tombstone insert and delete")
+                            return outer.execute(sql, *args)
+
+                    return Cur()
+
+                def __getattr__(self, name):
+                    return getattr(self._conn, name)
+
+            with patch.object(database, "get_connection", return_value=FailingOnDelete(real_conn)):
+                self.assertEqual(database.cleanup_old_records(365), (0, 0))
+            with database.db_read() as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM abuse_alerts").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM abuse_alert_tombstones").fetchone()[0], 0)
+            self.assertFalse(database.claim_alert_for_send(1, "203.0.113.1", "s"))
+
+    def _claim_from_threads(self, alert_id, ip, workers=4):
+        """Race ``workers`` threads, each on its own connection, for one claim; return their results."""
+        results = []
+
+        def worker():
+            try:
+                results.append(database.claim_alert_for_send(alert_id, ip, "s"))
+            finally:
+                database.close_connection()
+
+        threads = [threading.Thread(target=worker) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+            self.assertFalse(thread.is_alive(), "claim worker did not finish")
+        return results
+
+    def test_concurrent_claims_after_cleanup_never_win(self):
+        with self._fresh_db():
+            self.assertTrue(database.claim_alert_for_send(1, "203.0.113.1", "s"))
+            database.finalize_alert(1, "a@example.com", "203.0.113.1", "s", True)
+            self._age_all(400)
+            database.cleanup_old_records(365)
+            self.assertEqual(self._claim_from_threads(1, "203.0.113.1"), [False] * 4)
+            # A fresh, never-handled pair still has exactly one winner.
+            self.assertEqual(sorted(self._claim_from_threads(9, "203.0.113.9")), [False, False, False, True])
+
+    def test_cleanup_with_outbox_and_cache_and_prune_contract(self):
+        with self._fresh_db():
+            with database.db_transaction() as conn:
+                conn.execute(
+                    "INSERT INTO abuse_contacts_cache (ip_prefix, abuse_contact, updated_at) "
+                    "VALUES ('203.0.113.0', 'abuse@example.com', datetime('now', '-900 days'))"
+                )
+            self.assertTrue(database.spool_metric_points(["a", "b", "c"]))
+            self.assertEqual(database.cleanup_old_records(365), (0, 1))
+            self.assertEqual(database.prune_metric_outbox(1, 0), 2)
+            self.assertEqual(database.count_metric_points(), 1)
 
     def test_get_cached_abuse_contact_distinguishes_negative_cache(self):
         class FakeCursor:
             def __init__(self, row):
                 self.row = row
 
-            def execute(self, query, params):
+            def execute(self, _query, _params):
                 return None
 
             def fetchone(self):
@@ -204,9 +471,7 @@ class DatabaseHardeningTest(unittest.TestCase):
                 return FakeCursor(self.row)
 
         with patch.object(database, "db_read") as mock_db_read:
-            mock_db_read.return_value.__enter__.return_value = FakeConn(
-                (database.NEGATIVE_CACHE,)
-            )
+            mock_db_read.return_value.__enter__.return_value = FakeConn((database.NEGATIVE_CACHE, 0))
             cache_hit, cached_contact = database.get_cached_abuse_contact("203.0.113.0")
 
         self.assertTrue(cache_hit)
@@ -314,9 +579,7 @@ class CrowdsecHardeningTest(unittest.TestCase):
                 "start_at": "2026-06-19T09:50:00Z",
                 "stop_at": "2026-06-19T10:00:00Z",
                 "source": {"ip": "8.8.8.8", "scope": "Ip"},
-                "events": [
-                    {"meta": [{"key": "http_path", "value": "/login"}], "extra": {}}
-                ],
+                "events": [{"meta": [{"key": "http_path", "value": "/login"}], "extra": {}}],
                 "decisions": [
                     {
                         "type": "ban",
@@ -349,10 +612,8 @@ class CrowdsecHardeningTest(unittest.TestCase):
                 "scenario": "http:scan",
                 "source": {"scope": "Ip", "value": ""},
                 "decisions": [
-                    {"id": 1, "type": "ban", "scope": "Ip", "value": "1.1.1.1",
-                     "duration": "4h", "origin": "crowdsec"},
-                    {"id": 2, "type": "ban", "scope": "Ip", "value": "2.2.2.2",
-                     "duration": "4h", "origin": "crowdsec"},
+                    {"id": 1, "type": "ban", "scope": "Ip", "value": "1.1.1.1", "duration": "4h", "origin": "crowdsec"},
+                    {"id": 2, "type": "ban", "scope": "Ip", "value": "2.2.2.2", "duration": "4h", "origin": "crowdsec"},
                 ],
             }
         ]
@@ -379,10 +640,15 @@ class CrowdsecHardeningTest(unittest.TestCase):
                 "scenario": "http:scan",
                 "source": {"scope": "Ip", "value": ""},
                 "decisions": [
-                    {"id": 10, "type": "ban", "scope": "Ip", "value": "3.3.3.3",
-                     "duration": "4h", "origin": "CAPI"},
-                    {"id": 11, "type": "ban", "scope": "Ip", "value": "4.4.4.4",
-                     "duration": "4h", "origin": "crowdsec"},
+                    {"id": 10, "type": "ban", "scope": "Ip", "value": "3.3.3.3", "duration": "4h", "origin": "CAPI"},
+                    {
+                        "id": 11,
+                        "type": "ban",
+                        "scope": "Ip",
+                        "value": "4.4.4.4",
+                        "duration": "4h",
+                        "origin": "crowdsec",
+                    },
                 ],
             }
         ]
@@ -435,6 +701,54 @@ class CrowdsecHardeningTest(unittest.TestCase):
         self.assertEqual(decision["context"]["source_ip"], "202.191.58.34")
 
 
+class CrowdsecMalformedAlertTest(unittest.TestCase):
+    def test_null_decisions_and_events_do_not_abort_the_run(self):
+        good = {"id": 2, "scenario": "s", "source": {"ip": "203.0.113.2"}, "decisions": [{"value": "203.0.113.2"}]}
+        alerts = [
+            {"id": 1, "decisions": None, "events": None},
+            {**good, "events": [None, "x", {"meta": [{"key": "k", "value": "v"}]}]},
+        ]
+        with patch.object(crowdsec, "get_crowdsec_alerts", return_value=alerts):
+            decisions = crowdsec.get_crowdsec_decisions()
+        self.assertEqual([d["alert_id"] for d in decisions], [2])
+
+
+class CrowdsecAlertFetchLimitTest(unittest.TestCase):
+    def _run(self, sizes, no_warning=True):
+        """Run the fetch with one mocked LAPI page per entry of `sizes`."""
+        pages = [[{"id": i} for i in range(n)] for n in sizes]
+        responses = []
+        for page in pages:
+            response = MagicMock()
+            response.json.return_value = page
+            responses.append(response)
+        with (
+            patch.object(crowdsec, "_build_lapi_client", return_value=MagicMock()),
+            patch.object(crowdsec, "_get_lapi_token", return_value="t"),
+            patch.object(crowdsec, "CROWDSEC_FETCH_ALERT_DETAILS", False),
+            patch.object(crowdsec, "DEFAULT_ALERT_FETCH_LIMIT", 3),
+            patch.object(crowdsec, "MAX_ALERT_FETCH_LIMIT", 30),
+            patch.object(crowdsec, "_request_with_retry", side_effect=responses) as request,
+            self.assertNoLogs(crowdsec.logger, level="WARNING") if no_warning else contextlib.nullcontext(),
+        ):
+            alerts = crowdsec._fetch_lapi_alerts()
+        return alerts, [call.kwargs["params"]["limit"] for call in request.call_args_list]
+
+    def test_unsaturated_response_is_a_single_request(self):
+        alerts, limits = self._run([2])
+        self.assertEqual((len(alerts), limits), (2, ["3"]))
+
+    def test_saturated_response_raises_limit_until_complete(self):
+        alerts, limits = self._run([3, 29])
+        self.assertEqual((len(alerts), limits), (29, ["3", "30"]))
+
+    def test_hard_cap_stops_escalation_and_warns(self):
+        with self.assertLogs(crowdsec.logger, level="WARNING") as logs:
+            alerts, limits = self._run([3, 30], no_warning=False)
+        self.assertEqual((len(alerts), limits), (30, ["3", "30"]))
+        self.assertTrue(any("maximum fetch limit" in line for line in logs.output))
+
+
 class DnsUtilsHardeningTest(unittest.TestCase):
     def test_invalid_geoip_stamp_is_reported_before_refresh(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -451,9 +765,7 @@ class DnsUtilsHardeningTest(unittest.TestCase):
         self.assertTrue(any("check stamp could not be read" in line for line in logs.output))
 
     def test_get_effective_nameservers_uses_system_resolver_only(self):
-        with patch.object(
-            dns_utils, "_system_nameservers", return_value=["10.30.0.2"]
-        ):
+        with patch.object(dns_utils, "_system_nameservers", return_value=["10.30.0.2"]):
             nameservers = dns_utils.get_effective_nameservers()
 
         self.assertEqual(nameservers, ["10.30.0.2"])
@@ -477,23 +789,9 @@ class DnsUtilsHardeningTest(unittest.TestCase):
         self.assertEqual(fake_resolver.nameservers, ["1.1.1.1"])
 
     def test_geoip_download_uses_selected_nameservers_for_http_request(self):
-        class FakeResponse:
-            url = geoip.CITY_URL
-
-            def __init__(self):
-                self.headers = {"Content-Type": "application/octet-stream"}
-
-            def read(self, _size):
-                return b""
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                return False
-
         with (
-            tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(
                 geoip,
                 "_geoip_dir",
                 return_value=Path(tmpdir),
@@ -506,7 +804,7 @@ class DnsUtilsHardeningTest(unittest.TestCase):
             patch.object(
                 geoip,
                 "_open_resolved_url",
-                return_value=FakeResponse(),
+                return_value=_FakeDownloadResponse(),
             ) as mock_open_resolved_url,
             patch.object(geoip, "_verify", return_value=True),
         ):
@@ -522,23 +820,33 @@ class DnsUtilsHardeningTest(unittest.TestCase):
     def test_lookup_asn_providers_reads_local_mmdb_records(self):
         class FakeReader:
             def __iter__(self):
-                yield "1.0.0.0/24", {
-                    "autonomous_system_number": 8881,
-                    "autonomous_system_organization": "1&1 Versatel GmbH",
-                }
-                yield "2.0.0.0/24", {
-                    "autonomous_system_number": 3209,
-                    "autonomous_system_organization": "Vodafone GmbH",
-                }
-                yield "3.0.0.0/24", {
-                    "autonomous_system_number": 51167,
-                    "autonomous_system_organization": "Contabo GmbH",
-                }
+                yield (
+                    "1.0.0.0/24",
+                    {
+                        "autonomous_system_number": 8881,
+                        "autonomous_system_organization": "1&1 Versatel GmbH",
+                    },
+                )
+                yield (
+                    "2.0.0.0/24",
+                    {
+                        "autonomous_system_number": 3209,
+                        "autonomous_system_organization": "Vodafone GmbH",
+                    },
+                )
+                yield (
+                    "3.0.0.0/24",
+                    {
+                        "autonomous_system_number": 51167,
+                        "autonomous_system_organization": "Contabo GmbH",
+                    },
+                )
 
             def close(self):
                 return None
 
         geoip._cached_asn_providers.cache_clear()
+        self.addCleanup(geoip._cached_asn_providers.cache_clear)  # do not leak the fake records
         with (
             patch.object(geoip, "_HAS_MAXMINDDB", True),
             patch.object(geoip, "_geoip_dir", return_value=Path("/tmp")),
@@ -553,97 +861,84 @@ class DnsUtilsHardeningTest(unittest.TestCase):
         )
 
 
-class ConfigEnvLoaderTest(unittest.TestCase):
-    """Covers the stdlib KEY=VALUE loader that replaced python-dotenv."""
+class ConfigWhitelistTest(unittest.TestCase):
+    def _import_config(self, value: str) -> subprocess.CompletedProcess:
+        env = {**os.environ, "WHITELISTED_ASN": value, "SETTINGS_ENV": "/nonexistent"}
+        return subprocess.run(
+            [sys.executable, "-c", "from app import config"],
+            check=False,
+            cwd=_REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
 
-    def _write_env(self, content: str) -> Path:
-        tmp_dir = Path(tempfile.mkdtemp())
+    def test_invalid_whitelist_entry_stops_startup(self):
+        result = self._import_config("AS8881, AS12foo34")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("AS12foo34", result.stderr)
+
+    def test_valid_whitelist_is_accepted(self):
+        self.assertEqual(self._import_config("AS8881, 51167,").returncode, 0)
+
+
+class ConfigEnvLoaderTest(unittest.TestCase):
+    """Covers the stdlib KEY=VALUE loader."""
+
+    def _load(self, content: str, *keys: str, preset: dict[str, str] | None = None, override: bool = True):
+        """Load ``content`` with ``keys`` unset (except ``preset``) and return their resulting values."""
+        tmp_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         path = tmp_dir / "settings.env"
         path.write_text(content, encoding="utf-8")
-        return path
+        with patch.dict(os.environ, preset or {}, clear=False):
+            for key in keys:
+                if key not in (preset or {}):
+                    os.environ.pop(key, None)
+            config.load_settings_env(path, override=override)
+            return {key: os.environ.get(key) for key in keys}
 
     def test_skips_blank_lines_and_comments(self):
-        path = self._write_env(
-            "\n# full-line comment\nFOO=bar\n   \n# another comment\nBAZ=qux\n"
-        )
-        env: dict[str, str] = {}
-        with patch.dict(os.environ, {}, clear=False):
-            for key in ("FOO", "BAZ"):
-                os.environ.pop(key, None)
-            config.load_settings_env(path, override=True)
-            env = {"FOO": os.environ.get("FOO"), "BAZ": os.environ.get("BAZ")}
-
-        self.assertEqual(env, {"FOO": "bar", "BAZ": "qux"})
+        values = self._load("\n# full-line comment\nFOO=bar\n   \n# another comment\nBAZ=qux\n", "FOO", "BAZ")
+        self.assertEqual(values, {"FOO": "bar", "BAZ": "qux"})
 
     def test_export_prefix_is_stripped(self):
-        path = self._write_env("export FOO=bar\n")
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("FOO", None)
-            config.load_settings_env(path, override=True)
-            self.assertEqual(os.environ["FOO"], "bar")
+        self.assertEqual(self._load("export FOO=bar\n", "FOO"), {"FOO": "bar"})
 
     def test_matching_quotes_are_stripped(self):
-        path = self._write_env('DOUBLE="hello"\nSINGLE=\'world\'\nMIXED="unterminated\n')
-        with patch.dict(os.environ, {}, clear=False):
-            for key in ("DOUBLE", "SINGLE", "MIXED"):
-                os.environ.pop(key, None)
-            config.load_settings_env(path, override=True)
-            self.assertEqual(os.environ["DOUBLE"], "hello")
-            self.assertEqual(os.environ["SINGLE"], "world")
-            # Mismatched/unterminated quoting is left as-is (no stripping).
-            self.assertEqual(os.environ["MIXED"], '"unterminated')
+        values = self._load('DOUBLE="hello"\nSINGLE=\'world\'\nMIXED="unterminated\n', "DOUBLE", "SINGLE", "MIXED")
+        # Mismatched/unterminated quoting is left as-is (no stripping).
+        self.assertEqual(values, {"DOUBLE": "hello", "SINGLE": "world", "MIXED": '"unterminated'})
 
     def test_quoted_password_preserves_surrounding_whitespace(self):
-        path = self._write_env('SMTP_PASSWORD="  s3cr3t  "\n')
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("SMTP_PASSWORD", None)
-            config.load_settings_env(path, override=True)
-            self.assertEqual(os.environ["SMTP_PASSWORD"], "  s3cr3t  ")
+        values = self._load('SMTP_PASSWORD="  s3cr3t  "\n', "SMTP_PASSWORD")
+        self.assertEqual(values, {"SMTP_PASSWORD": "  s3cr3t  "})
 
     def test_unquoted_value_is_stripped(self):
-        path = self._write_env("FOO=  spaced value  \n")
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("FOO", None)
-            config.load_settings_env(path, override=True)
-            self.assertEqual(os.environ["FOO"], "spaced value")
+        self.assertEqual(self._load("FOO=  spaced value  \n", "FOO"), {"FOO": "spaced value"})
 
     def test_unquoted_value_strips_inline_comment(self):
-        path = self._write_env("FOO=bar # note\n")
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("FOO", None)
-            config.load_settings_env(path, override=True)
-            self.assertEqual(os.environ["FOO"], "bar")
+        self.assertEqual(self._load("FOO=bar # note\n", "FOO"), {"FOO": "bar"})
 
     def test_unquoted_value_without_leading_space_keeps_hash(self):
-        path = self._write_env("FOO=a#b\n")
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("FOO", None)
-            config.load_settings_env(path, override=True)
-            self.assertEqual(os.environ["FOO"], "a#b")
+        self.assertEqual(self._load("FOO=a#b\n", "FOO"), {"FOO": "a#b"})
 
     def test_quoted_value_with_hash_is_kept_verbatim(self):
-        path = self._write_env('SMTP_PASSWORD="s3cr3t # not a comment"\n')
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("SMTP_PASSWORD", None)
-            config.load_settings_env(path, override=True)
-            self.assertEqual(os.environ["SMTP_PASSWORD"], "s3cr3t # not a comment")
+        values = self._load('SMTP_PASSWORD="s3cr3t # not a comment"\n', "SMTP_PASSWORD")
+        self.assertEqual(values, {"SMTP_PASSWORD": "s3cr3t # not a comment"})
 
     def test_override_false_keeps_existing_environment_variable(self):
-        path = self._write_env("FOO=from_file\n")
-        with patch.dict(os.environ, {"FOO": "from_env"}, clear=False):
-            config.load_settings_env(path, override=False)
-            self.assertEqual(os.environ["FOO"], "from_env")
+        values = self._load("FOO=from_file\n", "FOO", preset={"FOO": "from_env"}, override=False)
+        self.assertEqual(values, {"FOO": "from_env"})
 
     def test_override_true_replaces_existing_environment_variable(self):
-        path = self._write_env("FOO=from_file\n")
-        with patch.dict(os.environ, {"FOO": "from_env"}, clear=False):
-            config.load_settings_env(path, override=True)
-            self.assertEqual(os.environ["FOO"], "from_file")
+        values = self._load("FOO=from_file\n", "FOO", preset={"FOO": "from_env"}, override=True)
+        self.assertEqual(values, {"FOO": "from_file"})
 
     def test_missing_file_is_not_an_error(self):
-        missing = Path(tempfile.mkdtemp()) / "does-not-exist.env"
+        tmp_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         # Must not raise.
-        config.load_settings_env(missing, override=True)
+        config.load_settings_env(tmp_dir / "does-not-exist.env", override=True)
 
     def test_unreadable_settings_path_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir, self.assertRaises(IsADirectoryError):
@@ -664,7 +959,7 @@ class LoggerHardeningTest(unittest.TestCase):
             patch.object(sys, "stdout", stream),
             patch.object(sys, "stderr", stream),
         ):
-            logger.print_log("INFO", "[INFO]", "line1\nline2")
+            logger.print_log("INFO", "INFO", "line1\nline2")
 
         self.assertIn("line1\\nline2", stream.getvalue())
 
@@ -680,30 +975,18 @@ class LoggerHardeningTest(unittest.TestCase):
         # helper, so the formatting stays identical when call sites stop passing
         # a colour that print_log already derives from the level.
         cases = [
-            (lambda: logger.print_processing(1, 2, "203.0.113.5", "scan"),
-             "[PROCESS]", "PROCESSING", False),
-            (lambda: logger.print_dns_query("203.0.113.5", "IPv4"),
-             "[DNS]", "DNS_QUERY", False),
-            (lambda: logger.print_abuse_contact_found("203.0.113.5", "a@example.com"),
-             "[INFO]", "INFO", False),
-            (lambda: logger.print_mail_sent("a@example.com", 7, 1.5),
-             "[MAIL]", "MAIL_SENT", False),
-            (lambda: logger.print_mail_error("a@example.com", "boom", 7),
-             "[MAIL]", "ERROR", True),
-            (lambda: logger.print_no_contact_found("203.0.113.5", 7),
-             "[WARNING]", "WARNING", False),
-            (lambda: logger.print_dns_error("203.0.113.5", "timeout", 7),
-             "[ERROR]", "ERROR", True),
-            (lambda: logger.print_database_error(7, "locked"),
-             "[ERROR]", "ERROR", True),
-            (lambda: logger.print_internal_ip_skipped("10.0.0.1", 7),
-             "[INFO]", "INFO", False),
-            (lambda: logger.print_config_info("hello"),
-             "[INFO]", "INFO", False),
-            (lambda: logger.print_summary_header("HEAD"),
-             "[INFO]", "INFO", False),
-            (lambda: logger.print_stat_item("Label", "3"),
-             "[INFO]", "INFO", False),
+            (lambda: logger.print_processing(1, 2, "203.0.113.5", "scan"), "PROCESS", "PROCESSING", False),
+            (lambda: logger.print_dns_query("203.0.113.5", "IPv4"), "DNS", "DNS_QUERY", False),
+            (lambda: logger.print_abuse_contact_found("203.0.113.5", "a@example.com"), "INFO", "INFO", False),
+            (lambda: logger.print_mail_sent("a@example.com", 7, 1.5), "MAIL", "MAIL_SENT", False),
+            (lambda: logger.print_mail_error("a@example.com", "boom", 7), "MAIL", "ERROR", True),
+            (lambda: logger.print_no_contact_found("203.0.113.5", 7), "WARNING", "WARNING", True),
+            (lambda: logger.print_dns_error("203.0.113.5", "timeout", 7), "ERROR", "ERROR", True),
+            (lambda: logger.print_database_error(7, "locked"), "ERROR", "ERROR", True),
+            (lambda: logger.print_internal_ip_skipped("10.0.0.1", 7), "INFO", "INFO", False),
+            (lambda: logger.print_config_info("hello"), "INFO", "INFO", False),
+            (lambda: logger.print_summary_header("HEAD"), "INFO", "INFO", False),
+            (lambda: logger.print_stat_item("Label", "3"), "INFO", "INFO", False),
         ]
 
         for call, tag, colour_key, to_stderr in cases:
@@ -713,7 +996,7 @@ class LoggerHardeningTest(unittest.TestCase):
                 self.assertEqual("" if to_stderr else err, "")
                 self.assertTrue(text.startswith(logger.COLORS[colour_key]), text)
                 self.assertTrue(text.rstrip("\n").endswith(logger.COLORS["RESET"]))
-                self.assertIn(tag, text)
+                self.assertIn(f"| {tag:<8} | crowdsec_abuse | ", text)
 
     def test_print_debug_respects_log_level(self):
         root = logging.getLogger()
@@ -725,7 +1008,7 @@ class LoggerHardeningTest(unittest.TestCase):
 
             root.setLevel(logging.DEBUG)
             out, _ = self._capture(lambda: logger.print_debug("loud"))
-            self.assertIn("[DEBUG]", out)
+            self.assertIn("| DEBUG    | crowdsec_abuse | loud", out)
         finally:
             root.setLevel(previous)
 
@@ -757,19 +1040,13 @@ class LoggerHardeningTest(unittest.TestCase):
         self.assertEqual(out.count("Filtered out"), 1)
 
     def test_print_mail_error_maps_plain_rcpt_rejection(self):
-        _, err = self._capture(
-            lambda: logger.print_mail_error(
-                "a@example.com", "Invalid RCPT TO address", None
-            )
-        )
+        _, err = self._capture(lambda: logger.print_mail_error("a@example.com", "Invalid RCPT TO address", None))
         self.assertIn("Invalid recipient address", err)
         self.assertNotIn("Alert", err)
 
     def test_format_recipients_display_truncates(self):
         self.assertEqual(logger.format_recipients_display([]), "no recipients")
-        self.assertEqual(
-            logger.format_recipients_display(["a@example.com"]), "a@example.com"
-        )
+        self.assertEqual(logger.format_recipients_display(["a@example.com"]), "a@example.com")
         self.assertEqual(
             logger.format_recipients_display(["a@example.com", "b@example.com"]),
             "a@example.com +1 more",
@@ -781,7 +1058,7 @@ class LoggerHardeningTest(unittest.TestCase):
 
 
 class ReviewFindingsTest(unittest.TestCase):
-    """Regressions for the findings fixed in the security review pass."""
+    """Fixes from past code reviews, kept as explicit regressions."""
 
     def test_normalize_asn_rejects_mixed_garbage(self):
         self.assertEqual(config.normalize_asn("AS8881"), "8881")
@@ -915,28 +1192,20 @@ class ReviewFindingsTest(unittest.TestCase):
             patch.object(abusix._resolver, "resolve", return_value=[rdata]),
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            self.assertEqual(
-                abusix.query_abuse_contact_dns("203.0.113.5"), "abuse@example.com"
-            )
+            self.assertEqual(abusix.query_abuse_contact_dns("203.0.113.5"), "abuse@example.com")
 
     def test_extract_report_ip_does_not_collapse_a_range(self):
         # The address named in the outgoing report must never be a range's
         # network address, which usually belongs to an uninvolved party.
         self.assertEqual(
-            reportbody._extract_report_ip(
-                {"decisions": [{"value": "203.0.113.0/24", "scope": "Range"}]}
-            ),
+            reportbody._extract_report_ip({"decisions": [{"value": "203.0.113.0/24", "scope": "Range"}]}),
             "unknown",
         )
         self.assertEqual(
-            reportbody._extract_report_ip(
-                {"decisions": [{"value": "203.0.113.5/32", "scope": "Ip"}]}
-            ),
+            reportbody._extract_report_ip({"decisions": [{"value": "203.0.113.5/32", "scope": "Ip"}]}),
             "203.0.113.5",
         )
-        self.assertEqual(
-            reportbody._extract_report_ip({"source": {"ip": "203.0.113.7"}}), "203.0.113.7"
-        )
+        self.assertEqual(reportbody._extract_report_ip({"source": {"ip": "203.0.113.7"}}), "203.0.113.7")
 
     def test_claim_failure_is_a_database_error_not_already_handled(self):
         with (
@@ -949,9 +1218,7 @@ class ReviewFindingsTest(unittest.TestCase):
             patch.object(crowdsec_main, "send_abuse_report") as send,
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            result = crowdsec_main.process_single_alert(
-                {"alert_id": 5, "source": {"ip": "203.0.113.5"}}, 1, 1, "host"
-            )
+            result = crowdsec_main.process_single_alert({"alert_id": 5, "source": {"ip": "203.0.113.5"}}, 1, 1, "host")
 
         # Must not be swallowed as an idempotent skip, and must not send.
         self.assertTrue(result.db_error)
@@ -971,9 +1238,7 @@ class ReviewFindingsTest(unittest.TestCase):
         try:
             raise ValueError("boom")
         except ValueError:
-            record = logging.LogRecord(
-                "t", logging.ERROR, __file__, 1, "failed", None, sys.exc_info()
-            )
+            record = logging.LogRecord("t", logging.ERROR, __file__, 1, "failed", None, sys.exc_info())
         rendered = formatter.format(record)
 
         self.assertIn("failed", rendered)
@@ -1038,12 +1303,22 @@ class ReviewFindingsTest(unittest.TestCase):
         self.assertEqual(once.call_count, 1)
         sleep.assert_not_called()
 
-    def test_geoip_download_has_no_early_return_for_existing_db(self):
-        # The If-Modified-Since request must stay reachable, otherwise the DB
-        # freezes at its first downloaded version forever.
-        source = inspect.getsource(geoip._download_once)
-        self.assertNotIn("and _verify(target, spec):\n        return False", source)
-        self.assertIn("If-Modified-Since", source)
+    def test_geoip_download_still_checks_remote_for_existing_db(self):
+        # The conditional request must stay reachable for an existing DB,
+        # otherwise it freezes at its first downloaded version forever.
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(geoip, "_geoip_dir", return_value=Path(tmpdir)),
+            patch.object(geoip, "get_effective_nameservers", return_value=["10.30.0.2"]),
+            patch.object(geoip, "_if_modified_since", return_value="Wed, 01 Jan 2025 00:00:00 GMT"),
+            patch.object(geoip, "_verify", return_value=True),
+            patch.object(geoip, "_open_resolved_url", return_value=_FakeDownloadResponse()) as opened,
+        ):
+            (Path(tmpdir) / geoip._SPECS["city"].filename).write_bytes(b"existing")
+            geoip._download_once(geoip._SPECS["city"])
+
+        opened.assert_called_once()
+        self.assertEqual(opened.call_args.kwargs["headers"]["If-Modified-Since"], "Wed, 01 Jan 2025 00:00:00 GMT")
 
     def test_entrypoint_hardcodes_data_dir(self):
         content = _ENTRYPOINT.read_text(encoding="utf-8")
@@ -1060,8 +1335,41 @@ class ReviewFindingsTest(unittest.TestCase):
         self.assertIn('test "$age" -ge 0', content)
         self.assertIn('test "$api_age" -ge 0', content)
 
+    def test_dockerfile_runs_tini_and_healthcheck_mirrors_metrics_enable_condition(self):
+        dockerfile = (_REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn('ENTRYPOINT ["/usr/bin/tini", "--", "./entrypoint.sh"]', dockerfile)
+        self.assertNotIn("init: true", (_REPO_ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8"))
+        # The metrics heartbeat is only required where the entrypoint starts the loop.
+        self.assertIn(
+            '[ -n "${METRICS_BACKEND:-}" ] && [ "${METRICS_BACKEND}" != "none" ]',
+            _ENTRYPOINT.read_text(encoding="utf-8"),
+        )
+        self.assertIn('test -n "${METRICS_BACKEND:-}" && test "${METRICS_BACKEND}" != none', dockerfile)
+
 
 class ReportBodyHardeningTest(unittest.TestCase):
+    def test_sensitive_header_lines_are_redacted_in_every_container_shape(self):
+        secret = "example-secret-token"  # noqa: S105
+        alert = {
+            "id": 7,
+            "scenario": "s",
+            "source": {"ip": "203.0.113.9"},
+            "decisions": [{"type": "ban", "scope": "Ip", "value": "203.0.113.9"}],
+            "meta": [
+                {
+                    "key": "headers",
+                    "value": json.dumps([f"Authorization: Bearer {secret}", f"Cookie: session={secret}"]),
+                },
+                {"key": "raw_headers", "value": f"Host: example.org\nX-Api-Key: {secret}\nAccept: */*"},
+                {"key": "hdr_dict", "value": json.dumps({"Proxy-Authorization": f"Basic {secret}"})},
+            ],
+        }
+        body = reportbody.build_mail_body(alert, hostname="h")
+        xarf = reportbody.build_xarf_report(alert, hostname="h")
+        self.assertNotIn(secret, body)
+        self.assertNotIn(secret, xarf if isinstance(xarf, str) else json.dumps(xarf))
+        self.assertIn("Host: example.org", body)
+
     def test_build_mail_body_footer_describes_crowdsec_as_metric_source(self):
         body = reportbody.build_mail_body(
             {
@@ -1141,11 +1449,7 @@ class ReportBodyHardeningTest(unittest.TestCase):
         }
 
         context = reportbody.extract_context_details({}, alert)
-        lines = {
-            line.strip().split(":", 1)[0]: line
-            for line in context.splitlines()
-            if ":" in line
-        }
+        lines = {line.strip().split(":", 1)[0]: line for line in context.splitlines() if ":" in line}
 
         # source_ip and SourceRange must be absent (suppressed)
         self.assertNotIn("Source IP", lines)
@@ -1176,13 +1480,46 @@ class HeartbeatHardeningTest(unittest.TestCase):
         # return False so the entrypoint logs WARNING and the Docker HEALTHCHECK
         # sees a stale file rather than a contradictory "OK" signal.
         mock_file = MagicMock()
-        mock_file.parent.mkdir = MagicMock()
         mock_file.touch.side_effect = OSError("read-only filesystem")
         with patch.object(heartbeat, "_HEARTBEAT_FILE", mock_file):
             self.assertFalse(heartbeat.run_heartbeat())
 
 
-class EntrypointHardeningTest(unittest.TestCase):
+class _EntrypointSandbox:
+    """Mixin for TestCases that run a sandboxed copy of docker/entrypoint.sh with stub executables."""
+
+    def _sandbox_entrypoint(self, root: Path, stubs: dict[str, str]) -> tuple[Path, Path, Path, Path]:
+        """Write the copy below ``root``; return (script, data_dir, runtime_dir, stub_bin)."""
+        data_dir, runtime_dir, stub_bin = root / "data", root / "runtime", root / "bin"
+        for directory in (data_dir, runtime_dir, stub_bin):
+            directory.mkdir()
+        script_text = _ENTRYPOINT.read_text(encoding="utf-8")
+        # A silent no-op replace would run the script against the real /data and /tmp.
+        for variable, real_dir, sandbox_dir in (("DATA_DIR", "/data", data_dir), ("RUNTIME_DIR", "/tmp", runtime_dir)):
+            self.assertIn(f'{variable}="{real_dir}"', script_text)
+            script_text = script_text.replace(f'{variable}="{real_dir}"', f'{variable}="{sandbox_dir}"', 1)
+        script = root / "entrypoint.sh"
+        script.write_text(script_text, encoding="utf-8")
+        for name, contents in stubs.items():
+            stub = stub_bin / name
+            stub.write_text(contents, encoding="utf-8")
+            stub.chmod(0o755)
+        return script, data_dir, runtime_dir, stub_bin
+
+    @staticmethod
+    def _spawn_entrypoint(script: Path, env: dict[str, str]) -> subprocess.Popen:
+        """Start the script in its own session so the whole process group can be killed."""
+        return subprocess.Popen(
+            ["bash", str(script)],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+
+class EntrypointHardeningTest(_EntrypointSandbox, unittest.TestCase):
     """Smoke-tests for shell-level entrypoint.sh configuration validation.
 
     The _api_heartbeat_loop background process inherits the bash shell's stdout/
@@ -1193,49 +1530,331 @@ class EntrypointHardeningTest(unittest.TestCase):
     """
 
     def _run_entrypoint(self, env_overrides: dict, timeout: int = 3):
-        env = {
-            **os.environ,
-            "SMTP_SERVER": "smtp.example.net",
-            "RUN_ONCE": "false",
-            **env_overrides,
+        with tempfile.TemporaryDirectory(prefix="entrypoint-hardening-") as temp_dir:
+            stubs = {
+                "id": _STUB_ID,
+                "python": "#!/bin/sh\nprintf 'STUB_PYTHON:%s\\n' \"$*\"\nexit 0\n",
+                # Stop after one run instead of waiting on the production intervals.
+                "sleep": "#!/bin/sh\nexit 77\n",
+            }
+            script, data_dir, _runtime_dir, stub_bin = self._sandbox_entrypoint(Path(temp_dir), stubs)
+
+            env = {
+                **os.environ,
+                "PATH": f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+                "SMTP_SERVER": "smtp.example.net",
+                "RUN_ONCE": "false",
+                "ABUSE_DB_PATH": str(data_dir / "abuse_alerts.db"),
+                **env_overrides,
+            }
+            proc = self._spawn_entrypoint(script, env)
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                stdout, stderr = proc.communicate()
+            return subprocess.CompletedProcess(proc.args, proc.returncode, stdout=stdout, stderr=stderr)
+
+    def test_entrypoint_derives_jitter_from_the_interval(self):
+        cases = {"3600": 300, "60": 6, "9": 0, "08": 0}
+        for interval, expected in cases.items():
+            with self.subTest(interval=interval):
+                result = self._run_entrypoint({"RUN_INTERVAL": interval})
+                match = re.search(r"max jitter (\d+)s .*start offset (\d+)s", result.stdout)
+                self.assertIsNotNone(match, result.stdout)
+                self.assertEqual(int(match.group(1)), expected)
+                self.assertLessEqual(int(match.group(2)), expected)
+
+    def test_entrypoint_caps_hourly_jitter(self):
+        result = self._run_entrypoint({"RUN_EVERY_HOUR": "6"})
+        self.assertIn("max jitter 300s", result.stdout)
+
+    def test_entrypoint_rejects_oversized_numbers_and_accepts_the_maximum(self):
+        # An oversized value would overflow bash arithmetic; the bound is checked as a string.
+        seconds = 31536000
+        bounds = {
+            "RUN_EVERY_HOUR": 8760,
+            "RUN_INTERVAL": seconds,
+            "API_HEARTBEAT_INTERVAL": seconds,
+            "METRICS_INTERVAL": seconds,
+            "METRICS_HEARTBEAT_MAX_AGE_SECONDS": seconds,
         }
-        proc = subprocess.Popen(
-            ["bash", str(_ENTRYPOINT)],
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            stdout, stderr = proc.communicate()
-        return subprocess.CompletedProcess(
-            proc.args, proc.returncode, stdout=stdout, stderr=stderr
-        )
+        for name, maximum in bounds.items():
+            base = {"METRICS_BACKEND": "influxdb2"} if name.startswith("METRICS_") else {}
+            for value in ("9" * 20, str(maximum + 1)):
+                with self.subTest(name=name, value=value):
+                    result = self._run_entrypoint({**base, name: value})
+                    self.assertEqual(result.returncode, 1)
+                    self.assertTrue(
+                        result.stderr.strip().endswith(f"| ERROR    | entrypoint | {name} must be at most {maximum}.")
+                    )
+                    self.assertNotIn("STUB_PYTHON:", result.stdout)
+            with self.subTest(name=name, value="maximum"):
+                result = self._run_entrypoint({**base, name: str(maximum)})
+                self.assertNotIn("must be at most", result.stderr)
+                self.assertIn("STUB_PYTHON:", result.stdout)
 
-    def test_entrypoint_rejects_non_integer_run_jitter(self):
-        # RUN_JITTER is validated in the main shell before Python is invoked.
-        # The bash main process exits quickly (rc=1). The background heartbeat
-        # loop keeps the pipe open until we kill the process group on timeout,
-        # after which proc.communicate() returns with the correct exit code.
-        result = self._run_entrypoint({"RUN_JITTER": "invalid"})
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("RUN_JITTER", result.stderr)
-
-    def test_entrypoint_accepts_zero_run_jitter(self):
-        # RUN_JITTER=0 disables jitter and must not produce a validation error.
-        # The script enters the periodic loop and runs until we kill it on timeout.
-        result = self._run_entrypoint({"RUN_JITTER": "0"})
-        self.assertNotIn("RUN_JITTER", result.stderr)
+    def test_entrypoint_leading_zero_run_every_hour_is_decimal(self):
+        result = self._run_entrypoint({"RUN_EVERY_HOUR": "08"})
+        self.assertNotIn("RUN_EVERY_HOUR", result.stderr)
+        self.assertIn("running every 08 hour(s) (28800s)", result.stdout)
 
     def test_entrypoint_does_not_duplicate_successful_heartbeat_logs(self):
         content = _ENTRYPOINT.read_text(encoding="utf-8")
 
         self.assertNotIn('echo "[heartbeat] LAPI OK"', content)
+
+
+_STUB_PYTHON = """#!/bin/sh
+# Stand-in for `python`: records its pid, then behaves as scripted by $STUB_DIR.
+kind=main
+case "$1" in -m) kind=heartbeat ;; esac
+[ -n "${METRICS_ONLY:-}" ] && kind=metrics
+echo "$$" >> "$STUB_DIR/pids.$kind"
+if [ -e "$STUB_DIR/fail.$kind" ]; then exit 1; fi
+if [ -e "$STUB_DIR/slow.$kind" ]; then exec sleep 30; fi
+if [ "$kind" = main ]; then
+    if [ -e "$STUB_DIR/main.rc" ]; then exit "$(cat "$STUB_DIR/main.rc")"; fi
+    exec sleep 30
+fi
+exit 0
+"""
+
+
+def _bash_at_least_5_1() -> bool:
+    # Evaluated at import: a missing or hung bash must skip the class, not break collection.
+    try:
+        probe = subprocess.run(
+            ["bash", "-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0 and int(probe.stdout.strip() or 0) >= 501
+
+
+@unittest.skipUnless(
+    sys.platform.startswith("linux") and _bash_at_least_5_1(),
+    "entrypoint supervision needs Linux /proc and bash >= 5.1",
+)
+class EntrypointSupervisionTest(_EntrypointSandbox, unittest.TestCase):
+    """Runs entrypoint.sh with a stub python, a stub id (non-root uid) and private state dirs."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.stub = root / "stub"
+        self.stub.mkdir()
+        self.script, self.data, self.run_dir, self.bin = self._sandbox_entrypoint(
+            root, {"python": _STUB_PYTHON, "id": _STUB_ID}
+        )
+        self.procs = []
+        self.addCleanup(self._reap)
+
+    def _reap(self):
+        for proc in self.procs:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            for stream in (proc.stdout, proc.stderr):
+                stream.close()
+
+    def _start(self, **env):
+        full = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "STUB_DIR": str(self.stub),
+            "SMTP_SERVER": "smtp.example.net",
+            "RUN_ONCE": "false",
+            "RUN_INTERVAL": "30",
+            "API_HEARTBEAT_INTERVAL": "1",
+            "METRICS_BACKEND": "none",
+            **env,
+        }
+        proc = self._spawn_entrypoint(self.script, full)
+        self.procs.append(proc)
+        return proc
+
+    def _wait_for(self, predicate, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return False
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        return state != "Z"
+
+    def _helper_pid(self, name):
+        path = self.run_dir / name
+        self.assertTrue(self._wait_for(path.exists), f"{name} was not written")
+        return int(path.read_text().split()[0])
+
+    def _finish(self, proc, timeout=10):
+        try:
+            _out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.fail("entrypoint did not exit in time")
+        return proc.returncode, err
+
+    def test_run_once_success_exits_zero_and_marks_heartbeat(self):
+        (self.stub / "main.rc").write_text("0")
+        rc, _err = self._finish(self._start(RUN_ONCE="true"))
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.data / "heartbeat").exists())
+
+    def test_run_once_failure_propagates_exit_code(self):
+        (self.stub / "main.rc").write_text("3")
+        rc, _err = self._finish(self._start(RUN_ONCE="true"))
+        self.assertEqual(rc, 3)
+        self.assertFalse((self.data / "heartbeat").exists())
+
+    def _health_limits(self, **env):
+        proc = self._start(**env)
+        path = self.run_dir / "health_limits"
+        self.assertTrue(self._wait_for(path.exists), "health_limits was not written")
+        limits = [int(value) for value in path.read_text().split()]
+        return proc, limits
+
+    def test_health_limits_follow_intervals_and_explicit_values_win(self):
+        # 12 h interval: main limit = interval + jitter cap (300) + 7200 reserve.
+        proc, limits = self._health_limits(RUN_EVERY_HOUR="12", API_HEARTBEAT_INTERVAL="0900")
+        self.assertEqual(limits, [12 * 3600 + 300 + 7200, 900 + 400, 0])
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        (self.run_dir / "health_limits").unlink()
+        _proc, limits = self._health_limits(
+            RUN_INTERVAL="08",
+            METRICS_BACKEND="influxdb2",
+            METRICS_INTERVAL="08",
+            HEALTHCHECK_MAX_AGE_SECONDS="0100",
+            API_HEARTBEAT_MAX_AGE_SECONDS="50",
+        )
+        self.assertEqual(limits, [100, 50, 8 * 10 + 300])
+
+    def test_healthcheck_runs_under_posix_sh_with_leading_zero_values(self):
+        dockerfile = (_REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        match = re.search(r"HEALTHCHECK .*?CMD sh -ec '(.*?)'\n", dockerfile, re.DOTALL)
+        self.assertIsNotNone(match)
+        script = match.group(1).replace("\\\n", "\n")
+        script = re.sub(r"/(data|tmp)/", lambda m: f"{self.data if m[1] == 'data' else self.run_dir}/", script)
+        shell = shutil.which("dash") or "sh"
+        # RUN_EVERY_HOUR=12 outlives the old fixed 8 h limit; leading zeros must stay decimal.
+        _proc, _limits = self._health_limits(RUN_EVERY_HOUR="12", API_HEARTBEAT_INTERVAL="0300", METRICS_BACKEND="none")
+        self._helper_pid("api_heartbeat.pid")
+        for name in ("heartbeat", "api_heartbeat"):
+            (self.data / name).touch()
+        os.utime(self.data / "heartbeat", (time.time() - 9 * 3600,) * 2)
+        env = {**os.environ, "METRICS_BACKEND": "none", "METRICS_INTERVAL": "08"}
+        run = subprocess.run([shell, "-ec", script], env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        # A heartbeat older than the derived limit (12 h + 300 s + 2 h) is unhealthy.
+        os.utime(self.data / "heartbeat", (time.time() - 15 * 3600,) * 2)
+        run = subprocess.run([shell, "-ec", script], env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 1, run.stderr)
+
+    def test_pid_files_hold_pid_and_start_time_of_the_helper(self):
+        proc = self._start()
+        pid = self._helper_pid("api_heartbeat.pid")
+        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+        recorded = (self.run_dir / "api_heartbeat.pid").read_text().split()
+        self.assertEqual(recorded, [str(pid), stat[19]])
+        self.assertFalse((self.run_dir / "metrics.pid").exists())
+        proc.terminate()
+        self._finish(proc)
+
+    def _assert_helper_death_stops_container(self, helper_file, **env):
+        proc = self._start(**env)
+        helper = self._helper_pid(helper_file)
+        # Wait until the main run is in flight so its stop can be observed.
+        self.assertTrue(self._wait_for((self.stub / "pids.main").exists))
+        main_pid = int((self.stub / "pids.main").read_text().split()[0])
+        os.kill(helper, signal.SIGKILL)
+        rc, err = self._finish(proc)
+        self.assertEqual(rc, 1)
+        self.assertIn("exited unexpectedly", err)
+        self.assertFalse(self._alive(main_pid), "main run survived the container stop")
+
+    def test_dead_api_heartbeat_loop_stops_container_with_exit_1(self):
+        self._assert_helper_death_stops_container("api_heartbeat.pid")
+
+    def test_dead_metrics_loop_stops_container_with_exit_1(self):
+        self._assert_helper_death_stops_container("metrics.pid", METRICS_BACKEND="influxdb2", METRICS_INTERVAL="1")
+
+    def test_helper_death_interrupts_the_inter_run_sleep(self):
+        (self.stub / "main.rc").write_text("0")
+        proc = self._start()
+        helper = self._helper_pid("api_heartbeat.pid")
+        self.assertTrue(self._wait_for((self.data / "heartbeat").exists))
+        os.kill(helper, signal.SIGKILL)
+        rc, _err = self._finish(proc, timeout=5)
+        self.assertEqual(rc, 1)
+
+    def test_failing_helper_commands_do_not_end_the_container(self):
+        (self.stub / "fail.heartbeat").write_text("")
+        (self.stub / "fail.metrics").write_text("")
+        proc = self._start(METRICS_BACKEND="influxdb2", METRICS_INTERVAL="1")
+        self.assertTrue(
+            self._wait_for(
+                lambda: (
+                    len((self.stub / "pids.heartbeat").read_text().split()) >= 3
+                    if (self.stub / "pids.heartbeat").exists()
+                    else False
+                )
+            )
+        )
+        self.assertIsNone(proc.poll())
+        self.assertFalse((self.run_dir / "metrics_heartbeat").exists())
+        proc.terminate()
+        rc, _err = self._finish(proc)
+        self.assertEqual(rc, 0)
+
+    def test_successful_metrics_snapshot_touches_its_heartbeat(self):
+        proc = self._start(METRICS_BACKEND="influxdb2", METRICS_INTERVAL="1")
+        self.assertTrue(self._wait_for((self.run_dir / "metrics_heartbeat").exists))
+        proc.terminate()
+        self._finish(proc)
+
+    def test_stop_signal_terminates_running_jobs_and_exits_zero(self):
+        proc = self._start(METRICS_BACKEND="influxdb2", METRICS_INTERVAL="1")
+        self.assertTrue(self._wait_for((self.stub / "pids.main").exists))
+        self.assertTrue(self._wait_for((self.stub / "pids.metrics").exists))
+        pids = [int(x) for f in ("main", "metrics") for x in (self.stub / f"pids.{f}").read_text().split()]
+        proc.terminate()
+        rc, _err = self._finish(proc, timeout=5)
+        self.assertEqual(rc, 0)
+        self.assertEqual([p for p in pids if self._alive(p)], [])
+
+    def test_stop_signal_also_reaches_children_of_helper_loops(self):
+        # A helper loop is a subshell; its running python/sleep child must get
+        # the stop signal too instead of being orphaned until SIGKILL.
+        (self.stub / "slow.heartbeat").write_text("")
+        (self.stub / "slow.metrics").write_text("")
+        proc = self._start(METRICS_BACKEND="influxdb2", METRICS_INTERVAL="1")
+        for kind in ("heartbeat", "metrics"):
+            self.assertTrue(self._wait_for((self.stub / f"pids.{kind}").exists))
+        pids = [int(x) for k in ("heartbeat", "metrics") for x in (self.stub / f"pids.{k}").read_text().split()]
+        proc.terminate()
+        rc, _err = self._finish(proc, timeout=5)
+        self.assertEqual(rc, 0)
+        self.assertEqual([p for p in pids if self._alive(p)], [])
+
+    def test_optional_metrics_max_age_is_validated(self):
+        rc, err = self._finish(self._start(METRICS_BACKEND="influxdb2", METRICS_HEARTBEAT_MAX_AGE_SECONDS="soon"))
+        self.assertEqual(rc, 1)
+        self.assertIn("METRICS_HEARTBEAT_MAX_AGE_SECONDS", err)
+
 
 if __name__ == "__main__":
     unittest.main()

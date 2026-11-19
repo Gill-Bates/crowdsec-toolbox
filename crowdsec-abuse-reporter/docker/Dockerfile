@@ -1,24 +1,23 @@
 # syntax=docker/dockerfile:1
-FROM python:3-slim
+FROM python:3.13-slim
 
-# Always supplied via `docker buildx build --build-arg ...` (see setup.conf);
+# Always supplied via `docker buildx build --build-arg ...` (see the root setup.conf);
 # no defaults, this image is never built without them.
 ARG APP_VERSION
 ARG GIT_SHA
 ARG BUILD_DATE
 
+# The *_MAX_AGE_SECONDS limits are deliberately not set here: the entrypoint
+# derives them from the configured intervals (an explicit value wins) and writes
+# them to /tmp/health_limits, which the HEALTHCHECK reads.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    TZ=Europe/Berlin \
     ABUSE_DB_PATH=/data/abuse_alerts.db \
     GEOIP_DIR=/tmp/geoip \
     RUN_INTERVAL=21600 \
     METRICS_INTERVAL=60 \
     RUN_ONCE=false \
-    RUN_JITTER=300 \
-    HEALTHCHECK_MAX_AGE_SECONDS=28800 \
     API_HEARTBEAT_INTERVAL=300 \
-    API_HEARTBEAT_MAX_AGE_SECONDS=700 \
     APP_VERSION=${APP_VERSION} \
     GIT_SHA=${GIT_SHA}
 
@@ -28,9 +27,10 @@ LABEL org.opencontainers.image.version="${APP_VERSION}" \
 
 WORKDIR /app
 
-# iproute2 provides `ip` for the local-address fallback in app/crowdsec.py.
+# iproute2 provides `ip` for the local-address fallback in app/crowdsec.py;
+# tini is PID 1: it reaps orphaned children and forwards the stop signal.
 RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates gosu iproute2 tzdata \
+    && apt-get install -y --no-install-recommends ca-certificates gosu iproute2 tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app
@@ -53,11 +53,14 @@ COPY --chmod=0755 crowdsec-abuse-reporter/docker/entrypoint.sh ./entrypoint.sh
 # usable database even before the first update check — and so the databases
 # never need a persistent volume. The entrypoint copies these into $GEOIP_DIR
 # (a tmpfs) at start; the updater in app/geoip.py overwrites that copy in place
-# when the mirror has a newer release. Rebuild the image to refresh the
-# baseline. Same P3TERX mirror the updater uses (see app/geoip.py).
-ADD --chmod=0644 https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb \
+# when the mirror has a newer release.
+# Follow P3TERX's moving paths so each image rebuild picks up the latest files;
+# identical source commits may therefore contain different GeoIP data.
+ADD --chmod=0644 \
+    https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb \
     /opt/geoip-baseline/GeoLite2-City.mmdb
-ADD --chmod=0644 https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb \
+ADD --chmod=0644 \
+    https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb \
     /opt/geoip-baseline/GeoLite2-ASN.mmdb
 
 # The image-local /data only matters for a run without a mounted volume; in
@@ -76,13 +79,29 @@ RUN mkdir -p /data \
 
 VOLUME ["/data"]
 
+# Liveness of the container's own work, no dependency probe: both heartbeat files
+# must be fresh, and while metrics are enabled (same condition as entrypoint.sh)
+# so must the metrics snapshot file, which only makes the container unhealthy on
+# a backend outage. The limits come from /tmp/health_limits (written by the
+# entrypoint, so the rule lives there once); a missing file means unhealthy.
+# Each helper pid file holds "<pid> <start time>"; the pid must exist, not be a
+# zombie and keep its start time (guards against pid reuse).
 HEALTHCHECK --interval=5m --timeout=10s --start-period=7m --retries=3 \
     CMD sh -ec '\
+        read -r main_max api_max metrics_max < /tmp/health_limits || exit 1; \
         test -f /data/heartbeat || exit 1; \
         age=$(($(date +%s) - $(stat -c %Y /data/heartbeat))); \
-        test "$age" -ge 0 && test "$age" -lt "${HEALTHCHECK_MAX_AGE_SECONDS:-28800}" || exit 1; \
+        test "$age" -ge 0 && test "$age" -lt "$main_max" || exit 1; \
         test -f /data/api_heartbeat || exit 1; \
         api_age=$(($(date +%s) - $(stat -c %Y /data/api_heartbeat))); \
-        test "$api_age" -ge 0 && test "$api_age" -lt "${API_HEARTBEAT_MAX_AGE_SECONDS:-700}"'
+        test "$api_age" -ge 0 && test "$api_age" -lt "$api_max" || exit 1; \
+        alive() { read -r p t < "$1" || return 1; read -r l < "/proc/$p/stat" || return 1; set -- ${l##*) }; test "$1" != Z || return 1; shift 19; test "$1" = "$t"; }; \
+        alive /tmp/api_heartbeat.pid || exit 1; \
+        if test -n "${METRICS_BACKEND:-}" && test "${METRICS_BACKEND}" != none; then \
+            alive /tmp/metrics.pid || exit 1; \
+            test -f /tmp/metrics_heartbeat || exit 1; \
+            m_age=$(($(date +%s) - $(stat -c %Y /tmp/metrics_heartbeat))); \
+            test "$m_age" -ge 0 && test "$m_age" -lt "$metrics_max" || exit 1; \
+        fi'
 
-ENTRYPOINT ["./entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "./entrypoint.sh"]

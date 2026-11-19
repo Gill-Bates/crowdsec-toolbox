@@ -35,10 +35,16 @@ The event table has an exact key available, which the alert table does not:
 
 | Table | Upsert keys | Identity |
 |---|---|---|
-| events (`EVENTS_TABLE`) | `timestamp`, `alert_id`, `event_seq` | exact — `event_seq` is the event's index inside its alert, returned by the LAPI in a stable order |
+| events (`EVENTS_TABLE`) | `timestamp`, `host`, `alert_id`, `event_seq` | exact per CrowdSec instance — `host` isolates shared-table writers, and `event_seq` is the event's index inside its alert |
 
 See [Metrics Backends](../reference/metrics-backends.md#deduplication) for the
 alert table's weaker key and why it is weaker.
+
+!!! warning "Changing the upsert key does not rewrite existing rows"
+    QuestDB applies the new key to future inserts; it does not repair rows that
+    may already have collided under the earlier key. Events still inside
+    `EVENTS_SINCE` are re-sent with host-aware keys, but older collided rows
+    cannot be reconstructed from QuestDB alone.
 
 ## Cost
 
@@ -65,11 +71,13 @@ alert table's weaker key and why it is weaker.
 
 ## Dashboard integration
 
-The QuestDB dashboard's "Top Endpoints" and "Top Target FQDNs" panels query
-`"${table}_events"`, deriving the events table from the `table` variable rather
-than introducing a second one. That matches the default
-`EVENTS_TABLE=<QUESTDB_TABLE>_events`; if you set `EVENTS_TABLE` to a name that
-does not follow this pattern, adjust those two queries.
+The optional `crowdsec-metrics-exporter/grafana/dashboard_questdb_events.json`
+contains the “Top Endpoints” and “Top Target FQDNs” panels. Import it after
+`EVENTS_ENABLED=true` has written at least one event. Its event-table selector
+defaults to `crowdsec_events`; if `EVENTS_TABLE` has a custom name, select it
+from the variable when it ends in `_events`, or update the selector query.
 
-Until `EVENTS_ENABLED=true` has written once, the table does not exist and both
-panels report it as unknown. See [Grafana Dashboards](../reference/dashboards.md).
+The event table does not include country, so this dashboard has no country
+filter. QuestDB adds optional metadata columns when a non-empty value first
+arrives; a panel that references a column not yet created can return a SQL
+error. See [Grafana Dashboards](../reference/dashboards.md).

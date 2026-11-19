@@ -1,0 +1,87 @@
+# Shared ruff baseline for every Python tree in this repository. Each tool and the CI
+# helper scripts extend it and add only their own per-file ignores.
+line-length = 120
+target-version = "py313"
+# Build and scan artefacts of the docs pipeline; they hold no source of ours.
+extend-exclude = ["site", ".docs-scan"]
+
+[lint]
+select = [
+    "A",     # flake8-builtins - shadowing open/id/type hides real bugs
+    "ARG",   # unused arguments
+    "ASYNC", # blocking calls inside async def
+    "B",     # bugbear
+    "BLE",   # blind except: broad catches must be deliberate and justified
+    "C4",    # comprehensions
+    "DTZ",   # naive datetimes; job timestamps are UTC-aware on purpose
+    "E",     # pycodestyle errors
+    "EM",    # exception messages assigned to a name first
+    "ERA",   # commented-out code rots; git keeps the history
+    "F",     # pyflakes
+    "FLY",   # static str.join over an f-string
+    "FURB",  # refurb - modern stdlib idioms
+    "G",     # logging-format misuse; f-strings stay allowed (G004 below)
+    "I",     # import sorting
+    "ICN",   # import conventions
+    "ISC",   # implicit string concat
+    "LOG",   # logging misuse
+    "N",     # pep8-naming
+    "PERF",  # obvious performance traps
+    "PIE",   # misc lints
+    "PL",    # pylint subset
+    "PTH",   # prefer pathlib
+    "Q",     # quote style, kept in step with the formatter
+    "RET",   # return simplifications
+    "RSE",   # raise cleanups
+    "RUF",   # ruff-specific
+    "S",     # bandit - this app parses untrusted URLs and shells out to subprocesses
+    "SIM",   # simplifications
+    "SLF",   # private member access across modules
+    "T20",   # stray print()
+    "TRY",   # exception antipatterns
+    "UP",    # pyupgrade
+    "W",     # pycodestyle warnings
+]
+ignore = [
+    # BLE001 (blind `except Exception`) is deliberate at collector and outer-loop
+    # boundaries so one bad item cannot kill the run.
+    "BLE001",
+    # Formatter-owned; keeping this on fights `ruff format`.
+    "ISC001",
+    # Messages are written inline at the raise site; naming each one first adds nothing.
+    "EM101",
+    "EM102",
+    "TRY003",
+    # Deliberate lazy imports (e.g. app.abuse in logger.py) avoid import cycles and import-time cost.
+    "PLC0415",
+    # Thresholds and HTTP status codes read fine inline.
+    "PLR2004",
+    # Walking a run's pipeline is genuinely branchy; splitting it for a counter hides the sequence.
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR0917",
+    # Module-level singletons (config, thread-local state) are rebound on purpose.
+    "PLW0603",
+    # Logging f-strings are the established style of both tools; moving every call to
+    # lazy %-formatting is churn without a behavior gain here.
+    "G004",
+    # `return` inside `try` and a `raise` caught by the surrounding handler are how the
+    # run turns one bad item into a logged skip; an `else:` block would scatter that.
+    "TRY300",
+    "TRY301",
+    # `logger.error(...)` is used where the traceback is noise and the message carries the cause.
+    "TRY400",
+    # Subprocesses use a list argv without a shell and resolve tools from PATH (the image provides them).
+    "S603",
+    "S607",
+    # A ternary is not automatically clearer where a branch carries a comment.
+    "SIM108",
+]
+allowed-confusables = ["×"] # Used literally as multiplication in a retention comment.
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

@@ -1,11 +1,11 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-23 | Updated: 2026-09-23 -->
+<!-- Generated: 2026-09-23 | Updated: 2026-11-18 -->
 
 # docs
 
 ## Purpose
-Sources of the central CrowdSec Toolbox documentation site, built with MkDocs
-Material and deployed to GitHub Pages
+Sources of the central CrowdSec Toolbox documentation site, built with Zensical
+and deployed to GitHub Pages
 (https://gill-bates.github.io/crowdsec-toolbox/). This is the one place in the
 repository where the two otherwise independent tools are documented together:
 shared concerns (metrics backends, health checks, security model, dashboards)
@@ -18,7 +18,7 @@ live in `reference/`, while per-tool behaviour stays in `abuse-reporter/` and
 ## Key Files
 | File | Description |
 |------|-------------|
-| `mkdocs.yml` | MkDocs Material config: site metadata, light/dark palette (indigo), navigation features, plugins and the nav tree; built with `--strict` in CI |
+| `../zensical.toml` | Zensical config: site metadata, light/dark palette (indigo), navigation, plugins and Markdown extensions; built with `--strict --clean` in CI |
 | `index.md` | Landing page: what the toolbox is, per-tool cards, the at-a-glance comparison table, quick start |
 | `troubleshooting.md` | Symptom-driven fixes across both tools, grouped by subsystem (container start, LAPI, DNS, mail, backends, Grafana, GeoIP, development) |
 | `stylesheets/extra.css` | Theme tweaks (`--cst-primary`/`--cst-accent`, dark-mode backgrounds, grid cards, logo switching) |
@@ -35,11 +35,11 @@ live in `reference/`, while per-tool behaviour stays in `abuse-reporter/` and
 ## For AI Agents
 
 ### Working In This Directory
-- Every new page must be added to the `nav` in `mkdocs.yml`; `--strict` fails on
+- Every new page must be added to the `nav` in `../zensical.toml`; the strict build fails on
   broken links and on a page missing from the nav.
 - `docs/license.md` is generated in CI from the root `LICENSE`; do not create or
-  commit it by hand. There is no `CHANGELOG.md` in this repository, so unlike the
-  sibling projects nothing copies one in.
+  commit it by hand. The tools' own
+  `CHANGELOG.md` files are not part of the site, and there is no root changelog.
 - Documentation is in **English**, including the pages describing German
   user-facing strings. Do not translate the quoted strings themselves.
 - Never include real secrets, tokens or hostnames in examples. The registry
@@ -60,11 +60,13 @@ live in `reference/`, while per-tool behaviour stays in `abuse-reporter/` and
 ### Testing Requirements
 ```bash
 pip install --group docs/pyproject.toml:default   # needs pip >= 25.1
-mkdocs build -f docs/mkdocs.yml --strict    # what CI runs
-mkdocs serve -f docs/mkdocs.yml             # live preview
+zensical build --config-file zensical.toml --strict --clean  # what CI runs
+zensical serve --config-file zensical.toml                    # live preview
 ```
 CI also runs a lychee link check over the built site and a Trivy scan of the
-frozen docs environment; see `.github/workflows/docs-build.yml`.
+frozen docs environment; see `.github/workflows/docs-build.yml`. The site is
+deployed from `main` and rebuilt after a successful release; a failed weekly
+run opens a tracking issue.
 
 ### Common Patterns
 - Task-oriented Markdown with fenced shell examples, Material admonitions
@@ -84,8 +86,7 @@ frozen docs environment; see `.github/workflows/docs-build.yml`.
   upstream sources for most of this content
 
 ### External
-- MkDocs, mkdocs-material, mkdocs-minify-plugin,
-  mkdocs-git-revision-date-localized-plugin, pymdown-extensions (all pinned in
-  the `default` group of `pyproject.toml`), GitHub Pages, lychee, Trivy
+- Zensical (pinned in the `default` group of `pyproject.toml`), GitHub Pages,
+  lychee, Trivy
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

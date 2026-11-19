@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-18 | Updated: 2026-09-23 -->
+<!-- Generated: 2026-09-18 | Updated: 2026-11-18 -->
 
 # app
 
@@ -20,15 +20,15 @@ With metrics enabled, `metrics` exports the finalized report outcome.
 | `abusix.py` | Abuse-contact lookup via the Abusix DNS contact DB, backed by the SQLite contact cache |
 | `abuse.py` | SMTP connection management, MIME/X-ARF assembly, recipient validation, send retry |
 | `reportbody.py` | Human-readable mail body and X-ARF v4 JSON, incl. secret redaction of context |
-| `database.py` | SQLite schema, the claim/finalize idempotency protocol, contact cache, reaper, retention, metrics outbox |
-| `metrics.py` | Optional InfluxDB or QuestDB export of report outcomes; declares QuestDB TTL and dedup (`DEDUP_KEYS`) after each write; `flush_points()` is the durable path via the SQLite outbox |
+| `database.py` | SQLite schema, the claim/finalize idempotency protocol, permanent `abuse_alert_tombstones`, contact cache, reaper, retention, metrics outbox |
+| `metrics.py` | Optional InfluxDB or QuestDB export of report outcomes; gates every QuestDB write on a 10.x version check (`ensure_questdb_version()`) and verified dedup (`ensure_questdb_table()`, `DEDUP_KEYS`) and applies the TTL after it; `flush_points()` is the durable path via the SQLite outbox |
 | `geoip.py` | GeoLite2 City/ASN download (pinned hosts, atomic write, verify), readers, LRU lookups |
 | `dns_utils.py` | Resolver selection and bounded hostname resolution shared by geoip/abusix |
 | `config.py` | Loads `settings.env`, validates and coerces every env var, fails clean at startup |
 | `logger.py` | Tagged timestamped console output plus `setup_logging()` for stdlib `logger.*` records |
 | `heartbeat.py` | `python -m app.heartbeat` — LAPI liveness probe that refreshes `/data/api_heartbeat` |
 | `banner.py` | ASCII startup banner |
-| `version.py` | Reads `APP_VERSION` (build arg), defaults to `1.0.0` |
+| `version.py` | Reads `APP_VERSION` (build arg), falls back to the version in this tool's `pyproject.toml`, then `dev` |
 
 ## Subdirectories
 None.
@@ -69,10 +69,29 @@ None.
   failing would withhold the heartbeat and eventually flip the container
   unhealthy for a recoverable condition. Only a spool at ≥90% of
   `METRICS_OUTBOX_MAX_ROWS` sets `stats.metrics_errors` (exit 1), because the
-  next prune would then discard points for real.
-- `METRICS_ONLY` snapshots stay on the bare `write_points()` path on purpose.
-  They run every `METRICS_INTERVAL` seconds and would dominate the spool during
-  an outage, and the next snapshot supersedes them anyway.
+  next prune would then discard points for real. Points the prune did drop are
+  lost: `flush_points()` raises `MetricsPrunedError` (a `MetricsLostError`) after
+  flushing the rest, and `main` counts it as one metrics error (exit 1).
+- QuestDB 10.x is the only supported release line, with no fallback for older
+  servers. `ensure_questdb_version()` (copied from the exporter, never imported)
+  reads `SELECT build()` and caches the verdict per process. `main._run()` calls
+  it right after the banner when `METRICS_BACKEND=questdb`, so a mismatch, an
+  unreachable server or an unparsable answer exits `1` before mail, SQLite or the
+  outbox is touched; `write_points()` repeats it and raises `MetricsGateError`
+  (outbox kept). It never runs for `influxdb2` or `none`.
+- QuestDB dedup is a hard precondition: `write_points()` runs
+  `ensure_questdb_table()` (copied from the exporter, never imported) before the
+  first write of the table per process and raises `MetricsGateError` without
+  writing when it fails. `flush_points()` then keeps every outbox row and the run
+  exits `1` at once through `stats.metrics_errors`; this is deliberately not an
+  outage (warning, exit `0`) and not a `MetricsLostError`, since nothing is lost.
+  `write_points()` returns a `WriteStatus`: `WRITTEN_TTL_FAILED` is truthy (rows
+  are delivered and deleted, never resent) and surfaces as `MetricsTtlError` /
+  exit `1`. Keep "data written" and "database configured" apart. The gate's SQL
+  facts rest on QuestDB's documentation and the test fake, not a live server.
+- `METRICS_ONLY` snapshots stay on the bare `write_points()` path on purpose
+  (no spool: they run every `METRICS_INTERVAL` seconds and the next snapshot
+  supersedes them), but they pass the same gate; a gate or TTL failure exits `1`.
 - Untrusted input reaches mail headers and report bodies. `_validate_email()`
   and `sanitize_header_value()` in `main.py`, and `_is_sensitive_key()` /
   `_redact_context_value()` in `reportbody.py`, are security controls, not
@@ -115,3 +134,5 @@ there.
   `settings.env` with its own stdlib parser (no third-party dependency).
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+
+- **Log layout.** `logger.py` renders `<UTC time> | LEVEL | <source> | message` on a single line (see `docs/reference/log-format.md`); WARNING and above go to stderr, colour only on a TTY with `NO_COLOR` unset. Do not add emoji or multi-line output.

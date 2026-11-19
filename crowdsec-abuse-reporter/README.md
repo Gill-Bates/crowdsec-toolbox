@@ -1,10 +1,25 @@
-
 <p align="center">
   <img src="../.github/img/crowdsec_toolbox_black.svg#gh-light-mode-only" width="250" alt="CrowdSec Toolbox">
   <img src="../.github/img/crowdsec_toolbox_white.svg#gh-dark-mode-only" width="250" alt="CrowdSec Toolbox">
 </p>
 
-# crowdsec-abuse-reporter
+<h1 align="center">crowdsec-abuse-reporter</h1>
+
+<p align="center">
+  <strong>Turn CrowdSec bans into abuse reports.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Gill-Bates/crowdsec-toolbox/releases"><img src="https://img.shields.io/github/v/release/Gill-Bates/crowdsec-toolbox?logo=github&logoColor=white" alt="GitHub Release"></a>
+  <a href="https://hub.docker.com/r/giiibates/crowdsec-toolbox"><img src="https://img.shields.io/docker/pulls/giiibates/crowdsec-toolbox?logo=docker&logoColor=white" alt="Docker Pulls"></a>
+  <a href="https://hub.docker.com/r/giiibates/crowdsec-toolbox"><img src="https://img.shields.io/badge/Platform-linux%2Famd64%20%7C%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Supported Platforms"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Quick%20Start-168B75?style=for-the-badge&logo=docker&logoColor=white" alt="Quick Start"></a>
+  <a href="https://gill-bates.github.io/crowdsec-toolbox/abuse-reporter/"><img src="https://img.shields.io/badge/Documentation-34495E?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
+</p>
 
 Turns CrowdSec bans into abuse reports. It fetches decisions from the CrowdSec
 Local API, enriches each source IP with GeoIP data, resolves the responsible
@@ -21,8 +36,8 @@ directly.
   never reported twice, even across a crash.
 - **GeoIP enrichment.** GeoLite2 City and ASN data ships with the image, so
   reporting works from the first run.
-- **Optional metrics.** Export report outcomes to InfluxDB 2.x or QuestDB
-  without duplicating report data.
+- **Optional metrics.** Export report outcomes to InfluxDB 2.x or QuestDB 10.x
+  (other QuestDB versions are rejected with exit `1`) without duplicating report data.
 - **Ready-made Grafana dashboard.** Import it and see delivery status and
   origin countries immediately.
 - **Hardened container.** Runs as a non-root user, read-only root filesystem,

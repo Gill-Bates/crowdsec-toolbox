@@ -1,4 +1,4 @@
-# Build context is the repository root (see setup.conf), because the COPY paths
+# Build context is the repository root (see the root setup.conf), because the COPY paths
 # below are repo-relative. BuildKit picks up this file because it sits next to
 # the Dockerfile. Allowlist: everything is excluded except what the image needs,
 # so secrets (settings.env), databases, tests and the other tool never reach the
@@ -15,3 +15,4 @@
 !crowdsec-metrics-exporter/docker/entrypoint.sh
 **/__pycache__/
 **/*.py[cod]
+**/AGENTS.md

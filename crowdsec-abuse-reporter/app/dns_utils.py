@@ -37,9 +37,7 @@ def get_effective_nameservers() -> list[str]:
     """
     system_resolvers = _system_nameservers()
     if not system_resolvers:
-        _log.warning(
-            "No system DNS resolver configured inside the container"
-        )
+        _log.warning("No system DNS resolver configured inside the container")
     return system_resolvers
 
 
@@ -47,7 +45,11 @@ def resolve_hostname(
     hostname: str,
     nameservers: Sequence[str],
 ) -> list[str]:
-    """Resolve a hostname through the selected nameservers."""
+    """Resolve a hostname to its A and AAAA addresses via the given nameservers.
+
+    An IP literal is returned unchanged; a failed lookup of either record
+    type is skipped, so the result may be empty.
+    """
     if not hostname:
         return []
     try:

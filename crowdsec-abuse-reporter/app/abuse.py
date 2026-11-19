@@ -35,34 +35,31 @@ EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 @contextmanager
 def smtp_connection(timeout: int = SMTP_TIMEOUT):
-    """
-    SMTP connection context manager.
+    """Open one SMTP connection (STARTTLS and AUTH as configured) and close it on exit.
 
-    Opens one connection per report (STARTTLS and AUTH as configured) and closes
-    it again on exit; connections are not reused across sends.
+    Connections are not reused across sends.
 
     Args:
         timeout: SMTP connection timeout in seconds
 
     Yields:
-        SMTP connection object configured with TLS and authentication
+        The connected, TLS-secured and authenticated SMTP client.
+
+    Raises:
+        RuntimeError: Half-configured credentials, or AUTH without TLS.
     """
     # A half-configured credential pair is a configuration error, not a request
     # to send anonymously. Failing loudly beats silently attempting an
     # unauthenticated send that the relay may accept and treat as open relay.
     if bool(SMTP_USERNAME) != bool(SMTP_PASSWORD):
-        raise RuntimeError(
-            "SMTP_USERNAME and SMTP_PASSWORD must either both be set or both be "
-            "empty."
-        )
+        raise RuntimeError("SMTP_USERNAME and SMTP_PASSWORD must either both be set or both be empty.")
 
     # Refuse to transmit credentials over an unencrypted channel. Without TLS,
     # SMTP AUTH sends the username/password base64-encoded but in the clear,
     # which would expose them (and the report contents) on the transport path.
     if SMTP_USERNAME and not SMTP_USE_TLS:
         raise RuntimeError(
-            "SMTP authentication requires TLS. Set SMTP_USE_TLS=true or clear "
-            "SMTP_USERNAME/SMTP_PASSWORD."
+            "SMTP authentication requires TLS. Set SMTP_USE_TLS=true or clear SMTP_USERNAME/SMTP_PASSWORD."
         )
 
     server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=timeout)
@@ -76,9 +73,7 @@ def smtp_connection(timeout: int = SMTP_TIMEOUT):
             server.starttls(context=context)
             server.ehlo()
             verify_note = "with" if SMTP_VERIFY_SSL else "without"
-            print_config_info(
-                f"Started TLS session ({verify_note} certificate verification)"
-            )
+            print_config_info(f"Started TLS session ({verify_note} certificate verification)")
 
         if SMTP_USERNAME:
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
@@ -86,7 +81,6 @@ def smtp_connection(timeout: int = SMTP_TIMEOUT):
 
         yield server
     finally:
-        # Gracefully close connection
         try:
             server.quit()
         except Exception:
@@ -94,40 +88,22 @@ def smtp_connection(timeout: int = SMTP_TIMEOUT):
 
 
 def validate_email(email: str) -> bool:
-    """
-    Validate email format using regex pattern.
-
-    Args:
-        email: Email address to validate
-
-    Returns:
-        Boolean indicating if email format is valid
-    """
+    """Return True when the stripped address matches EMAIL_REGEX."""
     return bool(EMAIL_REGEX.match(email.strip()))
 
 
 def split_recipients(recipients_str: str) -> list[str]:
-    """
-    Split recipients string into list of validated email addresses.
+    """Split a comma- or semicolon-separated string into valid addresses.
 
-    Args:
-        recipients_str: Comma or semicolon separated email addresses
-
-    Returns:
-        List of cleaned and validated email addresses
+    Invalid entries are dropped and their count is reported.
     """
     if not recipients_str:
         return []
 
-    # Normalize separators and split
     recipients = recipients_str.replace(";", ",").split(",")
 
-    # Clean whitespace and filter empty strings
-    cleaned_recipients = [
-        recipient.strip() for recipient in recipients if recipient.strip()
-    ]
+    cleaned_recipients = [recipient.strip() for recipient in recipients if recipient.strip()]
 
-    # Validate email format using regex
     valid_recipients = [addr for addr in cleaned_recipients if validate_email(addr)]
 
     if len(valid_recipients) != len(cleaned_recipients):
@@ -155,6 +131,18 @@ def _normalize_recipients(value: str | list[str] | None) -> list[str]:
     return normalized
 
 
+class UncertainSendError(str):
+    """Error text of a send whose outcome is unknown (never retried or resent).
+
+    A str subclass keeps the (success, error) return contract of
+    send_abuse_mail() intact while letting the caller tell this case apart.
+    """
+
+
+class _SendOutcomeUncertainError(Exception):
+    """The connection broke after the message transfer began; delivery is unknown."""
+
+
 def send_abuse_mail(
     recipient: str,
     subject: str,
@@ -165,21 +153,22 @@ def send_abuse_mail(
     retry_delay: float = RETRY_DELAY,
     timeout: int = SMTP_TIMEOUT,
 ) -> tuple[bool, str | None]:
-    """
-    Send abuse report email via SMTP with comprehensive error handling and retry logic.
+    """Send an abuse report email via SMTP, retrying transient failures.
 
     Args:
-        recipient: Single recipient or comma-separated recipients
+        recipient: One address or several, separated by comma or semicolon
         subject: Email subject line
-        body: Email body content
-        bcc: Optional list of BCC recipients
+        body: Plain-text body
+        bcc: Optional BCC recipients
         xarf_attachment: Optional X-ARF report as string or bytes
-        max_retries: Maximum number of retry attempts
-        retry_delay: Initial delay between retries in seconds
+        max_retries: Total number of send attempts
+        retry_delay: Initial delay between attempts in seconds, multiplied by
+            BACKOFF_FACTOR after each retry
         timeout: SMTP connection timeout in seconds
 
     Returns:
-        Tuple of (success_status, error_message)
+        (True, None) on success, otherwise (False, error text). The error is an
+        UncertainSendError when the delivery outcome is unknown.
     """
     # Parse and validate recipients once; the same recipient set is reused
     # across retries.
@@ -193,34 +182,34 @@ def send_abuse_mail(
 
     for attempt in range(max_retries):
         try:
-            # Log retry attempts
             if attempt > 0:
                 print_config_info(f"Retry attempt {attempt + 1}/{max_retries}")
 
-            # Log recipient information (truncated for privacy)
             recipient_preview = ", ".join(recipients[:2])
             if len(recipients) > 2:
                 recipient_preview += f"... (+{len(recipients) - 2} more)"
-            print_config_info(
-                f"Sending to {len(recipients)} recipient(s): {recipient_preview}"
-            )
+            print_config_info(f"Sending to {len(recipients)} recipient(s): {recipient_preview}")
 
-            # Create MIME message
             msg = _create_mime_message(recipients, subject, body, xarf_attachment)
 
-            # Send email via SMTP.
             # Pass the primary recipients so a refused BCC copy does not fail the
             # whole report (which would re-send to the abuse contact next run).
             _send_smtp_message(msg, all_recipients, recipients, timeout)
 
-            # Note: Success logging is handled by the caller (process_single_alert)
-            # to avoid duplicate log messages
+            # The caller (process_single_alert) logs success.
             return True, None
 
         except smtplib.SMTPRecipientsRefused as e:
             error_msg = f"Recipients refused: {_format_recipient_errors(e)}"
             print_mail_error(recipient, error_msg)
             # Don't retry for recipient errors
+            return False, error_msg
+
+        except _SendOutcomeUncertainError as e:
+            # The server may already have accepted the mail: a retry could
+            # deliver it twice, so stop here and let the caller record it.
+            error_msg = UncertainSendError(f"SMTP outcome unknown, not retried: {e}")
+            print_mail_error(recipient, error_msg)
             return False, error_msg
 
         except smtplib.SMTPAuthenticationError as e:
@@ -243,9 +232,7 @@ def send_abuse_mail(
             return False, error_msg
 
         except (smtplib.SMTPException, ConnectionError, TimeoutError) as e:
-            error_msg = (
-                f"SMTP/connection error (attempt {attempt + 1}/{max_retries}): {e}"
-            )
+            error_msg = f"SMTP/connection error (attempt {attempt + 1}/{max_retries}): {e}"
             print_mail_error(recipient, error_msg)
 
             # Retry for temporary failures with exponential backoff
@@ -271,21 +258,9 @@ def _create_mime_message(
     body: str,
     xarf_attachment: str | bytes | None = None,
 ) -> MIMEMultipart:
-    """
-    Create MIME multipart message with headers and attachments.
-
-    Args:
-        recipients: List of recipient email addresses
-        subject: Email subject
-        body: Email body content
-        xarf_attachment: Optional X-ARF attachment
-
-    Returns:
-        Configured MIMEMultipart message
-    """
+    """Build the multipart message; header values are sanitized to a single line."""
     msg = MIMEMultipart()
 
-    # Set message headers
     from_header = f"{SENDER_NAME} <{SMTP_SENDER}>" if SENDER_NAME else SMTP_SENDER
     msg["From"] = _sanitize_header(from_header)
 
@@ -294,10 +269,8 @@ def _create_mime_message(
 
     msg["Subject"] = _sanitize_header(subject)
 
-    # Attach text body
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    # Attach X-ARF report if provided
     if xarf_attachment:
         _attach_xarf_report(msg, xarf_attachment)
 
@@ -305,15 +278,10 @@ def _create_mime_message(
 
 
 def _attach_xarf_report(msg: MIMEMultipart, xarf_attachment: str | bytes) -> None:
-    """
-    Attach X-ARF report to the MIME message.
-
-    Args:
-        msg: MIMEMultipart message
-        xarf_attachment: X-ARF report data as string or bytes
+    """Attach the X-ARF report as 'abuse-report.xarf'.
 
     Raises:
-        ValueError: If attachment data is invalid
+        ValueError: If the attachment data is empty.
     """
     if not xarf_attachment:
         raise ValueError("X-ARF attachment data cannot be empty")
@@ -323,12 +291,8 @@ def _attach_xarf_report(msg: MIMEMultipart, xarf_attachment: str | bytes) -> Non
     else:
         attachment_data = xarf_attachment
 
-    attachment = MIMEApplication(
-        attachment_data, _subtype="x-arf+json", Name="abuse-report.xarf"
-    )
-    attachment.add_header(
-        "Content-Disposition", 'attachment; filename="abuse-report.xarf"'
-    )
+    attachment = MIMEApplication(attachment_data, _subtype="x-arf+json", Name="abuse-report.xarf")
+    attachment.add_header("Content-Disposition", 'attachment; filename="abuse-report.xarf"')
 
     msg.attach(attachment)
     print_config_info("X-ARF attachment added to email")
@@ -340,50 +304,51 @@ def _send_smtp_message(
     primary_recipients: list[str],
     timeout: int = SMTP_TIMEOUT,
 ) -> None:
-    """
-    Send message over a freshly opened SMTP connection.
+    """Send the message over a freshly opened SMTP connection.
 
     Args:
-        msg: MIMEMultipart message to send
-        all_recipients: Complete list of recipients (To + BCC)
+        msg: Message to send
+        all_recipients: Envelope recipients (To + BCC)
         primary_recipients: The abuse-contact recipients (excluding BCC)
         timeout: SMTP connection timeout in seconds
+
+    Raises:
+        smtplib.SMTPRecipientsRefused: Every primary recipient was refused.
+        _SendOutcomeUncertainError: The connection failed mid-transaction.
     """
     with smtp_connection(timeout=timeout) as server:
         # sendmail() only raises when *every* recipient is refused. With more
         # than one recipient (abuse contact + BCC) a partial refusal returns a
         # dict and would otherwise be silently treated as full success.
-        refused = server.sendmail(
-            from_addr=SMTP_SENDER, to_addrs=all_recipients, msg=msg.as_string()
-        )
+        try:
+            refused = server.sendmail(from_addr=SMTP_SENDER, to_addrs=all_recipients, msg=msg.as_string())
+        except (smtplib.SMTPResponseException, smtplib.SMTPRecipientsRefused):
+            # An explicit server reply: the message was not accepted.
+            raise
+        except (smtplib.SMTPException, OSError) as exc:
+            # Disconnect or timeout mid-transaction: acceptance cannot be ruled out.
+            raise _SendOutcomeUncertainError(str(exc)) from exc
         if not refused:
             return
 
-        # Fail only when a primary (abuse-contact) recipient was refused — that
-        # means the report did not reach its target. A refused BCC copy must not
-        # fail the send, or the report would be re-sent to the abuse contact on
-        # the next run (duplicate delivery).
+        # Fail only when every primary (abuse-contact) recipient was refused —
+        # the report did not reach its target. A refused BCC copy must not fail
+        # the send, or the report would be re-sent next run (duplicate delivery).
         primary = set(primary_recipients)
         refused_primary = {addr: err for addr, err in refused.items() if addr in primary}
-        if refused_primary:
+        if len(refused_primary) >= len(primary):
             raise smtplib.SMTPRecipientsRefused(refused_primary)
+        if refused_primary:
+            # Other primary recipients accepted the mail, so it was delivered; a
+            # failed result would send it to them again on the next run.
+            print_config_info(f"Partial delivery, primary recipient(s) refused: {', '.join(refused_primary)}")
+            return
 
-        print_config_info(
-            f"BCC copy refused (report delivered to abuse contact): "
-            f"{', '.join(refused)}"
-        )
+        print_config_info(f"BCC copy refused (report delivered to abuse contact): {', '.join(refused)}")
 
 
 def _format_recipient_errors(smtp_error: smtplib.SMTPRecipientsRefused) -> str:
-    """
-    Format SMTP recipient refusal errors into readable string.
-
-    Args:
-        smtp_error: SMTPRecipientsRefused exception
-
-    Returns:
-        Formatted error string
-    """
+    """Format per-recipient refusals as 'addr: code message' joined by '; '."""
     errors = []
     for recipient, (code, message) in smtp_error.recipients.items():
         errors.append(f"{recipient}: {code} {message}")

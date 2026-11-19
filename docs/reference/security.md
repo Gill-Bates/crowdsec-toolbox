@@ -15,17 +15,20 @@ Local API and authenticate with their own watcher credentials.
     credentials are scoped to CrowdSec's API only, which is a dramatically
     smaller grant.
 
-    A side effect worth knowing: because nothing needs supplementary groups
-    across the privilege drop any more, the exporter's entrypoint uses plain
-    `gosu app:app` instead of `setpriv --groups`, and Compose needs no
-    `group_add`.
+    A side effect worth knowing: nothing needs supplementary groups any more,
+    and the exporter does not drop privileges at all (it starts as `10001:10001`),
+    so Compose needs no `group_add`.
 
 ## Privilege drop
 
-Both containers start as root for exactly one reason: Docker creates a missing
+The abuse reporter starts as root for exactly one reason: Docker creates a missing
 bind-mount source directory as root, so the entrypoint has to fix ownership
 before the application can write. It then `exec gosu app:app` and **nothing past
 that line runs as root**. The application user is uid/gid `10001`.
+
+The metrics exporter has no bind mount, so it needs no root phase: the image sets
+`USER 10001:10001`, `gosu` is not installed, and the only writable path is its
+`/tmp` tmpfs. Both images run `tini` as PID 1.
 
 !!! danger "`/app` stays root-owned and read-only to the app user"
     The container starts as root and executes `entrypoint.sh` before dropping
@@ -61,7 +64,10 @@ The abuse reporter's Compose service runs with:
     compromised dependency.
 
 The exporter needs no writable data directory at all and keeps no state beyond
-its tmpfs heartbeat.
+its tmpfs heartbeat. Its Compose service runs with `read_only: true`,
+`cap_drop: [ALL]` and **no** `cap_add`, `no-new-privileges`, `pids_limit: 128` and
+one tmpfs at `/tmp` (`noexec,nosuid,nodev,size=64m,mode=1777`); the entrypoint
+creates `/tmp/state` there as uid `10001`.
 
 ## Build context isolation
 
@@ -103,7 +109,8 @@ a `*.db` file or `.git/` to the daemon.
       container.
 
 Secrets are never hardcoded and never logged. The abuse reporter redacts
-sensitive values when rendering report bodies, and `app/logger.py` sanitises
+sensitive values, including `Name: value` header lines in lists and multi-line
+strings, when rendering report bodies and the X-ARF attachment, and `app/logger.py` sanitises
 control characters out of log lines.
 
 ## Network exposure
@@ -120,6 +127,11 @@ reach:
 | InfluxDB / QuestDB | both, when enabled | TLS verification per `*_VALIDATE_CERTIFICATE` |
 
 Every outbound HTTP, DNS and SMTP call carries an explicit timeout.
+
+!!! note "No third-party TLS self-test"
+    The exporter contacts only its configured endpoints. Plain HTTP or
+    `INFLUXDB_VALIDATE_CERTIFICATE=false` only log a warning; the write itself
+    performs the handshake and fails the run when it is rejected.
 
 !!! note "The InfluxDB TLS hardening is load-bearing"
     The exporter's `app/influxdb.py` builds a `TLS12Adapter` on a `urllib3` SSL

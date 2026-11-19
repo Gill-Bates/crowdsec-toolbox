@@ -1,4 +1,4 @@
-<!-- Generated: 2026-09-23 | Updated: 2026-09-24 -->
+<!-- Generated: 2026-09-23 | Updated: 2026-11-18 -->
 
 # crowdsec-toolbox
 
@@ -13,29 +13,35 @@ path, and shares no application code with its siblings. Each tool has its own
 |------|-------------|
 | `README.md` | Project overview linking to each tool's README |
 | `LICENSE` | MIT license for the repository; `docs/license.md` is generated from it in CI |
-| `.gitignore` | Repo-wide ignores: caches, venvs, `*.db`, `settings.env`, `settings-*.env`, `BUILD_INFO`, `.omc/`, `.claude/` |
-| `.dockerignore` | Fallback denylist for legacy (non-BuildKit) builders; each tool's own `docker/Dockerfile.dockerignore` (e.g. `crowdsec-abuse-reporter/docker/Dockerfile.dockerignore`, `crowdsec-metrics-exporter/docker/Dockerfile.dockerignore`) is the primary allowlist under BuildKit |
+| `ruff.toml` | Shared ruff baseline (rules, `BLE001` ignore, formatter); the tools and `.github/scripts/ruff.toml` extend it. Not a Python manifest, so the root-`pyproject.toml` ban does not apply |
+| `setup.conf` | Reference of the local setup and manual build/push commands; the only `setup.conf` in the repository (tools have none of their own) |
+| `.gitignore` | Repo-wide ignores: caches, venvs (`.venv/`, `.venv.*`), `*.db*`, `*.sqlite*`, `*.log`, `settings.env`, `settings-*.env`, `BUILD_INFO`, generated `site/` and `docs/license.md`, `.omc/`, `.claude/`, `.github/skills/`, `*.backup` |
+| `.dockerignore` | Fallback denylist for legacy (non-BuildKit) builders (secrets, databases, logs, `data/`, `BUILD_INFO`, `.git/`, `.github/`, `docs/`, `site/`, tests, `AGENTS.md`/`CLAUDE.md`, `grafana/`); each tool's own `docker/Dockerfile.dockerignore` (e.g. `crowdsec-abuse-reporter/docker/Dockerfile.dockerignore`, `crowdsec-metrics-exporter/docker/Dockerfile.dockerignore`) is the primary allowlist under BuildKit |
+| `.trivyignore` | Trivy ignore list used by the `ci.yml`, `docs-build.yml`, and `release.yml` scans; currently empty on purpose. Every entry added later needs a reason |
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
 | `crowdsec-abuse-reporter/` | CrowdSec LAPI bans → Abusix contact lookup → X-ARF abuse mail, at-most-once (see `crowdsec-abuse-reporter/AGENTS.md`) |
 | `crowdsec-metrics-exporter/` | CrowdSec decisions via the Local API → InfluxDB 2.x or QuestDB time series (see `crowdsec-metrics-exporter/AGENTS.md`) |
-| `docs/` | Central documentation site (mkdocs) — see `docs/AGENTS.md` |
+| `docs/` | Central documentation site (Zensical) — see `docs/AGENTS.md` |
+| `.github/` | `workflows/` (`ci.yml` PR gate and release gate, `release.yml`, `docs-build.yml`), `scripts/` (`ci_job_setup.py`, `ci_output.py`, `trivy_report.py`, `failure_issue.py`, `release_tags.py` and their tests), `zizmor.yml` (reasoned ignores for the zizmor job), `img/` (logos); pipelines are documented in `docs/development/pipelines.md`. `.github/skills/` is gitignored local tooling |
 
 ## For AI Agents
 
 ### Working In This Directory
 - Every component manages its own dependencies:
   `crowdsec-abuse-reporter/pyproject.toml`,
-  `crowdsec-metrics-exporter/pyproject.toml` and `docs/pyproject.toml` (the MkDocs
+  `crowdsec-metrics-exporter/pyproject.toml` and `docs/pyproject.toml` (the Zensical
   toolchain). Do not add a root `pyproject.toml` or per-tool `requirements.txt`;
   CI rejects both. Do not extract shared packages — `logger.py`, `config.py` etc.
   are duplicated on purpose so each tool deploys independently.
 - Each tool's runtime group is called `default`, its tooling group `dev`. Each
-  manifest also carries that component's `[project].version` and its own
-  `[tool.ruff]` section (both ignore `BLE001` deliberately); `ruff check .` from
-  the repo root resolves those per-directory configs by itself.
+  manifest also carries that component's `[project].version`, its `[tool.pytest.ini_options]`
+  and a `[tool.ruff]` that only sets `extend = "../ruff.toml"` plus tool-specific
+  per-file ignores. Shared rules (including the deliberate `BLE001` ignore) live in the
+  root `ruff.toml`; `.github/scripts/ruff.toml` extends it too. `ruff check .` from the
+  repo root resolves these per-directory configs by itself.
 - A Dockerfile bind-mounts its own tool's manifest, and the build context is the
   repository root because the `COPY` paths are repo-relative. The neighbouring
   `docker/Dockerfile.dockerignore` allowlist must therefore name
@@ -46,7 +52,7 @@ path, and shares no application code with its siblings. Each tool has its own
 - Real configuration (`settings.env`, `settings-*.env`) is gitignored; only
   `settings.env.example` templates are tracked. Never commit secrets.
 - Do not add Claude co-author trailers to commits or PR descriptions.
-- Releases run from a `vX.Y.Z` tag via `.github/workflows/release.yml` and require
+- Releases run from a `vX.Y.Z` tag via `.github/workflows/release.yml` (gated by `ci.yml` through `workflow_call`) and require
   **both** `pyproject.toml` files to declare that exact version; the tagged commit
   must also be contained in `main`. Both images go to one Docker Hub repository
   (`crowdsec-toolbox`), tagged `<tool>-<version>` and `<tool>-latest` — there is
@@ -54,23 +60,23 @@ path, and shares no application code with its siblings. Each tool has its own
 
 ### Testing Requirements
 ```bash
-ruff check crowdsec-abuse-reporter crowdsec-metrics-exporter  # per-tool configs
-cd crowdsec-abuse-reporter && python -m pytest         # the only test suite
+ruff check .                                           # per-tool configs, plus .github/scripts
+ruff format --check .                                  # formatter is enforced too
+cd crowdsec-abuse-reporter && python -m pytest
+cd crowdsec-metrics-exporter && python -m pytest
 ```
-There is no typechecker configured. `crowdsec-metrics-exporter` has no tests.
+There is no typechecker configured. The exporter's suite is offline: it uses
+mocked LAPI/QuestDB responses and a stub entrypoint to cover configuration,
+line protocol, fetch completeness, deduplication and scheduling; it needs no
+live services.
 
 ### Build and Deploy
-Each tool's `setup.conf` is the single source of truth for building and
-deploying. It reads the version from the tool's local `pyproject.toml` and
-supplies build metadata to the Docker image.
-
-```bash
-# Build abuse-reporter
-cd /opt/crowdsec-toolbox/crowdsec-abuse-reporter && bash setup.conf
-
-# Build metrics-exporter
-cd /opt/crowdsec-toolbox/crowdsec-metrics-exporter && bash setup.conf
-```
+The root `setup.conf` is the single source of truth for local setup, building and
+deploying; no tool has its own. It is a block-by-block reference, not a script:
+never `source` or `bash` the whole file, since it also pushes images and
+cleans up. Each build block reads the version from the tool's own
+`pyproject.toml` and supplies `APP_VERSION`, `GIT_SHA` and `BUILD_DATE` to the
+Docker image as build args.
 
 ## Dependencies
 

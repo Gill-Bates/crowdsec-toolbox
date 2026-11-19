@@ -29,7 +29,7 @@ monitor. Each tool is independent, so you can run only the part you need.
 |---|---|---|
 | **What it does** | Turns CrowdSec bans into abuse reports | Exports CrowdSec decisions as time series |
 | 📥 **Source** | CrowdSec Local API (LAPI), direct | CrowdSec Local API (LAPI), direct |
-| 📤 **Output** | X-ARF v4 email to the responsible abuse contact | InfluxDB 2.x or QuestDB (line protocol over HTTP) |
+| 📤 **Output** | X-ARF v4 email to the responsible abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
 | 🌍 **Enrichment** | GeoIP (GeoLite2 City + ASN) | — |
 | 📇 **Contact lookup** | Abusix DNS abuse-contact database | — |
 | 🔁 **Idempotency** | SQLite, at-most-once per `(AlertId, IPAddress)` | Backend-side deduplication, no local state |
@@ -38,13 +38,14 @@ monitor. Each tool is independent, so you can run only the part you need.
 
 ## Grafana dashboards
 
-Both tools ship ready-made dashboards in their `grafana/` directory — import the
-JSON, pick your data source, and you have a working view of what CrowdSec is
-blocking. No provisioning, no plugins beyond the data source itself.
+Both tools ship ready-made QuestDB dashboards in their `grafana/` directory.
+Import the JSON, pick your QuestDB data source, and you have a working view of
+what CrowdSec is blocking. No provisioning, no plugins beyond the data source
+itself. InfluxDB dashboards do not exist yet.
 
 | | Dashboard | Panels | Highlights |
 |---|---|---|---|
-| **Metrics export** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-metrics-exporter/grafana/dashboard_questdb.json) | 21 | World map of source IPs coloured per host, alert and event history, top countries, networks/ASN, scenarios and source IPs each paired with a chart overview above its detail table, and — with the per-event export enabled — top endpoints and target FQDNs |
+| **Metrics export** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-metrics-exporter/grafana/dashboard_questdb.json) | 22 | World map of source IPs coloured per host, alert and event history, top countries, networks/ASN, scenarios and source IPs each paired with a chart overview above its detail table, and — with the per-event export enabled — top endpoints and target FQDNs |
 | **Abuse reporting** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-abuse-reporter/grafana/dashboard_questdb.json) | 7 | A four-card KPI header (sent, failed, success rate, total), daily reports, origin countries, and a paginated detail table |
 
 Country values render as flag emoji, and hosts keep a stable colour across
@@ -55,7 +56,7 @@ no geo columns.
 ### Screenshots
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Gill-Bates/crowdsec-toolbox/main/crowdsec-metrics-exporter/grafana/dashboard_metrics_white.png" width="900" alt="Metrics export dashboard">
+  <img src="https://raw.githubusercontent.com/Gill-Bates/crowdsec-toolbox/main/.github/img/dashboard_metrics_white.png" width="900" alt="Metrics export dashboard">
 </p>
 
 > [!NOTE]

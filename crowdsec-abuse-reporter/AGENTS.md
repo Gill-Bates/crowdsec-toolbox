@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-18 | Updated: 2026-09-23 -->
+<!-- Generated: 2026-09-18 | Updated: 2026-11-18 -->
 
 # crowdsec-abuse-reporter
 
@@ -20,15 +20,13 @@ a top-level `run.py` shim.
 | File | Description |
 |------|-------------|
 | `run.py` | Entry-point shim: `raise SystemExit(main())` from `app.main` |
-| `setup.conf` | Single source of truth for venv install, buildx build, and deploy |
 | `settings.env` | Active runtime configuration with real credentials — gitignored, never commit |
 | `settings-*.env` | Optional site-specific profiles — gitignored, never commit |
-| `BUILD_INFO` | Version/SHA/date written by the buildx command in `setup.conf` |
 | `README.md` | Operator documentation in English (Docker usage, data ownership) |
 | `data/abuse_alerts.db` | Default SQLite store for direct host runs |
-| `.gitignore` | Excludes `/data/` and legacy root-level `abuse_alerts.db` files (the repo-root `.gitignore` also covers `*.db*`, `settings*.env`, `BUILD_INFO`) |
+| `.gitignore` | Excludes `/data/` only (the repo-root `.gitignore` covers `*.db*`, `settings*.env`, `BUILD_INFO`) |
 
-Runtime deps (dnspython, geoip2, httpx, pinned) are the `abuse`
+Runtime deps (dnspython, geoip2, httpx, pinned) are the
 `default` group in this tool's own `pyproject.toml`; there is no
 `requirements.txt` and no root manifest.
 
@@ -65,7 +63,13 @@ The at-most-once contract is the central invariant of this project:
   finalized (`finalize_alert`) after. Only the claim owner may send.
 - Rows left `pending` by a crash are moved to the terminal
   `unknown_send_state` by the reaper and are **never** retried, because SMTP may
-  already have accepted the mail.
+  already have accepted the mail. A connection failure after the SMTP transfer
+  started (`UncertainSendError`) ends the same way via `outcome_unknown=True`.
+- Retention never deletes a proof of delivery: `cleanup_old_records()` copies
+  expired `sent`/`unknown_send_state` keys into `abuse_alert_tombstones` (never
+  pruned) in the same transaction as the delete, and `claim_alert_for_send()` /
+  `batch_check_processed_alerts()` consult that table. Keep the single-cutoff,
+  insert-before-delete order and never rebuild `abuse_alerts` for this.
 - The idempotency key is the `(AlertId, IPAddress)` pair, not `AlertId` alone —
   one alert can bundle bans for several IPs.
 - A CrowdSec `Range` decision must never be collapsed to its network address
@@ -83,14 +87,13 @@ ruff check .                              # from the repository root
 cd crowdsec-abuse-reporter && python -m pytest
 ```
 There is no typechecker in this repository — do not add mypy or pyright and do
-not claim a typecheck ran. Ruff is the single linter; no config is committed
-here; this tool's own `pyproject.toml` carries the `[tool.ruff.lint]` section that
-ignores `BLE001`, since the broad `except Exception` handlers here are
+not claim a typecheck ran. Ruff is the single linter; the shared rules are in
+the root `ruff.toml` (this tool's `[tool.ruff]` extends it) and ignore `BLE001`, since the broad `except Exception` handlers here are
 deliberate (see Common Patterns). Do not narrow that ignore or add new
 findings.
 
 Known environment-dependent failure:
-`tests/test_hardening.py::EntrypointHardeningTest::test_entrypoint_rejects_non_integer_run_jitter`
+`tests/test_hardening.py::EntrypointHardeningTest::test_entrypoint_ignores_run_jitter`
 fails on hosts without `gosu` because it executes the container entrypoint
 directly. That is environmental, not a code defect.
 
@@ -99,8 +102,10 @@ directly. That is environmental, not a code defect.
   so one bad alert cannot kill the run. Do not narrow those handlers.
 - Every outbound HTTP, DNS and SMTP call carries an explicit timeout.
 - Exit codes: `0` normal (per-report DNS/send failures still exit 0), `1` hard
-  failure (config, GeoIP cold start, DB init, LAPI fetch, database errors),
-  `130` interrupted. The entrypoint only refreshes `/data/heartbeat` on exit 0.
+  failure (config, GeoIP cold start, DB init, LAPI fetch, database errors,
+  metrics lost, QuestDB not 10.x, QuestDB dedup gate or TTL failed, outbox saturation),
+  `130` interrupted. The entrypoint only refreshes `/data/heartbeat` on exit 0;
+  a helper loop dying makes the entrypoint itself exit 1 (see `docker/AGENTS.md`).
 
 ### Database Location
 Direct host runs store the database at `data/abuse_alerts.db` by default. The

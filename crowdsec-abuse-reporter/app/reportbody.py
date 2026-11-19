@@ -4,10 +4,11 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# reportbody.py - Enhanced email body and X-ARF report generation with context
+# Human-readable mail body and X-ARF v4 JSON rendering, with secret redaction of context.
 import ipaddress
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -16,59 +17,61 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 if TYPE_CHECKING:
     from app.geoip import GeoInfo
 
-# Module-level logger
 logger = logging.getLogger(__name__)
 
 # Exact normalized keys (hyphens → underscores, lowercased).
-_SENSITIVE_CONTEXT_EXACT: frozenset[str] = frozenset({
-    "authorization",
-    "cookie",
-    "set_cookie",
-    "x_api_key",
-    "x_auth_token",
-    "proxy_authorization",
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "session",
-    "csrf",
-    "api_key",
-})
+_SENSITIVE_CONTEXT_EXACT: frozenset[str] = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "set_cookie",
+        "x_api_key",
+        "x_auth_token",
+        "proxy_authorization",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "session",
+        "csrf",
+        "api_key",
+    }
+)
 
 
 def _is_sensitive_key(key: str) -> bool:
     normalized = key.strip().lower().replace("-", "_")
     if normalized in _SENSITIVE_CONTEXT_EXACT:
         return True
-    return (
-        "password" in normalized
-        or normalized.endswith(("_token", "_secret", "_key"))
-    )
+    return "password" in normalized or normalized.endswith(("_token", "_secret", "_key"))
 
 
 # Context keys whose value is a URL or request path. Their own name is harmless,
 # so key-based redaction never fires, but the query string they carry routinely
 # holds reset tokens, session ids and api keys from the logged request. The
 # report goes to an external abuse desk, so those values are redacted in place.
-_URI_CONTEXT_KEYS: frozenset[str] = frozenset({
-    "uri",
-    "url",
-    "target_uri",
-    "request_uri",
-    "path",
-    "http_path",
-    "http_referer",
-    "referer",
-    "referrer",
-})
+_URI_CONTEXT_KEYS: frozenset[str] = frozenset(
+    {
+        "uri",
+        "url",
+        "target_uri",
+        "request_uri",
+        "path",
+        "http_path",
+        "http_referer",
+        "referer",
+        "referrer",
+    }
+)
 
-_QUERY_CONTEXT_KEYS: frozenset[str] = frozenset({
-    "args",
-    "http_args",
-    "query",
-    "query_string",
-})
+_QUERY_CONTEXT_KEYS: frozenset[str] = frozenset(
+    {
+        "args",
+        "http_args",
+        "query",
+        "query_string",
+    }
+)
 
 
 def _redact_query(query: str) -> str:
@@ -80,12 +83,7 @@ def _redact_query(query: str) -> str:
     # every value, which would needlessly rewrite benign paths in the evidence.
     if not any(_is_sensitive_key(key) for key, _ in pairs):
         return query
-    return urlencode(
-        [
-            (key, "[REDACTED]" if _is_sensitive_key(key) else value)
-            for key, value in pairs
-        ]
-    )
+    return urlencode([(key, "[REDACTED]" if _is_sensitive_key(key) else value) for key, value in pairs])
 
 
 def _redact_uri(value: str) -> str:
@@ -94,9 +92,9 @@ def _redact_uri(value: str) -> str:
     redacted_query = _redact_query(parts.query)
     if redacted_query == parts.query:
         return value
-    return urlunsplit(
-        (parts.scheme, parts.netloc, parts.path, redacted_query, parts.fragment)
-    )
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, redacted_query, parts.fragment))
+
+
 MAX_FIELD_LENGTH = 2_000
 MAX_LIST_ITEMS = 20
 MAX_DICT_ITEMS = 50
@@ -198,37 +196,29 @@ def _decisions_for(alert: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def build_mail_body(alert: dict[str, Any], hostname: str) -> str:
-    """
-    Build comprehensive abuse report email body with proper formatting.
-
-    Includes all relevant CrowdSec alert details, blocking reasons and context.
+    """Build the plain-text abuse report body from a CrowdSec alert.
 
     Args:
         alert: CrowdSec alert dictionary
         hostname: Reporting host identifier
-
-    Returns:
-        Formatted email body as string
     """
-    # Extract alert identification with fallback
     alert_id = _extract_alert_id(alert)
     source = _dict_or_empty(alert.get("source"))
     ip = _extract_report_ip(alert)
     scenario = _limit_value(alert.get("scenario", "unknown"))
 
-    # Format timestamps for readability
     created_at = format_timestamp(alert.get("created_at"))
     start_at = format_timestamp(alert.get("start_at"))
     stop_at = format_timestamp(alert.get("stop_at"))
 
-    # GeoIP enrichment (non-fatal: lookup returns None-filled dict on any error)
+    # GeoIP enrichment is optional: any failure leaves geo as None.
     try:
         from app.geoip import lookup as _geoip_lookup
+
         geo = _geoip_lookup(ip) if ip != "unknown" else None
     except Exception:
         geo = None
 
-    # Extract detailed information sections
     blocking_reasons = extract_blocking_reasons(_decisions_for(alert))
     context_details = extract_context_details(_dict_or_empty(alert.get("context")), alert)
     network_info = extract_network_info(source, geo)
@@ -296,28 +286,17 @@ def build_mail_body(alert: dict[str, Any], hostname: str) -> str:
 
 
 def _extract_alert_id(alert: dict[str, Any]) -> str:
-    """
-    Extract alert identifier with comprehensive fallback strategy.
-
-    Args:
-        alert: Alert dictionary
-
-    Returns:
-        Alert ID as normalized string. Always returns a string type for
-        consistency, even when the source ID is numeric. Returns 'unknown'
-        if no valid identifier is found.
-    """
+    """Return the alert identifier as a string, or 'unknown' if none is present."""
     # Priority order for alert identification
     if alert.get("alert_id"):
         return str(alert["alert_id"])
-    elif alert.get("alert_ids"):
+    if alert.get("alert_ids"):
         return str(alert["alert_ids"][0])
-    elif alert.get("id"):
+    if alert.get("id"):
         return str(alert["id"])
-    elif alert.get("uuid"):
+    if alert.get("uuid"):
         return str(alert["uuid"])
-    else:
-        return "unknown"
+    return "unknown"
 
 
 def normalize_timestamp(timestamp: object) -> str:
@@ -333,9 +312,7 @@ def normalize_timestamp(timestamp: object) -> str:
         # producer. UTC stays the best available reading — dropping the stamp
         # would push _xarf_timestamp() onto "now", which is further from the
         # truth than the event time itself — but it must not be silent.
-        logger.warning(
-            "Timestamp %r has no timezone; assuming UTC for the report", timestamp
-        )
+        logger.warning("Timestamp %r has no timezone; assuming UTC for the report", timestamp)
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC).isoformat()
 
@@ -349,33 +326,27 @@ def _xarf_timestamp(alert: dict[str, Any]) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# XARF v4 helpers
-# ---------------------------------------------------------------------------
-
 # Maps keyword fragments found in CrowdSec scenario names to
 # (category, type) pairs defined by the XARF v4 specification.
 # Evaluated in order; first match wins.
 _XARF_SCENARIO_RULES: list[tuple] = [
     # keywords                                               category          type
-    (["bruteforce", "brute-force", "brute_force", "-bf", "_bf", "login"],
-                                                             "connection",     "login_attack"),
-    (["scan", "crawl", "probe", "spider", "fingerprint"],   "connection",     "port_scan"),
-    (["exploit", "injection", "sqli", "xss", "lfi", "rfi", "rce"],
-                                                             "vulnerability",  "exploit_attempt"),
-    (["ddos", "flood", "amplif"],                           "connection",     "ddos_attack"),
-    (["spam", "phish"],                                     "messaging",      "spam"),
-    (["malware", "botnet", "c2", "backdoor", "rootkit"],    "infrastructure", "malware"),
+    (["bruteforce", "brute-force", "brute_force", "-bf", "_bf", "login"], "connection", "login_attack"),
+    (["scan", "crawl", "probe", "spider", "fingerprint"], "connection", "port_scan"),
+    (["exploit", "injection", "sqli", "xss", "lfi", "rfi", "rce"], "vulnerability", "exploit_attempt"),
+    (["ddos", "flood", "amplif"], "connection", "ddos_attack"),
+    (["spam", "phish"], "messaging", "spam"),
+    (["malware", "botnet", "c2", "backdoor", "rootkit"], "infrastructure", "malware"),
 ]
 
 _XARF_PROTO_KEYWORDS: list[tuple] = [
-    ("ssh",   "ssh"),
-    ("rdp",   "rdp"),
-    ("ftp",   "ftp"),
-    ("smtp",  "smtp"),
-    ("http",  "http"),
-    ("imap",  "imap"),
-    ("pop3",  "pop3"),
+    ("ssh", "ssh"),
+    ("rdp", "rdp"),
+    ("ftp", "ftp"),
+    ("smtp", "smtp"),
+    ("http", "http"),
+    ("imap", "imap"),
+    ("pop3", "pop3"),
 ]
 
 
@@ -401,11 +372,11 @@ def _xarf_reporter(sender_email: str, sender_name: str) -> dict[str, str]:
     org = sender_name.strip()
     if not org:
         # Derive display name from email domain when no explicit name is set.
-        org = sender_email.split("@")[-1] if "@" in sender_email else sender_email
+        org = sender_email.rsplit("@", maxsplit=1)[-1] if "@" in sender_email else sender_email
     return {"org": org, "contact": sender_email}
 
 
-def build_xarf_report(alert: dict[str, Any], hostname: str) -> str:
+def build_xarf_report(alert: dict[str, Any], hostname: str) -> str:  # noqa: ARG001 public signature, kept for callers
     """Build an XARF v4-compliant abuse report from a CrowdSec alert.
 
     Schema: https://xarf.org/docs/specification/
@@ -426,6 +397,7 @@ def build_xarf_report(alert: dict[str, Any], hostname: str) -> str:
     # GeoIP enrichment
     try:
         from app.geoip import lookup as _geoip_lookup
+
         _geo = _geoip_lookup(ip) if ip != "unknown" else None
     except Exception:
         _geo = None
@@ -437,49 +409,46 @@ def build_xarf_report(alert: dict[str, Any], hostname: str) -> str:
     reporter = _xarf_reporter(SMTP_SENDER, SENDER_NAME)
 
     # GeoIP-enriched geo fields (fall back to CrowdSec source metadata)
-    country   = (_geo or {}).get("country") or _limit_value(source.get("cn"))
-    city      = (_geo or {}).get("city")
-    asn_num   = (_geo or {}).get("asn") or _limit_value(source.get("as_number"))
-    asn_name  = (_geo or {}).get("provider") or _limit_value(source.get("as_name"))
+    country = (_geo or {}).get("country") or _limit_value(source.get("cn"))
+    city = (_geo or {}).get("city")
+    asn_num = (_geo or {}).get("asn") or _limit_value(source.get("as_number"))
+    asn_name = (_geo or {}).get("provider") or _limit_value(source.get("as_name"))
 
     xarf_payload: dict[str, Any] = {
         # --- XARF v4 mandatory fields ---
-        "xarf_version":      "4.0.0",
-        "report_id":         str(uuid.uuid4()),       # UUID v4
-        "timestamp":         _xarf_timestamp(alert),
-        "reporter":          reporter,
-        "sender":            reporter,
+        "xarf_version": "4.0.0",
+        "report_id": str(uuid.uuid4()),
+        "timestamp": _xarf_timestamp(alert),
+        "reporter": reporter,
+        "sender": reporter,
         "source_identifier": ip,
-        "category":          category,
-        "type":              xarf_type,
-
+        "category": category,
+        "type": xarf_type,
         # --- XARF v4 recommended fields ---
         "description": f"Automated security alert: {scenario}",
         **({"protocol": protocol} if protocol else {}),
-
         # --- CrowdSec-specific evidence ---
         "evidence": {
             "crowdsec": {
-                "alert_id":   alert_id,
-                "scenario":   scenario,
+                "alert_id": alert_id,
+                "scenario": scenario,
                 "events_count": alert.get("events_count", 0),
-                "start_at":   start_at,
-                "stop_at":    stop_at,
-                "message":    _limit_value(alert.get("message", "")),
-                "decisions":  decisions,
+                "start_at": start_at,
+                "stop_at": stop_at,
+                "message": _limit_value(alert.get("message", "")),
+                "decisions": decisions,
                 "source": {
-                    "ip":        ip,
-                    "country":   country,
-                    "city":      city,
+                    "ip": ip,
+                    "country": country,
+                    "city": city,
                     "as_number": asn_num,
-                    "as_name":   asn_name,
-                    "range":     _limit_value(source.get("range")),
+                    "as_name": asn_name,
+                    "range": _limit_value(source.get("range")),
                 },
-                "context":    context_data,
-                "simulated":  alert.get("simulated", False),
+                "context": context_data,
+                "simulated": alert.get("simulated", False),
             }
         },
-
         "remarks": (
             "This report was generated automatically by our abuse reporting "
             "system based on CrowdSec metrics (https://www.crowdsec.net/) "
@@ -491,18 +460,10 @@ def build_xarf_report(alert: dict[str, Any], hostname: str) -> str:
 
 
 def ensure_decisions_format(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    Normalize decisions list to ensure consistent format.
+    """Reduce decisions to the fixed, length-bounded key set used in the X-ARF evidence.
 
-    The single caller (`build_xarf_report()`) always passes `_decisions_for()`'s
-    output, which already contains only dicts. This function has no other
-    caller and does not filter defensively; a non-dict entry would raise here.
-
-    Args:
-        decisions: List of decision dictionaries
-
-    Returns:
-        Normalized list of decision dictionaries
+    The only caller (`build_xarf_report()`) passes `_decisions_for()`'s output,
+    which already contains only dicts; a non-dict entry would raise here.
     """
     formatted_decisions = []
     for decision in decisions:
@@ -542,10 +503,10 @@ def extract_network_info(
         network_lines.append(_field("City", city))
 
     # Provider / ASN — prefer GeoIP ASN DB; fall back to CrowdSec as_* fields
-    geo_asn      = (geo or {}).get("asn")
+    geo_asn = (geo or {}).get("asn")
     geo_provider = (geo or {}).get("provider")
-    cs_asn       = source.get("as_number")
-    cs_name      = source.get("as_name")
+    cs_asn = source.get("as_number")
+    cs_name = source.get("as_name")
 
     if _is_present(geo_asn) or _is_present(geo_provider):
         asn_str = f"AS{geo_asn}" if _is_present(geo_asn) else ""
@@ -565,19 +526,12 @@ def extract_network_info(
 
 
 def extract_context_details(context_data: dict[str, Any], alert: dict[str, Any]) -> str:
-    """
-    Extract and format context information for human-readable display.
+    """Format the redacted alert context (context plus meta) as report lines.
 
-    Args:
-        context_data: Context information dictionary
-        alert: Alert dictionary to extract meta information
-
-    Returns:
-        Formatted context details string
+    Returns a placeholder sentence when no line remains after suppression.
     """
     context_lines = []
 
-    # Process both context data and meta information
     combined_context = _combine_context_sources(context_data, alert)
 
     for key, value in combined_context.items():
@@ -616,23 +570,25 @@ _CONTEXT_KEY_ORDER = [
 #   (http_verb → HTTP Method, http_status → HTTP Status, http_user_agent → User-Agent)
 # - CrowdSec geo-enrichment that belongs in NETWORK, not here
 # - zero-value noise or internal-only fields
-_CONTEXT_SUPPRESSED_KEYS: frozenset[str] = frozenset({
-    # raw duplicates of labeled context keys
-    "http_verb",
-    "http_status",
-    "http_user_agent",
-    # CrowdSec geo enrichment — shown in NETWORK via GeoIP
-    "ASNNumber",
-    "ASNOrg",
-    "IsInEU",
-    "IsoCode",
-    "SourceRange",
-    # noise / redundant
-    "log_type",
-    "timestamp",     # redundant with First/Last seen in INCIDENT
-    "source_ip",     # redundant with IP address in INCIDENT
-    "http_args_len", # zero-value has no value for the recipient
-})
+_CONTEXT_SUPPRESSED_KEYS: frozenset[str] = frozenset(
+    {
+        # raw duplicates of labeled context keys
+        "http_verb",
+        "http_status",
+        "http_user_agent",
+        # CrowdSec geo enrichment — shown in NETWORK via GeoIP
+        "ASNNumber",
+        "ASNOrg",
+        "IsInEU",
+        "IsoCode",
+        "SourceRange",
+        # noise / redundant
+        "log_type",
+        "timestamp",  # redundant with First/Last seen in INCIDENT
+        "source_ip",  # redundant with IP address in INCIDENT
+        "http_args_len",  # zero-value has no value for the recipient
+    }
+)
 
 
 def _limit_value(value: Any) -> Any:
@@ -647,12 +603,34 @@ def _limit_value(value: Any) -> Any:
     return value
 
 
+_HEADER_LINE_RE = re.compile(r"^([ \t]*)([A-Za-z][\w.-]*)([ \t]*:[ \t]*)(.+)$", re.MULTILINE)
+
+
+def _redact_header_lines(text: str) -> str:
+    """Redact the value of 'Name: value' lines whose name is a sensitive key.
+
+    Raw header lists and multi-line header strings carry the secret in the text,
+    not under a dict key, so key-based redaction alone would let them through.
+    """
+
+    def _mask(match: re.Match[str]) -> str:
+        if _is_sensitive_key(match.group(2)):
+            return f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]"
+        return match.group(0)
+
+    return _HEADER_LINE_RE.sub(_mask, text)
+
+
 def _redact_context_value(key: str, value: Any) -> Any:
-    """Redact sensitive context keys recursively."""
+    """Redact secrets in a context value and bound its size, recursing into dicts and lists.
+
+    Covers sensitive keys, 'Name: value' header lines, and URI/query strings.
+    """
     if _is_sensitive_key(key):
         return "[REDACTED]"
     normalized_key = key.strip().lower().replace("-", "_")
     if isinstance(value, str):
+        value = _redact_header_lines(value)
         if normalized_key in _URI_CONTEXT_KEYS:
             return _limit_value(_redact_uri(value))
         if normalized_key in _QUERY_CONTEXT_KEYS:
@@ -667,43 +645,27 @@ def _redact_context_value(key: str, value: Any) -> Any:
     return _limit_value(value)
 
 
-def _combine_context_sources(
-    context_data: dict[str, Any], alert: dict[str, Any]
-) -> dict[str, Any]:
-    """
-    Combine context data and meta information from alert with explicit ordering.
+def _combine_context_sources(context_data: dict[str, Any], alert: dict[str, Any]) -> dict[str, Any]:
+    """Merge context and alert meta into one redacted dict with stable key order.
 
-    Keys are ordered according to _CONTEXT_KEY_ORDER for consistent,
-    readable output. Unknown keys are appended alphabetically.
-
-    Args:
-        context_data: Context information dictionary
-        alert: Alert dictionary containing meta information
-
-    Returns:
-        Combined context dictionary with consistent key ordering
+    Meta entries override context keys of the same name. Keys follow
+    _CONTEXT_KEY_ORDER; unknown keys are appended alphabetically.
     """
     raw_combined = context_data.copy() if context_data else {}
 
-    # Extract and add meta information from alert
     if alert and "meta" in alert and isinstance(alert["meta"], list):
         meta_context = _extract_meta_context(alert["meta"])
         raw_combined.update(meta_context)
 
-    # Apply explicit key ordering
     ordered_result = {}
     for key in _CONTEXT_KEY_ORDER:
         if key in raw_combined:
             ordered_result[key] = raw_combined.pop(key)
 
-    # Append remaining keys alphabetically
     for key in sorted(raw_combined.keys()):
         ordered_result[key] = raw_combined[key]
 
-    return {
-        key: _redact_context_value(key, value)
-        for key, value in ordered_result.items()
-    }
+    return {key: _redact_context_value(key, value) for key, value in ordered_result.items()}
 
 
 def _json_safe_parse(value: str, *, key: str = "") -> Any:
@@ -745,29 +707,19 @@ def _extract_meta_context(meta_list: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _format_context_line(key: str, value: Any) -> str | None:
-    """
-    Format individual context key-value pair for display.
-
-    Args:
-        key: Context key
-        value: Context value
-
-    Returns:
-        Formatted line string or None if should be skipped
-    """
+    """Format one context key-value pair, or return None for a suppressed key."""
     if key in _CONTEXT_SUPPRESSED_KEYS:
         return None
 
-    # Handle specific context keys with custom formatting
     if key in ("username", "user", "usernames"):
         text = ", ".join(str(v) for v in value) if isinstance(value, list) else value
         return _field("Username(s)", text)
 
-    elif key == "service":
+    if key == "service":
         text = ", ".join(str(v) for v in value) if isinstance(value, list) else value
         return _field("Service", text)
 
-    elif key == "user_agent":
+    if key == "user_agent":
         if isinstance(value, list):
             # Deduplicate while preserving order; show at most 3 distinct UAs.
             seen: list[str] = []
@@ -782,15 +734,15 @@ def _format_context_line(key: str, value: Any) -> str | None:
             text = str(value)
         return _field("User-Agent", text)
 
-    elif key == "method":
+    if key == "method":
         text = ", ".join(value) if isinstance(value, list) else value
         return _field("HTTP Method", text)
 
-    elif key == "status":
+    if key == "status":
         text = ", ".join(str(v) for v in value) if isinstance(value, list) else value
         return _field("HTTP Status", text)
 
-    elif key == "target_uri":
+    if key == "target_uri":
         if isinstance(value, list):
             uri_text = ", ".join(value[:3])
             if len(value) > 3:
@@ -798,60 +750,40 @@ def _format_context_line(key: str, value: Any) -> str | None:
             return _field("Target URIs", uri_text)
         return _field("Target URI", value)
 
-    elif key in ("path", "http_path"):
+    if key in ("path", "http_path"):
         text = ", ".join(value[:5]) if isinstance(value, list) else value
         return _field("Request Path", text)
 
-    elif key == "http_args":
+    if key == "http_args":
         text = ", ".join(value[:5]) if isinstance(value, list) else value
         return _field("Query Args", text)
 
-    elif key == "headers":
+    if key == "headers":
         if isinstance(value, dict):
-            return "\n".join(
-                _field(f"Header {header_key}", header_value)
-                for header_key, header_value in value.items()
-            )
+            return "\n".join(_field(f"Header {header_key}", header_value) for header_key, header_value in value.items())
         return _field("Headers", json.dumps(value, ensure_ascii=False))
 
-    elif isinstance(value, list):
+    if isinstance(value, list):
         # Join simple scalar lists for readability; JSON-encode nested ones.
         if all(not isinstance(item, (dict, list)) for item in value):
             return _field(key, ", ".join(str(item) for item in value))
         return _field(key, json.dumps(value, ensure_ascii=False))
 
-    elif isinstance(value, dict):
+    if isinstance(value, dict):
         return _field(key, json.dumps(value, ensure_ascii=False))
 
-    else:
-        return _field(key, value)
+    return _field(key, value)
 
 
-def extract_context_for_json(
-    context_data: dict[str, Any], alert: dict[str, Any]
-) -> dict[str, Any]:
-    """
-    Extract context data for JSON serialization in X-ARF reports.
-
-    Args:
-        context_data: Context information dictionary
-        alert: Alert dictionary to extract meta information
-
-    Returns:
-        Context dictionary ready for JSON serialization
-    """
+def extract_context_for_json(context_data: dict[str, Any], alert: dict[str, Any]) -> dict[str, Any]:
+    """Return the redacted context (context plus meta) for the X-ARF evidence object."""
     return _combine_context_sources(context_data, alert)
 
 
 def format_timestamp(timestamp: str) -> str:
-    """
-    Format ISO timestamp to human-readable format.
+    """Format an ISO timestamp as 'YYYY-MM-DD HH:MM:SS UTC'.
 
-    Args:
-        timestamp: ISO format timestamp string
-
-    Returns:
-        Formatted timestamp string or 'N/A' if invalid
+    Returns 'N/A' for an empty value and the input unchanged if it cannot be parsed.
     """
     if not timestamp:
         return "N/A"
@@ -867,15 +799,7 @@ def format_timestamp(timestamp: str) -> str:
 
 
 def extract_blocking_reasons(decisions: list[dict[str, Any]]) -> str:
-    """
-    Extract and format blocking reasons from decisions.
-
-    Args:
-        decisions: List of decision dictionaries
-
-    Returns:
-        Formatted blocking reasons string
-    """
+    """Format up to MAX_LIST_ITEMS decisions as headline and detail lines."""
     if not decisions:
         return "No specific blocking reasons available."
 

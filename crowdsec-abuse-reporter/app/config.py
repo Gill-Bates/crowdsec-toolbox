@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,8 +21,7 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     Returns None for blank lines, comments, and lines without a valid KEY.
     Supports an optional leading 'export ' prefix and strips a single layer of
     matching single or double quotes from the value. Unquoted values have
-    surrounding whitespace stripped (matching python-dotenv's prior
-    behaviour); quoted values keep their contents byte-for-byte, so a
+    surrounding whitespace stripped (python-dotenv semantics); quoted values keep their contents byte-for-byte, so a
     password with leading/trailing spaces survives when quoted.
     """
     stripped = line.strip()
@@ -77,14 +77,20 @@ def load_settings_env(path: Path, *, override: bool) -> None:
 load_settings_env(SETTINGS_PATH, override=False)
 
 
+def _config_line(level: str, message: str) -> str:
+    """Format a config message in the log layout (the logger imports this module)."""
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return f"{now} | {level:<8} | crowdsec_abuse | {message}"
+
+
 def _log_config_warning(message: str) -> None:
-    """Internal logger for config-related warnings without disrupting main logging."""
-    print(f"⚠️  Config Warning: {message}")
+    """Print a config warning to stderr."""
+    print(_config_line("WARNING", f"Config Warning: {message}"), file=sys.stderr)
 
 
 def _fail_clean(message: str) -> None:
     """Print an actionable config error and exit without a Python traceback."""
-    print(f"✗ Config Error: {message}", file=sys.stderr)
+    print(_config_line("ERROR", f"Config Error: {message}"), file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -183,11 +189,12 @@ BCC = [a.strip() for a in os.getenv("BCC", "").split(",") if a.strip()]
 # ASNs that must NEVER receive an abuse mail. Normalized to bare digits so the
 # comparison is robust against the "AS" prefix (CrowdSec reports as_number as
 # plain digits, e.g. "8881", while operators write "AS8881" in settings.env).
-WHITELISTED_ASN = frozenset(
-    normalized
-    for raw in os.getenv("WHITELISTED_ASN", "").split(",")
-    if (normalized := normalize_asn(raw))
-)
+_raw_whitelist = [entry.strip() for entry in os.getenv("WHITELISTED_ASN", "").split(",") if entry.strip()]
+_invalid_whitelist = [entry for entry in _raw_whitelist if not normalize_asn(entry)]
+# A typo here would leave the intended network unprotected, so refuse to start.
+if _invalid_whitelist:
+    _fail_clean(f"WHITELISTED_ASN contains invalid entries: {', '.join(_invalid_whitelist)}")
+WHITELISTED_ASN = frozenset(normalize_asn(entry) for entry in _raw_whitelist)
 
 # Left empty when unset so the CrowdSec credentials file can supply the URL.
 # A default here would always win over the file (see _resolve_lapi_credentials).
@@ -241,9 +248,7 @@ ABUSIX_TIMEOUT = _get_float_env("ABUSIX_TIMEOUT", 3.0, minimum=0.1)
 
 # Total DNS budget per abuse-contact lookup (across retries/nameservers). Keeps
 # a slow or unreachable resolver from hanging the whole run.
-ABUSIX_DNS_LIFETIME = _get_float_env(
-    "ABUSIX_DNS_LIFETIME", max(ABUSIX_TIMEOUT, 5.0), minimum=0.1
-)
+ABUSIX_DNS_LIFETIME = _get_float_env("ABUSIX_DNS_LIFETIME", max(ABUSIX_TIMEOUT, 5.0), minimum=0.1)
 
 DATA_DIR = BASE_DIR / "data"
 
@@ -279,9 +284,7 @@ MAX_ALERTS_PER_RUN = _get_int_env("MAX_ALERTS_PER_RUN", 0)
 # same data is never stored twice.
 METRICS_BACKEND = os.getenv("METRICS_BACKEND", "none").strip().lower() or "none"
 if METRICS_BACKEND not in {"none", "influxdb2", "questdb"}:
-    _fail_clean(
-        f"METRICS_BACKEND must be 'none', 'influxdb2' or 'questdb', got {METRICS_BACKEND!r}"
-    )
+    _fail_clean(f"METRICS_BACKEND must be 'none', 'influxdb2' or 'questdb', got {METRICS_BACKEND!r}")
 METRICS_ENABLED = METRICS_BACKEND != "none"
 METRICS_ONLY = _get_bool_env("METRICS_ONLY", False)
 
@@ -316,9 +319,7 @@ def parse_questdb_ttl(raw: str) -> str | None:
         return None
     match = re.fullmatch(r"([0-9]+)\s*([hdwMy])", value)
     if not match:
-        raise ValueError(
-            f"QUESTDB_TTL must look like 365d, 12w, 6M, 1y or 48h, got {raw!r}"
-        )
+        raise ValueError(f"QUESTDB_TTL must look like 365d, 12w, 6M, 1y or 48h, got {raw!r}")
     amount = int(match.group(1))
     if amount == 0:
         return None
@@ -357,9 +358,6 @@ METRICS_RETRY_BACKOFF = _get_float_env("METRICS_RETRY_BACKOFF", 1.0, minimum=0.0
 # collapse a repeated point onto the same row.
 #
 # The bounds exist so a long outage cannot grow the database without limit.
-# Oldest rows are dropped first — they are the least useful, and dropping them is
-# the same outcome the code had before the outbox existed.
+# Oldest rows are dropped first, as they are the least useful.
 METRICS_OUTBOX_MAX_ROWS = _get_int_env("METRICS_OUTBOX_MAX_ROWS", 50000, minimum=0)
-METRICS_OUTBOX_MAX_AGE_DAYS = _get_int_env(
-    "METRICS_OUTBOX_MAX_AGE_DAYS", 30, minimum=0
-)
+METRICS_OUTBOX_MAX_AGE_DAYS = _get_int_env("METRICS_OUTBOX_MAX_AGE_DAYS", 30, minimum=0)

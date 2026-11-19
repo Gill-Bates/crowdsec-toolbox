@@ -3,20 +3,18 @@
   <img src=".github/img/crowdsec_toolbox_white.svg#gh-dark-mode-only" width="250" alt="CrowdSec Toolbox">
 </p>
 
-<h2 align="center">Email abuse reports and time-series metrics for the CrowdSec bans you already generate</h2>
+<h2 align="center">Your Instance - your Data! Generate Dashboards and Reports without paid subscriptions!</h2>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
-  <a href="#deployment"><img src="https://img.shields.io/badge/Python-3.13%2B-3776AB?logo=python&logoColor=white" alt="Python 3.13 or newer"></a>
-  <a href="#features-at-a-glance"><img src="https://img.shields.io/badge/Tools-2-4C8BF5" alt="Two standalone tools"></a>
-  <a href="#deployment"><img src="https://img.shields.io/badge/Deployment-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose deployment"></a>
+  <a href="https://github.com/Gill-Bates/crowdsec-toolbox/releases"><img src="https://img.shields.io/github/v/release/Gill-Bates/crowdsec-toolbox?logo=github&logoColor=white" alt="GitHub Release"></a>
+  <a href="https://hub.docker.com/r/giiibates/crowdsec-toolbox"><img src="https://img.shields.io/docker/pulls/giiibates/crowdsec-toolbox?logo=docker&logoColor=white" alt="Docker Pulls"></a>
+  <a href="https://hub.docker.com/r/giiibates/crowdsec-toolbox"><img src="https://img.shields.io/badge/Platform-linux%2Famd64%20%7C%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Supported Platforms"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
 </p>
 
 <p align="center">
-  <a href="crowdsec-abuse-reporter/README.md">Abuse reporting</a> ·
-  <a href="crowdsec-metrics-exporter/README.md">Metrics export</a> ·
-  <a href="#grafana-dashboards">Dashboards</a> ·
-  <a href="LICENSE">License</a>
+  <a href="#deployment"><img src="https://img.shields.io/badge/Quick%20Start-168B75?style=for-the-badge&logo=docker&logoColor=white" alt="Quick Start"></a>
+  <a href="https://gill-bates.github.io/crowdsec-toolbox/"><img src="https://img.shields.io/badge/Documentation-34495E?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
 </p>
 
 CrowdSec can identify and block hostile traffic. CrowdSec Toolbox helps you use
@@ -30,7 +28,7 @@ monitor. Each tool is independent, so you can run only the part you need.
 |---|---|---|
 | **What it does** | Turns CrowdSec bans into abuse reports | Exports CrowdSec decisions as time series |
 | 📥 **Source** | CrowdSec Local API (LAPI), direct | CrowdSec Local API (LAPI), direct |
-| 📤 **Output** | X-ARF v4 email to the responsible abuse contact | InfluxDB 2.x or QuestDB (line protocol over HTTP) |
+| 📤 **Output** | X-ARF v4 email to the responsible abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
 | 🌍 **Enrichment** | GeoIP (GeoLite2 City + ASN) | — |
 | 📇 **Contact lookup** | Abusix DNS abuse-contact database | — |
 | 🔁 **Idempotency** | SQLite, at-most-once per `(AlertId, IPAddress)` | Backend-side deduplication, no local state |
@@ -39,13 +37,14 @@ monitor. Each tool is independent, so you can run only the part you need.
 
 ## Grafana dashboards
 
-Both tools ship ready-made dashboards in their `grafana/` directory — import the
-JSON, pick your data source, and you have a working view of what CrowdSec is
-blocking. No provisioning, no plugins beyond the data source itself.
+Both tools ship ready-made QuestDB dashboards in their `grafana/` directory.
+Import the JSON, pick your QuestDB data source, and you have a working view of
+what CrowdSec is blocking. No provisioning, no plugins beyond the data source
+itself. InfluxDB dashboards do not exist yet.
 
 <p align="center">
-  <img src="crowdsec-metrics-exporter/grafana/dashboard_metrics_white.png#gh-light-mode-only" width="900" alt="Metrics export dashboard, light theme">
-  <img src="crowdsec-metrics-exporter/grafana/dashboard_metrics_dark.png#gh-dark-mode-only" width="900" alt="Metrics export dashboard, dark theme">
+  <img src=".github/img/dashboard_metrics_white.png#gh-light-mode-only" width="900" alt="Metrics export dashboard, light theme">
+  <img src=".github/img/dashboard_metrics_dark.png#gh-dark-mode-only" width="900" alt="Metrics export dashboard, dark theme">
 </p>
 
 See the [dashboards reference](https://gill-bates.github.io/crowdsec-toolbox/reference/dashboards/)
@@ -53,11 +52,11 @@ for requirements, variables and panel details.
 
 ## Deployment
 
-Both tools provide Docker and Compose deployments. The metrics exporter can also
-run directly as a Python script on the CrowdSec host. They have separate entry
-points and their own `pyproject.toml` dependency manifests, so their
-deployments can be managed independently. Follow each tool's README for setup,
-configuration, and operating notes.
+Both tools support Docker Compose and direct host runs. The metrics exporter can
+run as a Python script, while the abuse reporter can be scheduled through cron.
+They have separate entry points and their own `pyproject.toml` manifests, so
+their deployments can be managed independently. Follow each tool's README for
+setup, configuration, and operating notes.
 
 ## License
 

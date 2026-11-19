@@ -9,15 +9,13 @@ CrowdSec integration module.
 
 Fetches alerts from the CrowdSec Local API (LAPI) over HTTP as a registered
 machine: POST /v1/watchers/login yields a bearer token, GET /v1/alerts returns
-the data. This replaces the former `cscli` invocation through the Docker socket,
-which required socket access equivalent to root on the host.
+the data. No Docker socket is needed, which would be equivalent to root on the host.
 
 The module mirrors `crowdsec-abuse-reporter/app/crowdsec.py` (credentials
 resolution, retry policy, error type) but stays a separate copy on purpose — the
 tools share no application code so each can be deployed independently.
 """
 
-import logging
 import socket
 import time
 from pathlib import Path
@@ -37,12 +35,15 @@ from .config import (
 )
 from .logger import print_info, print_success, print_warning
 
-logger = logging.getLogger(__name__)
-
 HOST_HOSTNAME_PATH = Path("/run/host/hostname")
 
 _RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _LAPI_MAX_ATTEMPTS = 3
+
+# Hard ceiling for the escalating alert fetch; bounds memory and response size.
+# A larger CROWDSEC_ALERT_LIMIT raises it, so the configured start is never cut.
+MAX_ALERT_FETCH_LIMIT = 100_000
+_ALERT_FETCH_LIMIT_FACTOR = 10
 
 LAPI_CREDENTIALS_HINT = (
     "Use `docker exec -it <your crowdsec container name> "
@@ -63,6 +64,36 @@ class CrowdSecFetchError(Exception):
     def __init__(self, message: str, hint: str | None = None):
         super().__init__(message)
         self.hint = hint
+
+
+class CrowdSecIncompleteFetchError(CrowdSecFetchError):
+    """Raised when the alerts were fetched but the result is provably or possibly partial.
+
+    Causes: the fetch ceiling was reached with a full response, or some event
+    details are missing. `alerts` holds everything that was retrieved (summary
+    alerts stand in for failed detail requests), so a caller can still export
+    it and then rate the run as failed.
+    """
+
+    def __init__(self, message: str, alerts: list[dict[str, Any]]):
+        super().__init__(message)
+        self.alerts = alerts
+
+
+def parse_record_id(value: Any) -> int | None:
+    """Return a LAPI record id as a non-negative int, or None when it is missing or invalid.
+
+    The id is part of the dedup identity, so a substitute such as 0 would merge
+    unrelated records: callers skip the record instead. Floats and booleans are
+    rejected rather than truncated.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    return None
 
 
 def get_hostname() -> str:
@@ -95,9 +126,7 @@ def _read_lapi_credentials_file() -> dict[str, str]:
                 continue
             credentials[key] = value.strip().strip('"').strip("'")
     except OSError as e:
-        raise CrowdSecFetchError(
-            f"Failed to read LAPI credentials file {path}: {e}"
-        ) from e
+        raise CrowdSecFetchError(f"Failed to read LAPI credentials file {path}: {e}") from e
     return credentials
 
 
@@ -108,9 +137,7 @@ def _resolve_lapi_credentials() -> dict[str, str]:
         # An explicit env var wins; otherwise CrowdSec's own credentials file
         # decides. The built-in default is last so it cannot mask a file that
         # points the watcher at a different LAPI host.
-        "url": (
-            CROWDSEC_LAPI_URL or file_credentials.get("url") or "http://127.0.0.1:8080"
-        ),
+        "url": (CROWDSEC_LAPI_URL or file_credentials.get("url") or "http://127.0.0.1:8080"),
         "machine_id": CROWDSEC_LAPI_MACHINE_ID or file_credentials.get("login", ""),
         "password": CROWDSEC_LAPI_PASSWORD or file_credentials.get("password", ""),
     }
@@ -144,9 +171,7 @@ def _format_lapi_auth_hint() -> str:
     )
 
 
-def _request_with_retry(
-    client: httpx.Client, method: str, url: str, **kwargs: Any
-) -> httpx.Response:
+def _request_with_retry(client: httpx.Client, method: str, url: str, **kwargs: Any) -> httpx.Response:
     """Issue a LAPI request, retrying transient transport/5xx failures.
 
     A single short LAPI hiccup must not discard the run. Only transport errors
@@ -168,10 +193,9 @@ def _request_with_retry(
         if attempt == _LAPI_MAX_ATTEMPTS:
             raise error
         print_warning(
-            f"LAPI request {method} {url} failed "
-            f"(attempt {attempt}/{_LAPI_MAX_ATTEMPTS}), retrying in {delay:.1f}s"
+            f"LAPI request {method} {url} failed on attempt {attempt}/{_LAPI_MAX_ATTEMPTS}: {error}; "
+            f"retrying in {delay:.1f}s"
         )
-        logger.warning("LAPI request %s %s failed: %s", method, url, error)
         time.sleep(delay)
         delay *= 2
     # Unreachable: the loop either returns or raises.
@@ -204,13 +228,10 @@ def _get_lapi_token(client: httpx.Client) -> str:
         if status_code in (401, 403):
             status_label = "Unauthorized" if status_code == 401 else "Forbidden"
             raise CrowdSecFetchError(
-                f"LAPI authentication failed with HTTP {status_code} "
-                f"({status_label}).",
+                f"LAPI authentication failed with HTTP {status_code} ({status_label}).",
                 hint=_format_lapi_auth_hint(),
             ) from e
-        raise CrowdSecFetchError(
-            f"LAPI authentication failed with HTTP {status_code}"
-        ) from e
+        raise CrowdSecFetchError(f"LAPI authentication failed with HTTP {status_code}") from e
     except httpx.HTTPError as e:
         raise CrowdSecFetchError(f"LAPI authentication failed: {e}") from e
 
@@ -219,9 +240,7 @@ def _get_lapi_token(client: httpx.Client) -> str:
     except ValueError as e:
         raise CrowdSecFetchError("LAPI authentication returned invalid JSON") from e
     if not isinstance(payload, dict):
-        raise CrowdSecFetchError(
-            "Unexpected LAPI authentication format (expected an object)"
-        )
+        raise CrowdSecFetchError("Unexpected LAPI authentication format (expected an object)")
     token = payload.get("token")
     if not token:
         raise CrowdSecFetchError("LAPI authentication response did not contain a token")
@@ -246,10 +265,7 @@ def _fetch_alerts(client: httpx.Client, token: str, params: dict[str, str]) -> l
                 f"LAPI alerts fetch failed with HTTP {status_code} ({status_label}).",
                 hint=_format_lapi_auth_hint(),
             ) from e
-        raise CrowdSecFetchError(
-            f"LAPI alerts fetch failed with HTTP {status_code}: "
-            f"{e.response.text[:300]}"
-        ) from e
+        raise CrowdSecFetchError(f"LAPI alerts fetch failed with HTTP {status_code}: {e.response.text[:300]}") from e
     except httpx.HTTPError as e:
         raise CrowdSecFetchError(f"LAPI alerts fetch failed: {e}") from e
 
@@ -265,60 +281,97 @@ def _fetch_alerts(client: httpx.Client, token: str, params: dict[str, str]) -> l
     # Every consumer calls alert.get(...); a non-object entry would raise
     # AttributeError instead of the handled CrowdSecFetchError.
     if not all(isinstance(alert, dict) for alert in alerts):
-        raise CrowdSecFetchError(
-            "Unexpected LAPI alerts format (list contains non-object entries)"
-        )
+        raise CrowdSecFetchError("Unexpected LAPI alerts format (list contains non-object entries)")
     return alerts
+
+
+def _fetch_all_alerts(client: httpx.Client, token: str, params: dict[str, str]) -> list[dict[str, Any]]:
+    """GET /v1/alerts, raising the limit until the result set is provably complete.
+
+    The LAPI has no client-side offset and returns at most `limit` alerts, so a
+    response shorter than the limit proves completeness. A full response is
+    re-requested with a tenfold limit up to the ceiling. A response that still
+    fills the limit there cannot be proven complete.
+
+    Raises:
+        CrowdSecIncompleteFetchError: the ceiling response is full; carries it.
+    """
+    limit = max(CROWDSEC_ALERT_LIMIT, 1)
+    ceiling = max(MAX_ALERT_FETCH_LIMIT, limit)
+    while True:
+        alerts = _fetch_alerts(client, token, {**params, "limit": str(limit)})
+        if len(alerts) < limit:
+            return alerts
+        if limit >= ceiling:
+            message = (
+                f"LAPI returned {len(alerts)} alerts, the maximum fetch limit; "
+                "further alerts may be missing from this run"
+            )
+            print_warning(message)
+            raise CrowdSecIncompleteFetchError(message, alerts)
+        limit = min(limit * _ALERT_FETCH_LIMIT_FACTOR, ceiling)
+        print_info(f"LAPI response filled the fetch limit; retrying with limit {limit}")
 
 
 def get_crowdsec_decisions() -> list[dict[str, Any]]:
     """Return alerts that currently carry an active decision.
 
-    The shape matches what `cscli decisions list -o json` used to emit — the
-    alert objects behind the active decisions, carrying `id`, `source`,
-    `events_count`, `scenario`, `message` and `start_at` — so the point mapping
-    in `main.py` is unchanged.
+    These are the alert objects behind the active decisions, carrying `id`,
+    `source`, `events_count`, `scenario`, `message` and `start_at`, which
+    `main.py` maps to points.
 
     Raises:
+        CrowdSecIncompleteFetchError: the fetch ceiling was reached; carries the
+            alerts retrieved so far.
         CrowdSecFetchError: authentication, transport or payload failure. An
             empty list is a successful run with nothing to export.
     """
-    print_info("Fetching alerts with active decisions from CrowdSec LAPI...")
-    params = {"has_active_decision": "true", "limit": str(CROWDSEC_ALERT_LIMIT)}
+    print_info("Retrieving alerts with active decisions from CrowdSec LAPI")
+    params = {"has_active_decision": "true"}
     with _build_lapi_client() as client:
         token = _get_lapi_token(client)
-        alerts = _fetch_alerts(client, token, params)
+        alerts = _fetch_all_alerts(client, token, params)
     print_success(f"Retrieved {len(alerts)} alerts from CrowdSec LAPI")
     return alerts
 
 
 def _alert_has_events(alert: dict[str, Any]) -> bool:
-    """True when an alert already carries event detail (no need to re-fetch)."""
+    """True when an alert already carries complete event detail."""
     events = alert.get("events")
-    return isinstance(events, list) and len(events) > 0
+    expected = alert.get("events_count")
+    if isinstance(expected, int) and not isinstance(expected, bool) and expected == 0:
+        return events is None or _has_complete_event_details(alert, expected)
+    return isinstance(events, list) and bool(events) and _has_complete_event_details(alert, expected)
 
 
-def _fetch_alert_detail(
-    client: httpx.Client, token: str, alert_id: Any
-) -> dict[str, Any] | None:
+def _has_complete_event_details(alert: dict[str, Any], expected: Any) -> bool:
+    events = alert.get("events")
+    if not isinstance(events, list) or any(not isinstance(event, dict) for event in events):
+        return False
+    if expected is None:
+        return True
+    return isinstance(expected, int) and not isinstance(expected, bool) and expected >= 0 and len(events) >= expected
+
+
+def _fetch_alert_detail(client: httpx.Client, token: str, alert_id: Any, expected_events: Any) -> dict[str, Any] | None:
     """Fetch one alert's full detail (events with their meta blocks).
 
-    Returns None on any error so the caller can fall back to the summary alert
-    instead of losing the whole run.
+    Returns None on any error so the caller can keep the summary alert and
+    report the run as incomplete instead of losing it.
     """
     try:
-        response = client.get(
-            f"/alerts/{alert_id}", headers={"Authorization": f"Bearer {token}"}
+        response = _request_with_retry(
+            client, "GET", f"/alerts/{alert_id}", headers={"Authorization": f"Bearer {token}"}
         )
-        response.raise_for_status()
         detail = response.json()
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("Failed to fetch detail for alert %s: %s", alert_id, e)
+        print_warning(f"Failed to fetch detail for alert {alert_id}: {e}")
         return None
-    if isinstance(detail, dict):
-        return detail
     if isinstance(detail, list) and detail and isinstance(detail[0], dict):
-        return detail[0]
+        detail = detail[0]
+    if isinstance(detail, dict) and _has_complete_event_details(detail, expected_events):
+        return detail
+    print_warning(f"Event detail for alert {alert_id} was missing or incomplete")
     return None
 
 
@@ -334,42 +387,45 @@ def get_crowdsec_alerts(since: str) -> list[dict[str, Any]]:
         since: Duration understood by the LAPI, e.g. "30m"
 
     Raises:
+        CrowdSecIncompleteFetchError: the fetch ceiling was reached or some event
+            details could not be fetched; carries all alerts retrieved so far.
         CrowdSecFetchError: authentication, transport or payload failure.
     """
-    print_info(f"Fetching alerts with events from CrowdSec LAPI (since {since})...")
-    params = {"since": since, "limit": str(CROWDSEC_ALERT_LIMIT)}
+    print_info(f"Retrieving alerts with events from CrowdSec LAPI (since {since})")
+    params = {"since": since}
     with _build_lapi_client() as client:
         token = _get_lapi_token(client)
-        alerts = _fetch_alerts(client, token, params)
+        problems: list[str] = []
+        try:
+            alerts = _fetch_all_alerts(client, token, params)
+        except CrowdSecIncompleteFetchError as e:
+            alerts = e.alerts
+            problems.append(str(e))
 
         enriched: list[dict[str, Any]] = []
         fetched = 0
+        failed = 0
         for alert in alerts:
             alert_id = alert.get("id")
             if alert_id is not None and not _alert_has_events(alert):
-                detail = _fetch_alert_detail(client, token, alert_id)
+                detail = _fetch_alert_detail(client, token, alert_id, alert.get("events_count"))
                 fetched += 1
+                if detail is None:
+                    failed += 1
                 enriched.append(detail if detail is not None else alert)
             else:
                 enriched.append(alert)
 
     if fetched:
         print_info(f"Fetched event detail for {fetched} of {len(alerts)} alerts")
+    if failed:
+        problems.append(f"Event detail missing for {failed} of {len(alerts)} alerts")
+    if problems:
+        raise CrowdSecIncompleteFetchError("; ".join(problems), enriched)
     print_success(f"Retrieved {len(enriched)} alerts from CrowdSec LAPI")
     return enriched
 
 
-def get_abuse_contact(ip_address: str) -> str:
-    """
-    Dummy abuse contact lookup for IP address.
-
-    Args:
-        ip_address: IP address to look up
-
-    Returns:
-        Abuse contact email (dummy implementation)
-
-    Note:
-        Can be extended with real RDAP/WHOIS lookup
-    """
+def get_abuse_contact(ip_address: str) -> str:  # noqa: ARG001 placeholder lookup, signature kept for the real one
+    """Return a placeholder abuse contact; to be replaced by a real RDAP/WHOIS lookup."""
     return "abuse@example.com"

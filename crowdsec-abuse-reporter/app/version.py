@@ -11,10 +11,7 @@ from pathlib import Path
 
 def _version_from_pyproject() -> str | None:
     """Read the repository version for direct, non-container runs."""
-    # parents[1] is this tool's own directory. It used to be parents[2], the
-    # repo root, back when a single shared manifest lived there; after the split
-    # to per-tool manifests that path no longer exists and every direct run
-    # silently reported "dev".
+    # parents[1] is this tool's own directory, which holds its pyproject.toml.
     path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     try:
         with path.open("rb") as handle:
