@@ -446,6 +446,25 @@ class PromotionOrderingTest(unittest.TestCase):
 
 
 class ReleaseNotesCompositionTest(unittest.TestCase):
+    def setUp(self):
+        temp_dir = tempfile.TemporaryDirectory(prefix="release-notes-test-")
+        self.addCleanup(temp_dir.cleanup)
+        self.root = Path(temp_dir.name)
+        self.trivy = [("abuse-reporter/amd64", self.write_report("abuse.json"))]
+
+    def write_report(self, name: str, vulnerabilities: list[dict] | None = None) -> Path:
+        result = {
+            "Target": "image (debian 13)",
+            "Class": "os-pkgs",
+            "Packages": [{"Name": "libc6"}, {"Name": "zlib1g"}],
+        }
+        if vulnerabilities:
+            result["Vulnerabilities"] = vulnerabilities
+        lang = {"Target": "Python", "Class": "lang-pkgs", "Packages": [{"Name": "httpx"}]}
+        path = self.root / name
+        path.write_text(json.dumps({"SchemaVersion": 2, "Results": [result, lang]}), encoding="utf-8")
+        return path
+
     def test_combines_both_version_sections_and_appends_cloc(self):
         abuse = """## [1.0.2] - 2026-11-19
 
@@ -464,11 +483,13 @@ class ReleaseNotesCompositionTest(unittest.TestCase):
 - Previous release content.
 """
 
-        notes = release_notes.compose_release_notes("1.0.2", abuse, metrics, "1 file, 2 lines")
+        notes = release_notes.compose_release_notes("1.0.2", abuse, metrics, "1 file, 2 lines", self.trivy)
 
         self.assertIn("## [1.0.2] - 2026-11-19", notes)
         self.assertLess(notes.index("### Abuse Reporter"), notes.index("### Metrics Exporter"))
-        self.assertLess(notes.index("### Metrics Exporter"), notes.index("### Code Statistics (cloc)"))
+        self.assertLess(notes.index("### Metrics Exporter"), notes.index("### Security Scan (Trivy)"))
+        self.assertLess(notes.index("### Security Scan (Trivy)"), notes.index("### Code Statistics (cloc)"))
+        self.assertIn("| `abuse-reporter/amd64` | ✅ No HIGH/CRITICAL findings | 3 |", notes)
         self.assertIn("`Security` Abuse Reporter security entry.", notes)
         self.assertIn("`Fix` Metrics Exporter fix.", notes)
         self.assertIn("1 file, 2 lines", notes)
@@ -482,7 +503,9 @@ class ReleaseNotesCompositionTest(unittest.TestCase):
                 "## [1.0.2] - 2026-11-01\n\n- Old entry.\n\n</details>\n"
             )
 
-        notes = release_notes.compose_release_notes("1.0.3", changelog("Abuse"), changelog("Metrics"), "cloc table")
+        notes = release_notes.compose_release_notes(
+            "1.0.3", changelog("Abuse"), changelog("Metrics"), "cloc table", self.trivy
+        )
 
         self.assertNotIn("details", notes)
         self.assertNotIn("Previous versions", notes)
@@ -494,13 +517,32 @@ class ReleaseNotesCompositionTest(unittest.TestCase):
         metrics = "## [1.0.2] - 2026-11-20\n\n- `New` Metrics Exporter entry."
 
         with self.assertRaisesRegex(release_notes.ReleaseNotesError, "different release dates"):
-            release_notes.compose_release_notes("1.0.2", abuse, metrics, "1 file, 2 lines")
+            release_notes.compose_release_notes("1.0.2", abuse, metrics, "1 file, 2 lines", self.trivy)
 
     def test_requires_cloc_output(self):
         changelog = "## [1.0.2] - 2026-11-19\n\n- `New` Release entry."
 
         with self.assertRaisesRegex(release_notes.ReleaseNotesError, "cloc output is empty"):
-            release_notes.compose_release_notes("1.0.2", changelog, changelog, "  \n")
+            release_notes.compose_release_notes("1.0.2", changelog, changelog, "  \n", self.trivy)
+
+    def test_reports_findings_per_image(self):
+        finding = {"Severity": "CRITICAL", "VulnerabilityID": "CVE-2026-0001", "PkgName": "libc6"}
+        trivy = [*self.trivy, ("metrics-exporter/arm64", self.write_report("metrics.json", [finding]))]
+        changelog = "## [1.0.2] - 2026-11-19\n\n- `New` Release entry."
+        notes = release_notes.compose_release_notes("1.0.2", changelog, changelog, "cloc", trivy)
+        self.assertIn("| `metrics-exporter/arm64` | ⚠️ 1 CRITICAL, 0 HIGH findings | 3 |", notes)
+
+    def test_rejects_missing_or_empty_trivy_evidence(self):
+        changelog = "## [1.0.2] - 2026-11-19\n\n- `New` Release entry."
+        empty = self.root / "empty.json"
+        empty.write_text(json.dumps({"SchemaVersion": 2, "Results": []}), encoding="utf-8")
+        for label, trivy in (
+            ("missing", [("x/amd64", self.root / "absent.json")]),
+            ("no packages", [("x/amd64", empty)]),
+            ("none given", []),
+        ):
+            with self.subTest(label), self.assertRaises(release_notes.ReleaseNotesError):
+                release_notes.compose_release_notes("1.0.2", changelog, changelog, "cloc", trivy)
 
 
 if __name__ == "__main__":

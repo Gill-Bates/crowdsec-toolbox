@@ -248,12 +248,10 @@ jobs:
           echo "Reported version:"
           docker run --rm --entrypoint printenv "$IMAGE" APP_VERSION GIT_SHA
 
-      # Report-only on purpose. Most findings in these images come from the
-      # python:3.14-slim base and are not actionable at release time; failing here
-      # would block a release for something the next base image rebuild fixes.
-      # The counts land in the release notes instead. The docs pipeline scans
-      # differently - there it does block, because those dependencies are pinned
-      # by this repository.
+      # Blocking, like the docs scan: a vulnerable image must not reach Docker Hub.
+      # Only findings with an available fix count (ignore-unfixed), so a rebuild on
+      # a fresh base image clears them. Accepted exceptions belong in .trivyignore,
+      # each with a reason. The scan runs before the push step on purpose.
       - name: Trivy scan
         id: trivy
         # Pinned to an immutable commit SHA, see GHSA-69fq-xp46-6x23.
@@ -264,7 +262,7 @@ jobs:
           image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           format: 'json'
           output: 'trivy-${{ matrix.tool }}-${{ matrix.arch }}.json'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
           # Lists every package, so a clean scan still proves which targets it covered.
           list-all-pkgs: true
@@ -275,7 +273,8 @@ jobs:
           timeout: '10m'
 
       # Proves the report is valid and covers OS and Python packages: an unreadable
-      # report or a scan of nothing must not read as "0 findings". Findings do not fail.
+      # report or a scan of nothing must not read as "0 findings". The scan step
+      # above is what fails on findings; this one still lists them in the summary.
       - name: Summarize Trivy report
         if: ${{ !cancelled() && steps.trivy.conclusion != 'skipped' }}
         env:
@@ -286,6 +285,16 @@ jobs:
           python3 .github/scripts/trivy_report.py status "trivy-${TOOL}-${ARCH}.json" \
             --expect-class os-pkgs --expect-class lang-pkgs \
             --summary-title "Trivy (${TOOL}, ${ARCH})" --list 20 >> "$GITHUB_STEP_SUMMARY"
+
+      # Also on a failed scan, so the findings behind a red run stay inspectable.
+      - name: Upload Trivy findings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-${{ matrix.tool }}-${{ matrix.arch }}
+          path: trivy-${{ matrix.tool }}-${{ matrix.arch }}.json
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Push tested image and record registry digest
         env:
@@ -312,14 +321,6 @@ jobs:
           path: digests/${{ matrix.tool }}-${{ matrix.arch }}
           retention-days: 30
           if-no-files-found: error
-
-      - name: Upload Trivy findings
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: trivy-${{ matrix.tool }}-${{ matrix.arch }}
-          path: trivy-${{ matrix.tool }}-${{ matrix.arch }}.json
-          retention-days: 14
-          if-no-files-found: warn
 
   manifest:
     name: Publish ${{ matrix.tool }} manifest
@@ -505,6 +506,13 @@ jobs:
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
+      # Mandatory: the notes embed the verdict of every scanned image, so a missing
+      # report stops the release notes instead of being left out.
+      - name: Download Trivy reports
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: trivy-*
+          path: trivy-reports/
       # Appended to every release's notes as a rough size/composition signal.
       # Counts the checked-out tree at the release commit, not the whole
       # history, so it reflects exactly what this tag ships.
@@ -524,11 +532,18 @@ jobs:
           RELEASE_NOTES_FILE: ${{ runner.temp }}/release-notes.md
         run: |
           set -euo pipefail
+          trivy_args=()
+          for tool in abuse-reporter metrics-exporter; do
+            for arch in amd64 arm64; do
+              trivy_args+=(--trivy-report "${tool}/${arch}=trivy-reports/trivy-${tool}-${arch}/trivy-${tool}-${arch}.json")
+            done
+          done
           python3 .github/scripts/release_notes.py \
             --version "$VERSION" \
             --abuse-changelog crowdsec-abuse-reporter/CHANGELOG.md \
             --metrics-changelog crowdsec-metrics-exporter/CHANGELOG.md \
             --cloc-file "$CLOC_OUTPUT_FILE" \
+            "${trivy_args[@]}" \
             --output "$RELEASE_NOTES_FILE"
 
       - name: Create or update the release

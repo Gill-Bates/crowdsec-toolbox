@@ -199,15 +199,13 @@ runtime imports must resolve inside the image, `pip check` must pass, and the
 entrypoint must be present and executable. That catches a missing entry in the
 `default` dependency group at release time instead of on first container start.
 
-!!! note "Trivy runs report-only here"
-    Most findings come from the `python:3-slim` base and are not actionable at
-    release time; failing would block a release for something the next base image
-    rebuild fixes. The counts go into the build-job summary, and the JSON report
-    is uploaded as an artifact. `trivy_report.py`
-    still fails the job when a report is unreadable or covers no OS and Python
-    packages. The docs pipeline scans
-    differently — there it *does* block, because those dependencies are pinned by
-    this repository.
+!!! note "The image scan blocks the release"
+    Each image is scanned with Trivy at `CRITICAL,HIGH` (fixed CVEs only) before
+    it is pushed, so a vulnerable image never reaches Docker Hub. A finding fails
+    the job; rebuilding on a fresh base image usually clears it, and an accepted
+    exception goes into `.trivyignore` with a reason. `trivy_report.py` also fails
+    the job when a report is unreadable or covers no OS and Python packages. The
+    JSON report is uploaded as an artifact, also after a failed scan.
 
 `manifest` combines each tool's per-architecture digests under a run-specific
 candidate tag, such as `<tool>-candidate-<run-id>`. It reads the index back from
@@ -219,8 +217,11 @@ It then re-reads Docker Hub's complete tag listing and recomputes whether this
 release is newest. For each tool, it adds the public version tag from the
 verified candidate digest and checks that tag; it moves that tool's
 `<tool>-latest` only for a stable, newest release, then checks the result. The
-GitHub Release is created only after promotion succeeds. After successful
-promotion, `cleanup` removes architecture fragments and candidate tags.
+GitHub Release is created only after promotion succeeds. Its notes combine both
+changelogs, a Trivy verdict per tool and architecture, and the cloc statistics; the
+Trivy reports of all four images are mandatory, so a missing or empty report stops
+the notes before a release exists. After successful promotion, `cleanup` removes
+architecture fragments and candidate tags.
 
 !!! note "Architecture fragments never count as a release"
     A failed run leaves its `<tool>-<version>-<arch>` tags behind, because
