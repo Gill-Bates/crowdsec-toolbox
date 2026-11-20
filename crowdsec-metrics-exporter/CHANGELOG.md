@@ -1,3 +1,9 @@
+## [1.0.4] - 2026-xx-xx
+- `New` The start banner is followed by a release check: it compares the running version with the latest GitHub release of crowdsec-toolbox and prints either a new-version notice with a link or "Your version is up to date.". The lookup times out after 3 seconds and stays silent when offline, rate-limited or on a `dev` build; it never blocks or fails the start.
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.0.3] - 2026-11-20
 
 - `Changed` **Breaking:** Invalid `INFLUXDB_PORT`, `QUESTDB_PORT`, `CROWDSEC_ALERT_LIMIT` or `EVENTS_ENABLED` values now abort startup with a `Config Error` instead of silently falling back to the default. `INFLUXDB_URL` must be a bare host name, like `QUESTDB_URL`.
@@ -10,9 +16,6 @@
 - `Fix` The event export validates alert IDs before fetching missing event details, like the alert export.
 - `Fix` A non-integer `events_count` in a LAPI alert no longer invalidates the whole write batch; the field is left out for that point and the rest is exported.
 - `Security` Error responses from InfluxDB and QuestDB are cut to 300 characters in the log.
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.0.2] - 2026-11-19
 

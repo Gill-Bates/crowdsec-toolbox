@@ -15,7 +15,7 @@ coverage.
 | `test_hardening.py` | 129 tests, the main suite; one class per app module it covers directly, plus `ReviewFindingsTest` and entrypoint/Dockerfile checks |
 | `test_main.py` | 25 tests for `app.main` helpers: IP/ID/confidence extraction, dedup, stats, plus `WhitelistAsnTableOrderTest` (startup call order) |
 | `test_metrics.py` | 78 tests for `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB version and dedup gates and TTL against a fake `/exec`, the metrics outbox, and the control-data-only property of SQLite in metrics mode |
-| `test_banner.py` | 1 test: the version/metadata line is centred within the visual width of the banner |
+| `test_banner.py` | 5 tests: the version/metadata line is centred within the visual width of the banner; the release notice after the banner, its silent cases, fetch errors and version precedence (offline, `fetch_latest_version` patched) |
 
 ### Classes in `test_metrics.py`
 | Class | Covers |

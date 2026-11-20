@@ -35,6 +35,21 @@ SHARED = (
         ),
     ),
     ("banner.py", "banner.py", ("print_banner",)),
+    (
+        "version_check.py",
+        "version_check.py",
+        (
+            "REPO_SLUG",
+            "LATEST_RELEASE_API",
+            "RELEASES_URL",
+            "TIMEOUT_SECONDS",
+            "_VERSION_RE",
+            "parse_version",
+            "fetch_latest_version",
+            "build_version_message",
+            "version_notice",
+        ),
+    ),
     ("version.py", "version.py", ("_version_from_pyproject", "VERSION", "GIT_SHA")),
     (
         "crowdsec.py",

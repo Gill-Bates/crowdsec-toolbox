@@ -1,3 +1,9 @@
+## [1.0.4] - 2026-xx-xx
+- `New` The start banner is followed by a release check: it compares the running version with the latest GitHub release of crowdsec-toolbox and prints either a new-version notice with a link or "Your version is up to date.". The lookup times out after 3 seconds and stays silent when offline, rate-limited or on a `dev` build; it never blocks or fails the start.
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.0.3] - 2026-11-20
 
 - `New` `QUESTDB_DOWNSAMPLING=low|medium|high` (off by default) adds a QuestDB rollup of the report table with the same profiles as the metrics exporter; the rollup keeps `host`, `country`, `scenario` and `status` and aggregates counts and processing time.
@@ -21,9 +27,6 @@
 - `Security` Folded (multi-line) `Authorization`, `Cookie` and similar header values are now redacted completely in mail text and X-ARF evidence.
 - `Security` `SMTP_SENDER` must be a plain e-mail address; anything else (empty, `Name <addr>`, no domain) stops startup instead of producing invalid X-ARF reports.
 - `Security` Control characters in log messages (ESC, tab, Unicode line separators) are escaped, so untrusted values cannot forge log lines or terminal output.
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.0.2] - 2026-11-19
 

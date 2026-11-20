@@ -11,6 +11,7 @@ import sys
 
 from .version import GIT_SHA as _DEFAULT_GIT_SHA
 from .version import VERSION as _DEFAULT_VERSION
+from .version_check import version_notice
 
 TITLE = ">>> crowdsec-abuse-reporter | Automated Abuse Reporting <<<"
 
@@ -21,7 +22,8 @@ def print_banner(version: str | None = None, git_sha: str | None = None) -> None
         version = _DEFAULT_VERSION
     if git_sha is None:
         git_sha = _DEFAULT_GIT_SHA
-    if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
+    use_color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    if use_color:
         cyan, white, gray, reset, bold = "\033[96m", "\033[97m", "\033[90m", "\033[0m", "\033[1m"
     else:
         cyan = white = gray = reset = bold = ""
@@ -54,3 +56,8 @@ def print_banner(version: str | None = None, git_sha: str | None = None) -> None
         f"{gray}{disclaimer.center(canvas_width)}{reset}\n\n"
     )
     sys.stdout.write(output)
+    # Flush first so the banner is visible while the release lookup runs.
+    sys.stdout.flush()
+    notice = version_notice(version, use_color)
+    if notice:
+        sys.stdout.write(notice + "\n\n")

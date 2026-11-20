@@ -35,3 +35,11 @@ def sent_payloads(monkeypatch):
     sent = []
     monkeypatch.setattr(main, "_send", lambda payload, *_a: sent.append(payload) or main.SendStatus.OK)
     return sent
+
+
+@pytest.fixture(autouse=True)
+def no_release_lookup(monkeypatch):
+    """Keep the startup banner offline; tests of the lookup itself patch it again."""
+    from app import version_check
+
+    monkeypatch.setattr(version_check, "fetch_latest_version", lambda: None)

@@ -23,3 +23,4 @@ when `NO_COLOR` is unset, so `docker logs` output is plain text.
 ## Banners
 
 The start banner is the only multi-line output. It has no blank lines around it.
+A release notice line follows it (`A new version is available: ...` or `Your version is up to date.`). It is printed like the banner, independent of the log level, and is omitted when GitHub cannot be reached, on a `dev` build, or when the version cannot be compared.

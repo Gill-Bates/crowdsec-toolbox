@@ -27,7 +27,8 @@ With metrics enabled, `metrics` exports the finalized report outcome.
 | `config.py` | Loads `settings.env`, validates and coerces every env var, fails clean at startup |
 | `logger.py` | Tagged timestamped console output plus `setup_logging()` for stdlib `logger.*` records |
 | `heartbeat.py` | `python -m app.heartbeat` — LAPI liveness probe that refreshes `/data/api_heartbeat` |
-| `banner.py` | ASCII startup banner |
+| `banner.py` | ASCII startup banner, followed by the release notice from `version_check.py` |
+| `version_check.py` | Startup lookup of the latest GitHub release of `Gill-Bates/crowdsec-toolbox` (httpx, 3 s timeout, every failure silent); shared copy |
 | `version.py` | Reads `APP_VERSION` (build arg), falls back to the version in this tool's `pyproject.toml`, then `dev` |
 
 ## Subdirectories
@@ -105,7 +106,7 @@ cd crowdsec-abuse-reporter && python -m pytest
 ```
 `test_hardening.py` covers most app modules. `metrics.py` is covered in
 `test_metrics.py`, `main.py` mainly in `test_main.py`, and `banner.py` in
-`test_banner.py`; `version.py` has no dedicated test. `config.py` is covered by
+`test_banner.py` (which also covers `version_check.py`); `version.py` has no dedicated test. `config.py` is covered by
 `ConfigEnvLoaderTest` and `normalize_asn`, and `geoip.py` by
 `DnsUtilsHardeningTest` and `ReviewFindingsTest`. A behavioural change to the claim/finalize protocol,
 the reaper, GeoIP download flow, or report rendering needs a matching test
@@ -140,4 +141,4 @@ there.
 - **Log layout.** `logger.py` renders `<UTC time> | LEVEL | <source> | message` on a single line (see `docs/reference/log-format.md`); WARNING and above go to stderr, colour only on a TTY with `NO_COLOR` unset. Do not add emoji or multi-line output.
 
 ### Code shared with the exporter
-`logger.py` (formatting core and `setup_logging`), `banner.py` (`print_banner`), `version.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.
+`logger.py` (formatting core and `setup_logging`), `banner.py` (`print_banner`), `version.py`, `version_check.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.

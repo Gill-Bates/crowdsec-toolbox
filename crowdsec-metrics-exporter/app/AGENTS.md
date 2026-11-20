@@ -27,6 +27,7 @@ banner are support modules.
 | `influxdb.py` | `TLS12Adapter`, hardened `requests` session, line-protocol escaping/formatting (shared with QuestDB) and send |
 | `questdb.py` | `httpx.Client` POST of the same line protocol to QuestDB's ILP-over-HTTP `/write` endpoint; bearer token or basic auth, no TLS hardening |
 | `logger.py` | Console helpers (`print_info`/`success`/`warning`/`error`) and `setup_logging()`, gated by `config.LOG_LEVEL` |
+| `version_check.py` | Startup lookup of the latest GitHub release of `Gill-Bates/crowdsec-toolbox` (httpx, 3 s timeout, every failure silent); shared copy |
 | `version.py` | Reads `APP_VERSION` / `GIT_SHA` (build args) for the startup banner |
 | `kbinterrupt.py` | SIGINT/SIGTERM handlers for a clean shutdown |
 
@@ -131,4 +132,4 @@ gate; a real run needs CrowdSec and the configured metrics backend reachable.
 - **Log layout.** `logger.py` renders `<UTC time> | LEVEL | <source> | message` on a single line (see `docs/reference/log-format.md`); WARNING and above go to stderr, colour only on a TTY with `NO_COLOR` unset. The two no-data messages use `💤`; do not add multi-line output or summary tables.
 
 ### Code shared with the abuse reporter
-`logger.py` (formatting core and `setup_logging`), `banner.py` (`print_banner`), `version.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.
+`logger.py` (formatting core and `setup_logging`), `banner.py` (`print_banner`), `version.py`, `version_check.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.
