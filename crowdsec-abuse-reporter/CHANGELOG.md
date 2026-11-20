@@ -1,3 +1,30 @@
+## [1.0.3] - 2026-11-20
+
+- `New` `QUESTDB_DOWNSAMPLING=low|medium|high` (off by default) adds a QuestDB rollup of the report table with the same profiles as the metrics exporter; the rollup keeps `host`, `country`, `scenario` and `status` and aggregates counts and processing time.
+- `Changed` **Breaking:** X-ARF reports now follow XARF v4.2.0: reporter and sender carry a `domain`, CrowdSec data travels as a base64 evidence item, and scenarios map to valid category/type pairs. Brute-force reports without a known source port and unmapped scenarios are filed as `reputation/threat_intelligence`.
+- `Changed` **Breaking:** Report mails use the XARF e-mail layout (`multipart/report` with a feedback-report part and an `xarf.json` attachment instead of `abuse-report.xarf`); the text body is wrapped to 76 columns.
+- `Changed` Abuse contacts that the mail sender would reject are now skipped as "No contact found" before claiming and sending, instead of failing at SMTP; the alert is looked up again next run.
+- `Changed` The first start of this version drops two redundant SQLite indexes once; stored reports are unchanged.
+- `Changed` **Breaking:** `CROWDSEC_LAPI_VERIFY_TLS` is now `CROWDSEC_LAPI_VALIDATE_CERTIFICATE` and `SMTP_VERIFY_SSL` is now `SMTP_VALIDATE_CERTIFICATE`, matching the `*_VALIDATE_CERTIFICATE` names of the metrics backends; the old names are no longer read.
+- `Changed` QuestDB dedup verification now requires the table DDL to show `DEDUP UPSERT KEYS`; a table whose DDL cannot be read blocks the write instead of passing on the key check alone.
+- `Changed` Report mails use the subject `XARF Abuse Report - <type> from <ip> (<scenario>)` and a `Date` header with an explicit `+0000` offset; a report whose source is not a valid IP address is recorded as failed instead of being sent.
+- `Changed` Quieter INFO log: the static feature block becomes one `Settings:` line, and per-mail details, GeoIP/QuestDB checks, the whitelist table, the sent-mail list and the LAPI heartbeat move to DEBUG; all `print_*` helpers now honour `LOG_LEVEL`. SMTP TLS without certificate verification warns once per run, and error paths log at ERROR/WARNING. LAPI requests log their duration and size at DEBUG, and `Retrieved N alerts` shows the elapsed time.
+- `Fix` QuestDB rollup readiness is judged against the base-table state before this run's write, so the asynchronous refresh no longer keeps the raw TTL at full length with a warning on every run; a lag persisting over five runs warns, and NULL symbols in the state table no longer re-insert a state row each run.
+- `Fix` The entrypoint's chown warning now names the affected paths, and the container exits `1` with a clear error when `/data` or the database file is not writable by the app user.
+- `Fix` A failed flush of spooled metrics at startup now fails the run (exit `1`) even when there are no new alerts to report.
+- `Fix` The run summary counts only reports that actually failed as `failed`.
+- `Fix` An alert without a usable `start_at` or `created_at`, or with X-ARF evidence above the 5 MiB item limit, is now recorded as failed instead of being mailed with an invented incident time or an invalid attachment.
+- `Fix` A locked database gives up after five seconds, and a connection whose setup failed is no longer reused.
+- `Fix` X-ARF scenario classification matches whole name tokens instead of substrings: `http-wordpress-*` is no longer reported as service `rdp`, `*-sqli-probing` maps to `sql_injection`, `*-xss-probing` and `*-path-traversal-probing` to a web vulnerability scan, and `rce`/`c2` no longer match inside words such as `resource`.
+- `Fix` The `From` header is built from a proper address object, so a `SENDER_NAME` with non-ASCII characters, commas or parentheses yields one valid sender address.
+- `Fix` Alerts whose source IP is only present in the alert context or event meta are now reported instead of failing on every run.
+- `Security` Folded (multi-line) `Authorization`, `Cookie` and similar header values are now redacted completely in mail text and X-ARF evidence.
+- `Security` `SMTP_SENDER` must be a plain e-mail address; anything else (empty, `Name <addr>`, no domain) stops startup instead of producing invalid X-ARF reports.
+- `Security` Control characters in log messages (ESC, tab, Unicode line separators) are escaped, so untrusted values cannot forge log lines or terminal output.
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.0.2] - 2026-11-19
 
 - `New` Container health checks now monitor helper loops and successful metrics snapshots. A dead loop stops the container for restart, while service outages only mark it unhealthy.
@@ -12,9 +39,6 @@
 - `Security` Permanent tombstones keep expired sent and `unknown_send_state` reports unclaimable after retention cleanup; ambiguous SMTP outcomes are never retried.
 - `Security` Sensitive `Name: value` headers are masked in report emails and X-ARF attachments.
 
-<details markdown="1">
-<summary>Previous versions...</summary>
-
 ## [1.0.1] - 2026-09-25
 
 - ``New`` Grafana dashboard: added `scenario` and `country` filter variables, now available on every panel like on the metrics-exporter dashboard.
@@ -24,4 +48,4 @@
 
 ## [1.0.0] - 2026-09-24
 - Project initialization
-</summary>
+</details>

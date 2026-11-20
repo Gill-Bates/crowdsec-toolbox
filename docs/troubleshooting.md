@@ -26,13 +26,29 @@ are rejected with `must be at most N`.
 ### Permission errors on the data directory
 
 ```
-2026-11-19 12:13:50 UTC | WARNING  | entrypoint | chown -R on /data had permission errors
+2026-11-19 12:13:50 UTC | WARNING  | entrypoint | chown -R on /data had permission errors (subdirectory with restricted access: /data/old, /data/backup); continuing, the database and heartbeat files are verified after the privilege drop
 ```
 
-A warning, not a failure. The entrypoint chowns the top-level data directory
-unconditionally and descends best-effort, because a subdirectory with restrictive
-host permissions is not readable even by root under `-R`. If the application then
-cannot write, fix the host ownership of `docker/data/` to uid/gid `10001`.
+A warning, not a failure. The container drops all capabilities except `CHOWN`,
+`SETUID` and `SETGID`, so root in the container cannot enter a subdirectory of
+`/data` that belongs to another user and is closed to others (for example a
+`0700` directory left by an older image or created on the host). `chown -R`
+skips it and names it, up to five paths. The abuse reporter does not use that
+subdirectory: its files (`abuse_alerts.db`, its WAL/SHM files, `heartbeat`,
+`api_heartbeat`) live directly in `/data`, which stays writable for uid `10001`.
+
+Find the culprit on the host (adjust the bind-mount path):
+
+```sh
+find /opt/docker/crowdsec-abuse-reporter/data ! -user 10001 -printf '%u:%g %m %p\n'
+```
+
+Then either move the directory out, delete it if it is a stray, or give it to the
+app user with `chown -R 10001:10001 <path>`. Leaving it is harmless.
+
+If the data directory itself or the database file is not writable for the app
+user, the entrypoint stops with `ERROR | entrypoint | ... is not writable by uid`
+and exit code 1. Fix it with `chown -R 10001:10001 <data dir>` on the host.
 
 ### The container keeps restarting and the log names a loop
 
@@ -74,7 +90,7 @@ LF or NUL is rejected outright.
 
 ### TLS verification fails
 
-`CROWDSEC_LAPI_VERIFY_TLS` controls verification. The abuse reporter's template
+`CROWDSEC_LAPI_VALIDATE_CERTIFICATE` controls verification. The abuse reporter's template
 ships `true`. The example LAPI URL uses HTTP and is intended for a trusted private
 network; use HTTPS and keep verification enabled when traffic crosses a network
 you do not fully trust. The exporter also defaults to `true`.
@@ -122,7 +138,7 @@ Expected after a crash. A `pending` row left by a crash is reaped after
 
 A report also ends in `unknown_send_state` when the SMTP connection is lost after
 the transfer began: the server may already have accepted the mail,
-so the report is recorded as such and **never** re-sent. This is not a bug to fix.
+so the report is recorded as such and **never** re-sent.
 If all primary recipients are refused, the report stays `failed` and is retried in
 the next run.
 
@@ -133,12 +149,9 @@ leave `SMTP_USE_TLS=true`.
 
 ### Mails arrive from the wrong identity
 
-!!! tip "Prefer a fixed `HOSTNAME_OVERRIDE`"
-    Automatic detection asks the external services first and also works inside
-    a container while they are reachable. Only when that fails or
-    `PUBLIC_IP_DETECTION=false`, it falls back to a local address, which can be a
-    private container IP. `HOSTNAME_OVERRIDE` is the reliable way to keep the
-    reported identity stable.
+Set `HOSTNAME_OVERRIDE`: automatic detection can fall back to a private
+container address. See
+[Reporting identity](abuse-reporter/configuration.md#reporting-identity).
 
 ## Metrics backends
 
@@ -201,7 +214,8 @@ check is skipped for `METRICS_BACKEND=influxdb2` and `none`.
 `QUESTDB_URL` must be a **bare host name** — no scheme, no port, no path. The
 scheme comes from `QUESTDB_USE_HTTPS` and the port from `QUESTDB_PORT`.
 
-`METRICS_BACKEND` and `LOG_LEVEL` also abort at startup on an unrecognised value.
+An unrecognised `METRICS_BACKEND` aborts startup in both tools, an unrecognised
+`LOG_LEVEL` in the exporter only.
 
 ### Duplicate rows accumulate in QuestDB
 
@@ -255,9 +269,9 @@ tradeoff — see [Grafana Dashboards](reference/dashboards.md#the-map-basemap).
 
 ### The whitelist table shows `unknown` providers
 
-Provider names come from the local GeoLite2 ASN database. The table is printed
-after the GeoIP step, so the database is present by then and `unknown` means the
-ASN genuinely is not in it.
+Provider names come from the local GeoLite2 ASN database; a single `unknown`
+means the ASN is not in it, see
+[Never-report list](abuse-reporter/configuration.md#never-report-list).
 
 If *every* entry reads `unknown`, the ASN database is not being read at all —
 check that the GeoIP step reported `GeoIP databases ready (City + ASN)` and that

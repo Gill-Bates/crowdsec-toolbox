@@ -83,8 +83,8 @@
                   "opacity": 1,
                   "config": {
                     "server": "custom",
-                    "url": "https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-                    "attribution": "Esri, HERE, Garmin, FAO, NOAA, USGS"
+                    "url": "https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+                    "attribution": "Esri, HERE, Garmin, (c) OpenStreetMap contributors, and the GIS user community"
                   }
                 },
                 "controls": {
@@ -280,7 +280,7 @@
         "kind": "Panel",
         "spec": {
           "id": 12,
-          "title": "Top 10 Network Providers / AS | Alerts",
+          "title": "Top 10 Networks / ASN | Alerts",
           "description": "",
           "links": [],
           "data": {
@@ -1759,7 +1759,7 @@
                       "spec": {
                         "format": 1,
                         "queryType": "sql",
-                        "rawSql": "SELECT count_distinct(nullif(scenario, '')) AS \"Active Scenarios\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
+                        "rawSql": "SELECT count_distinct(nullif(scenario, '')) AS \"Observed Scenarios\"\nFROM \"${table}\"\nWHERE $__timeFilter(timestamp)\n  AND coalesce(nullif(host, ''), '(unknown)') IN (${host:sqlstring})\n  AND coalesce(nullif(scenario, ''), '(unknown)') IN (${scenario:sqlstring})\n  AND coalesce(nullif(country, ''), '(unknown)') IN (${country:sqlstring});"
                       }
                     },
                     "refId": "A",
@@ -2160,7 +2160,7 @@
         "spec": {
           "id": 23,
           "title": "QuestDB Retention and Downsampling",
-          "description": "Exporter-maintained QuestDB state for the selected alert table. Dashboard alert panels query the raw table, not the rollup view. When the selected range exceeds Raw Window, the raw panels show only data retained in that table. A raw_days value of 0 means no TTL is configured.",
+          "description": "Exporter-maintained QuestDB state for the selected alert table. Dashboard alert panels query the raw table, not the rollup view. When the selected range exceeds Raw Window, the raw panels show only data retained in that table. Raw Window counts whole days: 0 can mean no TTL or a TTL shorter than one day. Check Total Retention to distinguish them.",
           "links": [],
           "data": {
             "kind": "QueryGroup",

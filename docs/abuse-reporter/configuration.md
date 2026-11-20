@@ -25,7 +25,7 @@ Configuration comes from environment variables, optionally backed by a
 | `CROWDSEC_LAPI_MACHINE_ID` | — | Watcher machine ID (`login` in CrowdSec's credentials file) |
 | `CROWDSEC_LAPI_PASSWORD` | — | Watcher password, plaintext |
 | `CROWDSEC_LAPI_CREDENTIALS_PATH` | `/etc/crowdsec/local_api_credentials.yaml` | Fallback credentials file for host runs |
-| `CROWDSEC_LAPI_VERIFY_TLS` | `true` in the template | Verify the LAPI TLS certificate |
+| `CROWDSEC_LAPI_VALIDATE_CERTIFICATE` | `true` | Verify the LAPI TLS certificate |
 | `CROWDSEC_LAPI_TIMEOUT` | `30` | Request timeout in seconds |
 | `CROWDSEC_FETCH_ALERT_DETAILS` | `true` | Fetch per-alert details |
 | `CROWDSEC_DETAIL_LIMIT` | `500` | Cap on detail fetches |
@@ -41,7 +41,7 @@ fully trust, and keep certificate verification enabled.
 
 | Variable | Default | Description |
 |---|---|---|
-| `HOSTNAME_OVERRIDE` | — | Public reporting identity used in the abuse mail and X-ARF report |
+| `HOSTNAME_OVERRIDE` | — | Public reporting identity shown in the "Reported by" line of the mail text; it is not part of the X-ARF report |
 | `PUBLIC_IP_DETECTION` | `true` | When `HOSTNAME_OVERRIDE` is empty, detect the public WAN IP via external services |
 | `PUBLIC_IP_TIMEOUT` | `5` | Timeout for that detection, in seconds |
 
@@ -56,13 +56,13 @@ fully trust, and keep certificate verification enabled.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SMTP_SERVER` | — | Mail server host |
+| `SMTP_SERVER` | `smtp.example.com` | Mail server host; the container entrypoint refuses to start when it is empty |
 | `SMTP_PORT` | `587` | Mail server port |
 | `SMTP_USERNAME` | — | Set together with `SMTP_PASSWORD` to authenticate |
 | `SMTP_PASSWORD` | — | Plaintext; authentication requires TLS |
 | `SMTP_USE_TLS` | `true` | Use TLS for the connection |
-| `SMTP_VERIFY_SSL` | `true` | Verify the server certificate |
-| `SMTP_SENDER` | — | Envelope sender address |
+| `SMTP_VALIDATE_CERTIFICATE` | `true` | Verify the server certificate |
+| `SMTP_SENDER` | `abuse-reporter@example.com` | Envelope sender address; a plain `user@domain.tld`, otherwise startup fails (no `Name <addr>` form, use `SENDER_NAME`) |
 | `SENDER_NAME` | — | Display name of the sender |
 | `BCC` | — | Optional blind copy recipient |
 
@@ -70,11 +70,11 @@ fully trust, and keep certificate verification enabled.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SLEEP_BETWEEN_MAILS` | `10` | Seconds between individual mails |
-| `MAIL_CHUNK_SIZE` | `25` | Send this many mails, then pause; `0` disables chunking |
-| `SLEEP_BETWEEN_CHUNKS` | `60` | Seconds to pause between chunks |
+| `SLEEP_BETWEEN_MAILS` | `0` (`10` in `settings.env.example`) | Seconds between individual mails |
+| `MAIL_CHUNK_SIZE` | `0` (`25` in `settings.env.example`) | Send this many mails, then pause; `0` disables chunking |
+| `SLEEP_BETWEEN_CHUNKS` | `0` (`60` in `settings.env.example`) | Seconds to pause between chunks |
 
-Pacing exists so a run that has accumulated a large backlog does not look like a
+Pacing is off unless set. It exists so a run that has accumulated a large backlog does not look like a
 spam burst to the receiving mail servers.
 
 ### Never-report list
@@ -83,7 +83,7 @@ spam burst to the receiving mail servers.
 |---|---|---|
 | `WHITELISTED_ASN` | — | ASNs that must never receive an abuse mail; the `AS` prefix is optional (e.g. `AS8881`). An invalid non-empty entry stops startup. Before each send the ASN from CrowdSec and from the local GeoIP database are both checked; if neither is known, the mail is still sent. |
 
-The startup log lists the configured entries with their provider names, resolved
+With `LOG_LEVEL=DEBUG` the startup log lists the configured entries with their provider names, resolved
 from the local GeoLite2 ASN database:
 
 ```
@@ -133,7 +133,7 @@ does not — retry.
 | Variable | Default | Description |
 |---|---|---|
 | `ABUSE_DB_PATH` | `data/abuse_alerts.db` (host), `/data/abuse_alerts.db` (container) | SQLite database location |
-| `GEOIP_DIR` | `/tmp/geoip` | Where the GeoLite2 databases are kept at runtime |
+| `GEOIP_DIR` | `data/geolite2` (host), `/tmp/geoip` (container) | Where the GeoLite2 databases are kept at runtime |
 
 ## Metrics backend
 
@@ -176,8 +176,10 @@ unreachable backend defers them to the next run instead of losing them. See
 !!! note "QuestDB dedup is verified before the first write"
     With `METRICS_BACKEND=questdb` the reporter first creates or checks its
     table with deduplication. If that cannot be verified, nothing is written, the
-    outbox keeps every point and the run exits `1` at once. A `QUESTDB_TTL` that
-    cannot be set after a write also exits `1`, without resending the points.
+    outbox keeps every point and the run exits `1` at once. A `QUESTDB_TTL` or
+    `QUESTDB_DOWNSAMPLING` rollup that cannot be set up after a write also exits
+    `1`, without resending the points. See
+    [Retention](../reference/metrics-backends.md#retention).
 
 ## Container scheduling
 

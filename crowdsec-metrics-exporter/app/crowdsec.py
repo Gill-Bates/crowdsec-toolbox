@@ -16,6 +16,7 @@ resolution, retry policy, error type) but stays a separate copy on purpose — t
 tools share no application code so each can be deployed independently.
 """
 
+import logging
 import socket
 import time
 from pathlib import Path
@@ -30,10 +31,12 @@ from .config import (
     CROWDSEC_LAPI_PASSWORD,
     CROWDSEC_LAPI_TIMEOUT,
     CROWDSEC_LAPI_URL,
-    CROWDSEC_LAPI_VERIFY_TLS,
+    CROWDSEC_LAPI_VALIDATE_CERTIFICATE,
     HOSTNAME_OVERRIDE,
 )
 from .logger import print_info, print_success, print_warning
+
+logger = logging.getLogger(__name__)
 
 HOST_HOSTNAME_PATH = Path("/run/host/hostname")
 
@@ -110,10 +113,11 @@ def get_hostname() -> str:
 
 
 def _read_lapi_credentials_file() -> dict[str, str]:
-    """Read url/login/password from CrowdSec's own credentials file."""
+    """Read url/login/password from CrowdSec's default credentials file."""
     path = Path(CROWDSEC_LAPI_CREDENTIALS_PATH)
     if not path.exists():
         return {}
+
     credentials: dict[str, str] = {}
     try:
         for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -127,6 +131,7 @@ def _read_lapi_credentials_file() -> dict[str, str]:
             credentials[key] = value.strip().strip('"').strip("'")
     except OSError as e:
         raise CrowdSecFetchError(f"Failed to read LAPI credentials file {path}: {e}") from e
+
     return credentials
 
 
@@ -135,7 +140,7 @@ def _resolve_lapi_credentials() -> dict[str, str]:
     file_credentials = _read_lapi_credentials_file()
     return {
         # An explicit env var wins; otherwise CrowdSec's own credentials file
-        # decides. The built-in default is last so it cannot mask a file that
+        # decides. The built-in default is last so it can never mask a file that
         # points the watcher at a different LAPI host.
         "url": (CROWDSEC_LAPI_URL or file_credentials.get("url") or "http://127.0.0.1:8080"),
         "machine_id": CROWDSEC_LAPI_MACHINE_ID or file_credentials.get("login", ""),
@@ -158,7 +163,7 @@ def _build_lapi_client() -> httpx.Client:
     return httpx.Client(
         base_url=_get_lapi_base_url(),
         timeout=CROWDSEC_LAPI_TIMEOUT,
-        verify=CROWDSEC_LAPI_VERIFY_TLS,
+        verify=CROWDSEC_LAPI_VALIDATE_CERTIFICATE,
         headers={"Accept": "application/json"},
     )
 
@@ -171,18 +176,35 @@ def _format_lapi_auth_hint() -> str:
     )
 
 
-def _request_with_retry(client: httpx.Client, method: str, url: str, **kwargs: Any) -> httpx.Response:
+def _auth_rejected(prefix: str, status_code: int) -> CrowdSecFetchError:
+    """Build the error for a 401/403 answer, with the credentials hint."""
+    label = "Unauthorized" if status_code == 401 else "Forbidden"
+    return CrowdSecFetchError(f"{prefix} with HTTP {status_code} ({label}).", hint=_format_lapi_auth_hint())
+
+
+def _request_with_retry(  # noqa: RET503 the loop always returns or raises
+    client: httpx.Client, method: str, url: str, **kwargs: Any
+) -> httpx.Response:
     """Issue a LAPI request, retrying transient transport/5xx failures.
 
-    A single short LAPI hiccup must not discard the run. Only transport errors
-    and retryable status codes are repeated; 4xx (except 429) is a permanent
-    answer and is raised immediately.
+    A single short LAPI hiccup must not discard the whole unattended run. Only
+    transport errors and retryable status codes are repeated; 4xx (except 429)
+    is a permanent answer and is raised immediately.
     """
     delay = 1.0
     for attempt in range(1, _LAPI_MAX_ATTEMPTS + 1):
+        started = time.monotonic()
         try:
             response = client.request(method, url, **kwargs)
             response.raise_for_status()
+            logger.debug(
+                "LAPI %s %s -> %d in %.2fs, %d bytes",
+                method,
+                url,
+                response.status_code,
+                time.monotonic() - started,
+                len(response.content),
+            )
             return response
         except httpx.HTTPStatusError as e:
             if e.response.status_code not in _RETRY_STATUS_CODES:
@@ -190,16 +212,21 @@ def _request_with_retry(client: httpx.Client, method: str, url: str, **kwargs: A
             error: httpx.HTTPError = e
         except httpx.TransportError as e:
             error = e
+
         if attempt == _LAPI_MAX_ATTEMPTS:
             raise error
-        print_warning(
-            f"LAPI request {method} {url} failed on attempt {attempt}/{_LAPI_MAX_ATTEMPTS}: {error}; "
-            f"retrying in {delay:.1f}s"
+
+        logger.warning(
+            "LAPI request %s %s failed (attempt %d/%d), retrying in %.1fs: %s",
+            method,
+            url,
+            attempt,
+            _LAPI_MAX_ATTEMPTS,
+            delay,
+            error,
         )
         time.sleep(delay)
         delay *= 2
-    # Unreachable: the loop either returns or raises.
-    raise CrowdSecFetchError(f"LAPI request {method} {url} exhausted all attempts")
 
 
 def _get_lapi_token(client: httpx.Client) -> str:
@@ -226,11 +253,7 @@ def _get_lapi_token(client: httpx.Client) -> str:
         # endpoint can echo back credential-related diagnostics.
         status_code = e.response.status_code
         if status_code in (401, 403):
-            status_label = "Unauthorized" if status_code == 401 else "Forbidden"
-            raise CrowdSecFetchError(
-                f"LAPI authentication failed with HTTP {status_code} ({status_label}).",
-                hint=_format_lapi_auth_hint(),
-            ) from e
+            raise _auth_rejected("LAPI authentication failed", status_code) from e
         raise CrowdSecFetchError(f"LAPI authentication failed with HTTP {status_code}") from e
     except httpx.HTTPError as e:
         raise CrowdSecFetchError(f"LAPI authentication failed: {e}") from e
@@ -260,11 +283,7 @@ def _fetch_alerts(client: httpx.Client, token: str, params: dict[str, str]) -> l
     except httpx.HTTPStatusError as e:
         status_code = e.response.status_code
         if status_code in (401, 403):
-            status_label = "Unauthorized" if status_code == 401 else "Forbidden"
-            raise CrowdSecFetchError(
-                f"LAPI alerts fetch failed with HTTP {status_code} ({status_label}).",
-                hint=_format_lapi_auth_hint(),
-            ) from e
+            raise _auth_rejected("LAPI alerts fetch failed", status_code) from e
         raise CrowdSecFetchError(f"LAPI alerts fetch failed with HTTP {status_code}: {e.response.text[:300]}") from e
     except httpx.HTTPError as e:
         raise CrowdSecFetchError(f"LAPI alerts fetch failed: {e}") from e
@@ -296,7 +315,7 @@ def _fetch_all_alerts(client: httpx.Client, token: str, params: dict[str, str]) 
     Raises:
         CrowdSecIncompleteFetchError: the ceiling response is full; carries it.
     """
-    limit = max(CROWDSEC_ALERT_LIMIT, 1)
+    limit = CROWDSEC_ALERT_LIMIT
     ceiling = max(MAX_ALERT_FETCH_LIMIT, limit)
     while True:
         alerts = _fetch_alerts(client, token, {**params, "limit": str(limit)})
@@ -327,11 +346,12 @@ def get_crowdsec_decisions() -> list[dict[str, Any]]:
             empty list is a successful run with nothing to export.
     """
     print_info("Retrieving alerts with active decisions from CrowdSec LAPI")
+    started = time.monotonic()
     params = {"has_active_decision": "true"}
     with _build_lapi_client() as client:
         token = _get_lapi_token(client)
         alerts = _fetch_all_alerts(client, token, params)
-    print_success(f"Retrieved {len(alerts)} alerts from CrowdSec LAPI")
+    print_success(f"Retrieved {len(alerts)} alerts from CrowdSec LAPI in {time.monotonic() - started:.1f}s")
     return alerts
 
 
@@ -350,7 +370,11 @@ def _has_complete_event_details(alert: dict[str, Any], expected: Any) -> bool:
         return False
     if expected is None:
         return True
-    return isinstance(expected, int) and not isinstance(expected, bool) and expected >= 0 and len(events) >= expected
+    if not isinstance(expected, int) or isinstance(expected, bool) or expected < 0:
+        return False
+    # CrowdSec caps the stored events per alert (scenario cache_size), so fewer
+    # events than events_count is normal; only a missing list is incomplete.
+    return len(events) >= 1 or expected == 0
 
 
 def _fetch_alert_detail(client: httpx.Client, token: str, alert_id: Any, expected_events: Any) -> dict[str, Any] | None:
@@ -392,6 +416,7 @@ def get_crowdsec_alerts(since: str) -> list[dict[str, Any]]:
         CrowdSecFetchError: authentication, transport or payload failure.
     """
     print_info(f"Retrieving alerts with events from CrowdSec LAPI (since {since})")
+    started = time.monotonic()
     params = {"since": since}
     with _build_lapi_client() as client:
         token = _get_lapi_token(client)
@@ -406,7 +431,8 @@ def get_crowdsec_alerts(since: str) -> list[dict[str, Any]]:
         fetched = 0
         failed = 0
         for alert in alerts:
-            alert_id = alert.get("id")
+            # A malformed id is kept as is; build_event_lines skips it with a warning.
+            alert_id = parse_record_id(alert.get("id"))
             if alert_id is not None and not _alert_has_events(alert):
                 detail = _fetch_alert_detail(client, token, alert_id, alert.get("events_count"))
                 fetched += 1
@@ -422,7 +448,7 @@ def get_crowdsec_alerts(since: str) -> list[dict[str, Any]]:
         problems.append(f"Event detail missing for {failed} of {len(alerts)} alerts")
     if problems:
         raise CrowdSecIncompleteFetchError("; ".join(problems), enriched)
-    print_success(f"Retrieved {len(enriched)} alerts from CrowdSec LAPI")
+    print_success(f"Retrieved {len(enriched)} alerts from CrowdSec LAPI in {time.monotonic() - started:.1f}s")
     return enriched
 
 

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-18 | Updated: 2026-11-18 -->
+<!-- Generated: 2026-09-18 | Updated: 2026-11-19 -->
 
 # docker
 
@@ -13,18 +13,17 @@ container talks to the CrowdSec Local API over the network and therefore needs
 ## Key Files
 | File | Description |
 |------|-------------|
-| `Dockerfile` | `python:slim` (unpinned, latest), GeoLite2 baseline from P3TERX's moving download paths, non-root user `app` (uid/gid 10001), `tini` as PID 1 (`ENTRYPOINT ["/usr/bin/tini", "--", "./entrypoint.sh"]`), env defaults, HEALTHCHECK |
+| `Dockerfile` | `python:3.14-slim`, GeoLite2 baseline from P3TERX's moving download paths, non-root user `app` (uid/gid 10001), `tini` as PID 1 (`ENTRYPOINT ["/usr/bin/tini", "--", "./entrypoint.sh"]`), env defaults, HEALTHCHECK |
 | `entrypoint.sh` | Root→`gosu` privilege drop, periodic run loop, background LAPI heartbeat and optional metrics loop treated as required children (death ends the container with exit 1), process-group signal forwarding |
 | `docker-compose.yml` | Hardened service definition on a plain bridge network; deliberately free of site-specific networks and addresses |
 | `settings.env.example` | Template for `./settings.env`; must list every supported variable |
-| `Dockerfile.dockerignore` | Allowlist for the repo-root build context under BuildKit — only `crowdsec-abuse-reporter/pyproject.toml`, `app/`, `run.py`, `docker/entrypoint.sh` get in. The manifest entry must name this tool's own `crowdsec-abuse-reporter/pyproject.toml`; a stale root-level `!pyproject.toml` keeps it out of the context and the pip layer fails with "not found". Legacy (non-BuildKit) builders ignore this file; the root `../../.dockerignore` denylist is the fallback for those |
-| `.gitignore` | Ignores `data/*` except `.gitkeep` |
-| `data/.gitkeep` | Keeps the bind-mount source directory in git |
+| `Dockerfile.dockerignore` | Allowlist for the repo-root build context under BuildKit — only `crowdsec-abuse-reporter/pyproject.toml`, `app/`, `run.py`, `docker/entrypoint.sh` get in; `**/tests/` and `**/AGENTS.md` are excluded explicitly as well. The manifest entry must name this tool's own `crowdsec-abuse-reporter/pyproject.toml`; a stale root-level `!pyproject.toml` keeps it out of the context and the pip layer fails with "not found". Legacy (non-BuildKit) builders ignore this file; the root `../../.dockerignore` denylist is the fallback for those |
+| `.gitignore` | Ignores the local `data/` bind-mount source (`data/*`, except a `.gitkeep`, which the repository does not track) |
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
-| `data/` | Empty bind-mount source for `/data`; holds only `.gitkeep` in git |
+| `data/` | Not tracked; Docker creates this bind-mount source for `/data` on first start and the entrypoint fixes its ownership |
 
 ## For AI Agents
 
@@ -44,6 +43,14 @@ container talks to the CrowdSec Local API over the network and therefore needs
   `CHOWN`/`SETUID`/`SETGID` added back, `no-new-privileges`, `pids_limit: 128`,
   and a `noexec,nosuid,nodev` tmpfs for `/tmp`. Keep all of it intact. Compose
   also rotates each service's `json-file` logs at 50 MB, retaining five files.
+- **Data directory permissions.** With only `CHOWN`/`SETUID`/`SETGID`, root cannot
+  enter a `/data` subdirectory it does not own that lacks access for others, so
+  `chown -R` fails there. `log_chown_problems` turns that into one WARNING naming
+  up to five paths (keep it a warning: the app never uses such a subdirectory).
+  `check_data_writable` runs as the app user after the drop and exits 1 with an
+  ERROR when `$DATA_DIR`, the DB directory or an existing DB file is not writable.
+  Host fix: `find <data> ! -user 10001 -printf '%u:%g %m %p\n'`, then move,
+  delete or `chown -R 10001:10001` the path. Never add `CAP_DAC_OVERRIDE`.
 - **Healthcheck contract.** Two files must both be fresh: `/data/heartbeat`
   (written by the entrypoint *only after an exit-0 main run*) and
   `/data/api_heartbeat` (written by `python -m app.heartbeat`). Never touch
@@ -116,7 +123,7 @@ Build and deploy commands live in the root `setup.conf` and are the source of tr
 cd <repo root>
 docker buildx build --platform linux/amd64 --pull -f crowdsec-abuse-reporter/docker/Dockerfile \
   --build-arg APP_VERSION=... --build-arg GIT_SHA=... --build-arg BUILD_DATE=... \
-  -t docker.cirrio.de/crowdsec-abuse-reporter:latest --push .
+  -t docker.cirrio.de/crowdsec-abuse-reporter:<version> -t docker.cirrio.de/crowdsec-abuse-reporter:latest --push .
 ```
 The root `setup.conf` reads `APP_VERSION` from this tool's own `pyproject.toml`, resolves
 `GIT_SHA` from `HEAD`, and supplies both values to the image build.
@@ -135,7 +142,7 @@ The root `setup.conf` reads `APP_VERSION` from this tool's own `pyproject.toml`,
 - `../tests/test_hardening.py` — asserts on `entrypoint.sh`
 
 ### External
-- Base image `python:slim` (unpinned, latest)
+- Base image `python:3.14-slim`
 - apt packages: `ca-certificates`, `gosu`, `iproute2`, `tini`
 - A Docker network from which the CrowdSec LAPI, SMTP and DNS are reachable
   (the tracked Compose file uses the default bridge); registry

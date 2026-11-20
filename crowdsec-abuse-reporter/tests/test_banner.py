@@ -16,7 +16,7 @@ from app.banner import print_banner
 
 
 class BannerTest(unittest.TestCase):
-    def test_print_banner_centers_metadata_within_visual_banner_width(self):
+    def test_print_banner_centers_logo_and_metadata_on_one_canvas(self):
         buffer = io.StringIO()
 
         with redirect_stdout(buffer):
@@ -27,24 +27,14 @@ class BannerTest(unittest.TestCase):
         title_line = next(line for line in lines if "crowdsec-abuse-reporter" in line)
         version_line = next(line for line in lines if "| by Gill-Bates" in line)
         banner_lines = lines[: lines.index(title_line)]
-
-        min_indent = min(len(line) - len(line.lstrip()) for line in banner_lines)
-        banner_width = max(len(line.rstrip()) for line in banner_lines)
-        visual_width = banner_width - min_indent
-
-        self.assertEqual(
-            title_line,
-            (" " * min_indent) + ">>> crowdsec-abuse-reporter | Automated Abuse Reporting <<<".center(visual_width),
-        )
-        self.assertEqual(
-            version_line,
-            (" " * min_indent) + "v1.2.3 (abcdef1) | by Gill-Bates".center(visual_width),
-        )
         disclaimer_line = next(line for line in lines if "not affiliated with CrowdSec" in line)
-        self.assertEqual(
-            disclaimer_line,
-            (" " * min_indent) + "Independent project; not affiliated with CrowdSec".center(visual_width),
-        )
+        canvas_width = max(map(len, [*banner_lines, title_line, version_line, disclaimer_line]))
+
+        self.assertEqual(len(title_line), canvas_width)
+        self.assertTrue(all(len(line) == canvas_width for line in banner_lines))
+        self.assertEqual(title_line, ">>> crowdsec-abuse-reporter | Automated Abuse Reporting <<<".center(canvas_width))
+        self.assertEqual(version_line, "v1.2.3 (abcdef1) | by Gill-Bates".center(canvas_width))
+        self.assertEqual(disclaimer_line, "Independent project; not affiliated with CrowdSec".center(canvas_width))
 
 
 if __name__ == "__main__":

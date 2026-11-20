@@ -34,11 +34,25 @@ The fonts load from the Google Fonts CSS2 API with `display=swap`. The exact
 request, including weights and fallbacks, is in `extra.css`; the CSS import is
 the only font source, so Zensical's font integration stays disabled.
 
+## Layout density
+
+The landing page keeps its hero and destination cards compact beside the
+reference content.
+
+| Element | Size |
+|---|---|
+| Body text | `0.8rem` |
+| Heading scale | `h1` `2.1em`, `h2` `1.55em`, `h3` `1.2em` relative to body text |
+| Hero heading | Fluid, up to `3.25em` relative to body text; measure of `26ch` |
+| Hero panel padding | Fluid, up to `2.5rem` |
+| Card padding | `1rem` |
+| Card grid gap | `0.75rem` |
+
 ## Action variants
 
 | Variant | Class or control | Resting state | Hover / active state | Keyboard focus |
 |---|---|---|---|---|
-| Primary | `.md-button--primary` | `--cst-primary` background and `--cst-on-primary` text | Darker primary surface; slight press offset | 3px `--cst-primary` outline |
+| Primary | `.md-button--primary` | `--cst-primary` background and `--cst-on-primary` text | `--cst-primary-hover` surface; slight press offset | 3px `--cst-primary` outline |
 | Secondary | `.md-button` | `--cst-surface` background, `--cst-border-strong` border | `--cst-surface-alt` background | 3px `--cst-primary` outline |
 | Text link | `.md-typeset a:not(.md-button)` | `--cst-primary` text | `--cst-primary-hover` with underline | 3px `--cst-primary` outline |
 | Icon action | Theme, search, copy, and back-to-top controls | Inherits text color | `--cst-surface-alt` background and primary icon color | 3px `--cst-primary` outline |

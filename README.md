@@ -28,7 +28,7 @@ monitor. Each tool is independent, so you can run only the part you need.
 |---|---|---|
 | **What it does** | Turns CrowdSec bans into abuse reports | Exports CrowdSec decisions as time series |
 | 📥 **Source** | CrowdSec Local API (LAPI), direct | CrowdSec Local API (LAPI), direct |
-| 📤 **Output** | X-ARF v4 email to the responsible abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
+| 📤 **Output** | X-ARF v4.2.0 email to the responsible abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
 | 🌍 **Enrichment** | GeoIP (GeoLite2 City + ASN) | — |
 | 📇 **Contact lookup** | Abusix DNS abuse-contact database | — |
 | 🔁 **Idempotency** | SQLite, at-most-once per `(AlertId, IPAddress)` | Backend-side deduplication, no local state |
@@ -52,11 +52,9 @@ for requirements, variables and panel details.
 
 ## Deployment
 
-Both tools support Docker Compose and direct host runs. The metrics exporter can
-run as a Python script, while the abuse reporter can be scheduled through cron.
-They have separate entry points and their own `pyproject.toml` manifests, so
-their deployments can be managed independently. Follow each tool's README for
-setup, configuration, and operating notes.
+Both tools support Docker Compose and direct host runs. On a host, each tool is
+a one-shot Python script that you schedule with cron. Follow each tool's README
+for setup, configuration, and operating notes.
 
 ## License
 

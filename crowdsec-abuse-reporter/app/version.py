@@ -4,6 +4,8 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
+"""Application version and build revision."""
+
 import os
 import tomllib
 from pathlib import Path
@@ -16,7 +18,7 @@ def _version_from_pyproject() -> str | None:
     try:
         with path.open("rb") as handle:
             value = tomllib.load(handle).get("project", {}).get("version")
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         return None
     return value.strip() if isinstance(value, str) and value.strip() else None
 

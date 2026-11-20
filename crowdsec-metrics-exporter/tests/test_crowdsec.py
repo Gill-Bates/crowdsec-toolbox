@@ -5,11 +5,14 @@
 #
 
 # LAPI fetch completeness (limit escalation, ceiling) and incomplete event details, over mocked HTTP.
+import io
+
 import httpx
 import pytest
 
 import main
-from app import crowdsec
+from app import banner, crowdsec
+from app.version import GIT_SHA, VERSION
 
 BASE = "http://lapi.test/v1"
 
@@ -132,11 +135,45 @@ def test_main_banner_centers_metadata_and_separates_logs(main_env, capsys):
 
     lines = capsys.readouterr().out.splitlines()
     title_index = next(i for i, line in enumerate(lines) if "crowdsec-metrics-exporter" in line)
-    assert lines[title_index].strip() == ">>> crowdsec-metrics-exporter | Metrics Export Tool for CrowdSec <<<"
-    assert lines[title_index + 1].strip() == f"v{main.VERSION} ({main.GIT_SHA[:7]}) | by Gill-Bates"
-    assert lines[title_index + 2].strip() == "Independent project; not affiliated with CrowdSec"
+    banner_block = lines[: title_index + 3]
+    canvas_width = max(map(len, banner_block))
+    assert len(lines[title_index]) == canvas_width
+    assert all(len(line) == canvas_width for line in lines[:title_index])
+    assert lines[title_index] == ">>> crowdsec-metrics-exporter | Metrics Export Tool for CrowdSec <<<".center(
+        canvas_width
+    )
+    assert lines[title_index + 1] == f"v{VERSION} ({GIT_SHA[:7]}) | by Gill-Bates".center(canvas_width)
+    assert lines[title_index + 2] == "Independent project; not affiliated with CrowdSec".center(canvas_width)
     assert lines[title_index + 3] == ""
     assert " | INFO     | crowdsec_metrics | Starting CrowdSec" in lines[title_index + 4]
+
+
+def test_banner_uses_colors_only_for_tty_and_prints_build_metadata(monkeypatch):
+    class Stream(io.StringIO):
+        def __init__(self, tty):
+            super().__init__()
+            self.tty = tty
+
+        def isatty(self):
+            return self.tty
+
+    tty = Stream(True)
+    monkeypatch.setattr("sys.stdout", tty)
+    banner.print_banner("1.2.3", "abcdef012345")
+    colored = tty.getvalue()
+    assert "\033[96m\033[1m" in colored
+    assert "\033[97m" in colored
+    assert "\033[90m" in colored
+    assert ">>> crowdsec-metrics-exporter | Metrics Export Tool for CrowdSec <<<" in colored
+    assert "v1.2.3 (abcdef0) | by Gill-Bates" in colored
+
+    plain = Stream(False)
+    monkeypatch.setattr("sys.stdout", plain)
+    banner.print_banner("1.2.3", "abcdef012345")
+    output = plain.getvalue()
+    assert "\033[" not in output
+    assert ">>> crowdsec-metrics-exporter | Metrics Export Tool for CrowdSec <<<" in output
+    assert "v1.2.3 (abcdef0) | by Gill-Bates" in output
 
 
 def test_event_ceiling_exports_partial_events_and_main_exits_1(monkeypatch, main_env):
@@ -177,17 +214,19 @@ def test_failed_event_detail_raises_incomplete_with_all_alerts(monkeypatch, caps
 
 def test_complete_event_details_return_normally(monkeypatch):
     _patch_lapi(monkeypatch, _detail_handler(set()), limit=100)
-    assert all(alert["events"] for alert in crowdsec.get_crowdsec_alerts("30m"))
+    alerts = crowdsec.get_crowdsec_alerts("30m")
+    assert [alert["id"] for alert in alerts] == [1, 2]
+    assert all(alert["events"] for alert in alerts)
 
 
 @pytest.mark.parametrize(
     "detail",
     [
         {"id": 1, "events_count": 2},
-        {"id": 1, "events_count": 2, "events": [{}]},
+        {"id": 1, "events_count": 2, "events": []},
         {"id": 1, "events_count": 2, "events": [{}, "malformed"]},
     ],
-    ids=["missing-events", "short-event-list", "malformed-event"],
+    ids=["missing-events", "empty-event-list", "malformed-event"],
 )
 def test_successful_but_incomplete_event_detail_fails_the_fetch(monkeypatch, detail):
     summary = {"id": 1, "events_count": 2}
@@ -202,6 +241,19 @@ def test_successful_but_incomplete_event_detail_fails_the_fetch(monkeypatch, det
         crowdsec.get_crowdsec_alerts("30m")
     assert excinfo.value.alerts == [summary]
     assert "Event detail missing" in str(excinfo.value)
+
+
+def test_capped_event_list_is_complete(monkeypatch):
+    # CrowdSec stores fewer events than events_count (scenario cache_size).
+    detail = {"id": 1, "events_count": 50, "events": [{"meta": []}] * 6}
+
+    def handler(request):
+        if request.url.path.endswith("/alerts"):
+            return httpx.Response(200, json=[{"id": 1, "events_count": 50}])
+        return httpx.Response(200, json=detail)
+
+    _patch_lapi(monkeypatch, handler, limit=100)
+    assert crowdsec.get_crowdsec_alerts("30m") == [detail]
 
 
 def test_incomplete_events_are_still_written_but_run_fails(monkeypatch, sent_payloads):

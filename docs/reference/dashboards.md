@@ -117,14 +117,15 @@ whenever the host set changed.
 
 ## The map basemap
 
-The map uses Esri's Dark Gray Canvas via the `esri-xyz` layer with a custom URL,
-which the browser must be able to reach (`services.arcgisonline.com`). The base
-layer carries no place labels, and the Esri tile order is `{z}/{y}/{x}`.
+The map uses Esri's fixed `World_Dark_Gray_Base` style through the `esri-xyz`
+layer. It stays dark with either Grafana theme. The browser must be able to
+reach `services.arcgisonline.com`; tile URLs use `{z}/{y}/{x}`.
 
-!!! note "The map stays dark in Grafana's light theme"
+!!! note "The map style is fixed"
     CARTO's `theme: auto` basemap would follow Grafana's light/dark theme
     automatically, but now watermarks unauthenticated requests with
-    "API KEY REQUIRED". Esri is used instead, at the cost of the theme following.
+    "API KEY REQUIRED". This dashboard uses Esri's dark tiles, so the map also
+    stays dark in Grafana's light theme.
 
 ## File format
 

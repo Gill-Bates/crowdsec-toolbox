@@ -74,6 +74,24 @@ seed_geoip_baseline() {
     chown -R app:app "$GEOIP_DIR" 2>/dev/null || true
 }
 
+# Name the paths chown could not enter (bounded) so the warning is actionable.
+# chown -R does not follow symlinks, so nothing outside $DATA_DIR is touched.
+log_chown_problems() {
+    local line paths="" count=0 max=5
+    while IFS= read -r line; do
+        if [[ "${line}" =~ \'([^\']+)\' ]]; then
+            count=$(( count + 1 ))
+            if [ "${count}" -le "${max}" ]; then
+                paths+="${paths:+, }${BASH_REMATCH[1]}"
+            fi
+        fi
+    done <<< "$1"
+    if [ "${count}" -gt "${max}" ]; then
+        paths+=" (+$(( count - max )) more)"
+    fi
+    log WARNING entrypoint "chown -R on $DATA_DIR had permission errors (subdirectory with restricted access: ${paths:-unknown path}); continuing, the database and heartbeat files are verified after the privilege drop"
+}
+
 # Docker creates a missing bind-mount source dir as root, so a fresh ./data
 # on the host ends up root-owned even though the app runs as uid:gid
 # 10001:10001. Fix ownership once as root, then drop privileges for the rest
@@ -84,8 +102,11 @@ if [ "$(id -u)" = "0" ]; then
     # readable by root with -R and would otherwise abort the container start
     # with "Permission denied".
     chown app:app "$DATA_DIR" 2>/dev/null || true
-    chown -R app:app "$DATA_DIR" 2>/dev/null \
-        || log WARNING entrypoint "chown -R on $DATA_DIR had permission errors (subdirectory with restricted access); continuing"
+    chown_rc=0
+    chown_errors="$(chown -R app:app "$DATA_DIR" 2>&1 >/dev/null)" || chown_rc=$?
+    if [ "${chown_rc}" -ne 0 ]; then
+        log_chown_problems "${chown_errors}"
+    fi
     seed_geoip_baseline
     exec gosu app:app "$0" "$@"
 fi
@@ -97,6 +118,26 @@ if [ -z "${SMTP_SERVER:-}" ]; then
     log ERROR entrypoint "Provide ./settings.env via compose env_file or set the required variables."
     exit 1
 fi
+
+# Fail fast when the app user cannot write where it must: a later SQLite or
+# heartbeat error would be far more obscure. Unrelated subdirectories do not matter.
+check_data_writable() {
+    local db_dir
+    db_dir="$(dirname "$ABUSE_DB_PATH")"
+    if [ ! -w "$DATA_DIR" ]; then
+        log ERROR entrypoint "$DATA_DIR is not writable by uid $(id -u); on the host run: chown 10001:10001 <data dir>"
+        exit 1
+    fi
+    if [ -d "$db_dir" ] && [ ! -w "$db_dir" ]; then
+        log ERROR entrypoint "database directory $db_dir is not writable by uid $(id -u); fix its ownership on the host"
+        exit 1
+    fi
+    if [ -e "$ABUSE_DB_PATH" ] && [ ! -w "$ABUSE_DB_PATH" ]; then
+        log ERROR entrypoint "database file $ABUSE_DB_PATH is not writable by uid $(id -u); run on the host: chown 10001:10001 <file>"
+        exit 1
+    fi
+}
+check_data_writable
 
 # Track child PIDs so a container stop signal (TERM/INT) reaches the main run,
 # both helper loops, and any in-progress sleep — otherwise the foreground job
@@ -229,7 +270,7 @@ run_once() {
     set -e
 
     # Only refresh the heartbeat on a successful run. run.py exits non-zero only
-    # for hard failures (DB init, LAPI fetch, finalize/DB errors); per-report
+    # for hard failures (config, DB, LAPI fetch, metrics gate or loss); per-report
     # send/DNS issues still exit 0. Touching unconditionally would keep the
     # HEALTHCHECK green while the main processing repeatedly fails.
     if [ "$rc" -eq 0 ]; then
@@ -314,12 +355,12 @@ printf '%d %d %d\n' "$(( 10#${main_max} ))" "$(( 10#${api_max} ))" "$(( 10#${met
     > "${HEALTH_LIMITS_FILE}.tmp"
 mv -f "${HEALTH_LIMITS_FILE}.tmp" "${HEALTH_LIMITS_FILE}"
 
-# Background LAPI heartbeat loop — runs every API_HEARTBEAT_INTERVAL seconds
-# (default 300 = 5 min). Updates /data/api_heartbeat on success so the Docker
+# Background LAPI heartbeat loop — runs every API_HEARTBEAT_INTERVAL seconds.
+# Updates /data/api_heartbeat on success so the Docker
 # HEALTHCHECK can detect a prolonged LAPI outage between main processing runs.
 # A failing python call is tolerated; only the loop itself ending is fatal.
 _api_heartbeat_loop() {
-    local interval="${API_HEARTBEAT_INTERVAL:-300}"
+    local interval="${API_HEARTBEAT_INTERVAL}"
     log INFO heartbeat "Starting LAPI heartbeat loop (interval: ${interval}s)"
     while true; do
         python -m app.heartbeat \
@@ -333,7 +374,7 @@ _register_helper "LAPI heartbeat" "$!" "${API_PID_FILE}"
 # Touches a tmpfs file after each successful snapshot; the HEALTHCHECK reads its
 # age, so a backend outage only turns the container unhealthy (no restart).
 metrics_loop() {
-    local interval="${METRICS_INTERVAL:-60}"
+    local interval="${METRICS_INTERVAL}"
     log INFO metrics "Starting metrics loop (interval: ${interval}s)"
     while true; do
         if METRICS_ONLY=true python run.py; then

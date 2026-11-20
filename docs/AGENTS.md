@@ -12,16 +12,16 @@ shared concerns (metrics backends, health checks, security model, dashboards)
 live in `reference/`, while per-tool behaviour stays in `abuse-reporter/` and
 `metrics-exporter/`.
 
-`docs_dir` is this directory itself (`docs_dir: .`) and the site is written to
-`../site`.
+Zensical runs from the repository root: `docs_dir = "docs"` and the site is
+written to `site/` there.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `../zensical.toml` | Zensical config: site metadata, light/dark palette (indigo), navigation, plugins and Markdown extensions; built with `--strict --clean` in CI |
+| `../zensical.toml` | Zensical config: site metadata, light/dark palette (custom teal/indigo colours from `extra.css`), navigation, plugins and Markdown extensions; built with `--strict --clean` in CI |
 | `index.md` | Landing page: what the toolbox is, per-tool cards, the at-a-glance comparison table, quick start |
 | `troubleshooting.md` | Symptom-driven fixes across both tools, grouped by subsystem (container start, LAPI, DNS, mail, backends, Grafana, GeoIP, development) |
-| `stylesheets/extra.css` | Theme tweaks (`--cst-primary`/`--cst-accent`, dark-mode backgrounds, grid cards, logo switching) |
+| `stylesheets/extra.css` | Theme tokens (`--cst-*` per colour scheme mapped onto Material's variables), landing-page hero, card and flow grids; the logo light/dark switch is done in `index.md` markup |
 
 ## Subdirectories
 | Directory | Purpose |
@@ -30,7 +30,7 @@ live in `reference/`, while per-tool behaviour stays in `abuse-reporter/` and
 | `abuse-reporter/` | Per-tool pages: overview, configuration, delivery guarantees, GeoIP |
 | `metrics-exporter/` | Per-tool pages: overview, configuration, per-event export |
 | `reference/` | Cross-tool reference: metrics backends, Grafana dashboards, health checks, security model |
-| `development/` | Setup, testing, build pipelines |
+| `development/` | Setup, testing, build pipelines, design system |
 
 ## For AI Agents
 

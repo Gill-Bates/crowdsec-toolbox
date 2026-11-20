@@ -4,7 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-from __future__ import annotations
 
 import ipaddress
 import logging

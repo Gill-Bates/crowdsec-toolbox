@@ -16,17 +16,17 @@ CrowdSec → Abuse Mail Export Tool
 
 import atexit
 import ipaddress
+import json
 import math
-import re
 import signal
 import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from email.utils import parseaddr
 
 from app.abuse import UncertainSendError, send_abuse_mail
 from app.abuse import split_recipients as _split_abuse_contacts
+from app.abuse import validate_email as _validate_abuse_email
 from app.abusix import extract_abuse_contact, get_active_nameservers
 from app.banner import print_banner
 from app.config import (
@@ -72,6 +72,7 @@ from app.logger import (
     print_database_error,
     print_debug,
     print_dns_error,
+    print_error,
     print_internal_ip_skipped,
     print_log,
     print_mail_error,
@@ -80,6 +81,7 @@ from app.logger import (
     print_processing,
     print_stat_item,
     print_summary_header,
+    print_warning,
     setup_logging,
 )
 from app.metrics import (
@@ -98,29 +100,13 @@ from app.reportbody import build_mail_body, build_xarf_report
 IPV4_PREFIX_LENGTH = 24
 IPV6_PREFIX_LENGTH = 48
 
-_EMAIL_LOCAL_RE = re.compile(r"[^@\s]{1,64}")
-_EMAIL_DOMAIN_RE = re.compile(r"[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}")
-
 
 def _validate_email(value: str | None) -> str | None:
-    """Return the normalised address or None when it fails basic validation.
-
-    DNS-sourced abuse contacts are untrusted input. We check for control
-    characters that could cause SMTP header injection and verify the address
-    has the minimum shape of a routable mailbox.
-    """
-    if not value:
+    """Return a stripped address only when the mail sender accepts it."""
+    if value is None:
         return None
     candidate = value.strip()
-    if not candidate or any(ch in candidate for ch in "\r\n\x00"):
-        return None
-    _, parsed = parseaddr(candidate)
-    if not parsed or parsed != candidate or "@" not in parsed:
-        return None
-    local, domain = parsed.rsplit("@", 1)
-    if not _EMAIL_LOCAL_RE.fullmatch(local) or not _EMAIL_DOMAIN_RE.fullmatch(domain):
-        return None
-    return parsed
+    return candidate if _validate_abuse_email(candidate) else None
 
 
 @dataclass
@@ -219,7 +205,7 @@ def get_alert_id(alert: dict) -> int | None:
 
     try:
         alert_id = int(raw_id)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
     return alert_id if alert_id > 0 else None
@@ -413,11 +399,11 @@ def print_whitelisted_asn_table(decisions: list[dict] | None = None) -> None:
     rows = sorted(rows, key=lambda item: (item[1].casefold(), item[0]))
 
     asn_width = max(len("ASN"), *(len(asn) for asn, _provider in rows))
-    print_config_info("Configured whitelisted ASNs:")
-    print_config_info(f"  {'ASN':<{asn_width}}  Provider")
-    print_config_info(f"  {'-' * asn_width}  {'-' * 32}")
+    print_debug("Configured whitelisted ASNs:")
+    print_debug(f"  {'ASN':<{asn_width}}  Provider")
+    print_debug(f"  {'-' * asn_width}  {'-' * 32}")
     for asn, provider in rows:
-        print_config_info(f"  {asn:<{asn_width}}  {provider}")
+        print_debug(f"  {asn:<{asn_width}}  {provider}")
 
 
 def get_alert_confidence(alert: dict) -> float:
@@ -433,7 +419,7 @@ def get_alert_confidence(alert: dict) -> float:
             continue
         try:
             confidence = float(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         # float() accepts 'nan'/'inf'. NaN loses every comparison and +inf wins
         # all of them, so a non-finite upstream value would silently distort
@@ -450,7 +436,7 @@ def get_subnet_prefix_length(ip: str) -> int:
         if ip_obj.version == 4:
             return IPV4_PREFIX_LENGTH
         return IPV6_PREFIX_LENGTH
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return 0
 
 
@@ -468,7 +454,7 @@ def is_valid_public_ip(ip: str, alert_id: int = 0) -> bool:
             print_internal_ip_skipped(ip, alert_id)
             return False
         return True
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return False
 
 
@@ -503,7 +489,7 @@ def deduplicate_and_filter_alerts(
 
         if alert_id is None:
             invalid_alert_id_count += 1
-            print_config_info(f"Skipping alert with invalid ID for IP {ip}")
+            print_warning(f"Skipping alert with invalid ID for IP {ip}")
             continue
 
         if (alert_id, ip) in processed_alert_ids:
@@ -543,7 +529,7 @@ def deduplicate_and_filter_alerts(
 
                     if current_conf > existing_conf or (current_conf == existing_conf and alert_id > existing_alert_id):
                         subnet_dict[prefix] = alert
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 alerts_to_process.append(alert)
         else:
             alerts_to_process.append(alert)
@@ -589,17 +575,19 @@ def sanitize_header_value(value: object) -> str:
 
 def send_abuse_report(alert: dict, recipient: str, hostname: str) -> tuple[bool, str | None]:
     """Send abuse report email and return success status with error message."""
-    ip = sanitize_header_value(get_alert_ip(alert))
+    alert_ip = get_alert_ip(alert)
+    ip = sanitize_header_value(alert_ip)
     scenario = sanitize_header_value(get_alert_scenario(alert))
-
-    subject = f"Abuse Report - {ip} - {scenario}"
 
     # Build + send in one try-block so an unexpected shape in alert data
     # (e.g. non-dict source/context) is caught here rather than after the
     # DB claim, which would leave the row permanently in 'pending'.
     try:
-        body = build_mail_body(alert, hostname)
-        xarf_attachment = build_xarf_report(alert, hostname)
+        body = build_mail_body(alert, hostname, alert_ip)
+        xarf_attachment = build_xarf_report(alert, hostname, alert_ip)
+        xarf_type = sanitize_header_value(json.loads(xarf_attachment).get("type"))
+        # Subject layout from the XARF e-mail transport guide, plus the scenario for humans.
+        subject = f"XARF Abuse Report - {xarf_type} from {ip} ({scenario})"
         return send_abuse_mail(
             recipient=recipient,
             subject=subject,
@@ -646,7 +634,7 @@ def _sqlite_payload(value: str | None) -> str | None:
     return None if value is None else ""
 
 
-def build_report_point(alert: dict, result: "ProcessResult", hostname: str, timestamp: datetime | None = None) -> str:
+def build_report_point(alert: dict, result: ProcessResult, hostname: str, timestamp: datetime | None = None) -> str:
     """Line-protocol point for one finalized report."""
     return format_report_line(
         measurement_name(hostname),
@@ -823,7 +811,7 @@ def process_single_alert(alert: dict, alert_index: int, total_alerts: int, hostn
 def sleep_between_mails(
     has_more_alerts: bool,
     last_result_success: bool,
-    interrupt_handler: "GracefulInterruptHandler",
+    interrupt_handler: GracefulInterruptHandler,
 ) -> None:
     """Sleep between mails after a successful send, if rate limiting is configured.
 
@@ -836,7 +824,7 @@ def sleep_between_mails(
         return
 
     if last_result_success and has_more_alerts:
-        print_config_info(f"Rate limiting: Sleeping {SLEEP_BETWEEN_MAILS} seconds...")
+        print_debug(f"Rate limiting: Sleeping {SLEEP_BETWEEN_MAILS} seconds...")
         # Use the interruptible variant so a container stop during the rate-limit
         # pause is honored promptly instead of blocking until Docker SIGKILLs us.
         interruptible_sleep(SLEEP_BETWEEN_MAILS, interrupt_handler)
@@ -850,7 +838,7 @@ def chunk_alerts(alerts: list[dict], chunk_size: int) -> list[list[dict]]:
     return [alerts[i : i + chunk_size] for i in range(0, len(alerts), chunk_size)]
 
 
-def interruptible_sleep(seconds: int, interrupt_handler: "GracefulInterruptHandler") -> None:
+def interruptible_sleep(seconds: int, interrupt_handler: GracefulInterruptHandler) -> None:
     """Sleep in 1-second steps so a shutdown signal is honored promptly."""
     for _ in range(max(0, seconds)):
         if interrupt_handler.interrupted:
@@ -867,17 +855,17 @@ def _print_summary_section(title: str, rows: list[tuple[str, str]]) -> None:
 
 
 def _print_sent_email_summary(mails_sent_details: list[tuple[int, str, str, str]], limit: int = 5) -> None:
-    """Log the sent-mail list as regular INFO lines."""
+    """Log the sent-mail list at DEBUG (the MAIL lines already show each mail)."""
     if not mails_sent_details:
         return
 
-    print_config_info(f"Sent emails ({len(mails_sent_details)}):")
+    print_debug(f"Sent emails ({len(mails_sent_details)}):")
     for index, (alert_id, ip, scenario, recipient) in enumerate(mails_sent_details[:limit], start=1):
-        print_config_info(f"  {index}. Alert #{alert_id} | {ip} | {scenario} | Recipients: {recipient}")
+        print_debug(f"  {index}. Alert #{alert_id} | {ip} | {scenario} | Recipients: {recipient}")
 
     remaining = len(mails_sent_details) - limit
     if remaining > 0:
-        print_config_info(f"  ... {remaining} more entr{'y' if remaining == 1 else 'ies'} not shown")
+        print_debug(f"  ... {remaining} more entr{'y' if remaining == 1 else 'ies'} not shown")
 
 
 def print_detailed_summary(
@@ -936,7 +924,7 @@ def _run_metrics_snapshot(hostname: str) -> int:
     if not METRICS_ENABLED:
         return 0
     try:
-        decisions = get_crowdsec_decisions()
+        decisions = get_crowdsec_decisions(quiet=True)
     except Exception as exc:
         print_database_error(0, f"Failed to fetch decisions for metrics: {exc}")
         return 1
@@ -963,7 +951,7 @@ def _run_metrics_snapshot(hostname: str) -> int:
             )
         )
     try:
-        status = write_points(lines)
+        status = write_points(lines, quiet=True)
     except MetricsGateError as e:
         # Nothing was written: the snapshot is superseded by the next one.
         print_database_error(0, str(e))
@@ -977,8 +965,8 @@ def _metrics_outbox_is_saturated() -> bool:
     """True when the outbox is within 10% of METRICS_OUTBOX_MAX_ROWS.
 
     The threshold is what turns a deferred batch into a failed run. Below it the
-    points are merely waiting and the run is healthy; at it the next prune starts
-    dropping the oldest points, which is real data loss and has to be visible.
+    points are merely waiting and the run is healthy; at it only 10% headroom
+    remains, so a new batch may exceed the bound and cause pruning.
     With the bound disabled (0) the spool is unbounded, so it can never saturate.
     """
     if METRICS_OUTBOX_MAX_ROWS <= 0:
@@ -986,12 +974,14 @@ def _metrics_outbox_is_saturated() -> bool:
     return count_metric_points() >= int(METRICS_OUTBOX_MAX_ROWS * 0.9)
 
 
-def _early_exit_code() -> int:
+def _early_exit_code(stats: ProcessingStats) -> int:
     """Exit code for a run that ends before processing any alert.
 
     The outbox saturation escalation must hold on these paths too: a backend
     outage does not pause just because there is nothing new to report.
     """
+    if stats.metrics_errors:
+        return 1
     return 1 if METRICS_ENABLED and _metrics_outbox_is_saturated() else 0
 
 
@@ -1057,32 +1047,23 @@ def _run(started_at: str) -> int:
         stats.start_time = time.monotonic()
 
         print_config_info("Starting CrowdSec abuse mail export")
-        print_summary_header("DNS-BASED PROCESSING")
-        print_config_info(f"Reporting from: {hostname}")
-        print_config_info("Smart subnet deduplication")
-        print_config_info(f"IPv4 prefix length: /{IPV4_PREFIX_LENGTH}")
-        print_config_info(f"IPv6 prefix length: /{IPV6_PREFIX_LENGTH}")
-        print_config_info("DNS-based Abuse Contact DB queries")
-        print_config_info(f"DNS resolvers: {', '.join(get_active_nameservers()) or 'system'}")
-        print_config_info("Full IPv4/IPv6 Dual-Stack support")
-        print_config_info("Immediate database persistence")
-        print_config_info("Internal networks are automatically skipped")
-        print_config_info("X-ARF attachment included")
-
+        chunking = f"{MAIL_CHUNK_SIZE} mails per chunk" + (
+            f", {SLEEP_BETWEEN_CHUNKS}s between chunks" if SLEEP_BETWEEN_CHUNKS > 0 else ""
+        )
+        settings = [
+            f"reporting from {hostname}",
+            f"DNS resolvers {', '.join(get_active_nameservers()) or 'system'}",
+            f"prefix /{IPV4_PREFIX_LENGTH} (IPv4), /{IPV6_PREFIX_LENGTH} (IPv6)",
+        ]
         if MAX_ALERTS_PER_RUN:
-            print_config_info(f"Alert limit: {MAX_ALERTS_PER_RUN} per run")
+            settings.append(f"alert limit {MAX_ALERTS_PER_RUN} per run")
         if SLEEP_BETWEEN_MAILS > 0:
-            print_config_info(f"Rate limiting: {SLEEP_BETWEEN_MAILS}s between emails")
+            settings.append(f"rate limit {SLEEP_BETWEEN_MAILS}s between emails")
         if MAIL_CHUNK_SIZE > 0:
-            chunk_msg = f"Chunked sending: {MAIL_CHUNK_SIZE} mails per chunk"
-            if SLEEP_BETWEEN_CHUNKS > 0:
-                chunk_msg += f", {SLEEP_BETWEEN_CHUNKS}s between chunks"
-            print_config_info(chunk_msg)
-        print_config_info("Idempotent delivery (no duplicate reports in normal operation)")
+            settings.append(f"chunked sending {chunking}")
         if METRICS_ENABLED:
-            print_config_info(f"Metrics backend: {METRICS_BACKEND} (SQLite keeps control data only)")
-
-        print_config_info("============================")
+            settings.append(f"metrics backend {METRICS_BACKEND}")
+        print_config_info(f"Settings: {'; '.join(settings)}")
 
         # GeoIP: ensure both DBs are present and fresh before processing.
         # A refresh failure with an already-cached DB is non-fatal (reports
@@ -1094,7 +1075,7 @@ def _run(started_at: str) -> int:
 
             _geo_result = ensure_geoip_databases()
             if _geo_result.get("city") and _geo_result.get("asn"):
-                print_config_info("GeoIP databases ready (City + ASN)")
+                print_debug("GeoIP databases ready (City + ASN)")
             else:
                 missing = [k for k, v in _geo_result.items() if not v]
                 print_log(
@@ -1103,7 +1084,7 @@ def _run(started_at: str) -> int:
                     f"GeoIP databases unavailable: {', '.join(missing)} — enrichment skipped",
                 )
         except GeoIPUnavailableError as e:
-            print_config_info(f"ERROR: {e}")
+            print_error(f"{e}")
             return 1
         except Exception as e:
             # Also fatal. A refresh failure that still has a usable cached DB is
@@ -1111,7 +1092,7 @@ def _run(started_at: str) -> int:
             # anything arriving at this point (permission denied on the data
             # dir, a stale lock) means enrichment is genuinely broken. Warning
             # and continuing would bypass the fail-closed contract above.
-            print_config_info(f"ERROR: GeoIP initialization failed: {e}")
+            print_error(f"GeoIP initialization failed: {e}")
             return 1
 
         # Deliberately after the GeoIP step: the provider names come from the
@@ -1181,17 +1162,17 @@ def _run(started_at: str) -> int:
         try:
             decisions = get_crowdsec_decisions()
         except CrowdSecFetchError as e:
-            print_config_info(f"ERROR: Could not fetch CrowdSec decisions: {e}")
+            print_error(f"Could not fetch CrowdSec decisions: {e}")
             if e.hint:
                 print_config_info(f"Hint: {e.hint}")
             return 1
         except Exception as e:
-            print_config_info(f"ERROR: Unexpected error while fetching CrowdSec decisions: {e}")
+            print_error(f"Unexpected error while fetching CrowdSec decisions: {e}")
             return 1
 
         if not decisions:
             print_config_info("CrowdSec returned no decisions — nothing to report")
-            return _early_exit_code()
+            return _early_exit_code(stats)
         print_debug(f"Retrieved {len(decisions)} alerts from CrowdSec")
         print_alert_overview_table(decisions)
 
@@ -1227,7 +1208,7 @@ def _run(started_at: str) -> int:
             if stats.skipped_due_to_limit:
                 print_stat_item("Skipped due to limit", str(stats.skipped_due_to_limit))
             print_config_info("Processing completed successfully!")
-            return _early_exit_code()
+            return _early_exit_code(stats)
 
         print_config_info(f"After filtering: {len(alerts_to_process)} alerts require processing")
 

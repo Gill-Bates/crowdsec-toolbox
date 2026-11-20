@@ -13,5 +13,5 @@
 [dependency-groups]
 # Pinned, unlike the tools' runtime groups, so CI resolves the same site builder.
 default = [
-    "zensical==0.1.0",
+    "zensical==0.1.2",
 ]

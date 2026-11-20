@@ -54,6 +54,15 @@ def test_alert_line_has_escaped_tags_and_utc_nanosecond_timestamp():
     assert line.endswith(" 1767323045000000000")
 
 
+@pytest.mark.parametrize("events_count", ["abc", True, 1.5, None])
+def test_non_integer_events_count_is_dropped_not_written_raw(events_count):
+    # A raw non-integer field value would make the whole ILP batch invalid; the point keeps its other fields.
+    line = format_influxdb_line_protocol({**ALERT, "events_count": events_count}, "h")
+    assert "events_count=" not in line
+    assert "message=" in line
+    assert " events_count=7," in format_influxdb_line_protocol({**ALERT, "events_count": 7}, "h")
+
+
 @pytest.mark.parametrize("start_at", [None, "", "not a date"])
 def test_alert_without_parseable_start_is_skipped(start_at):
     assert format_influxdb_line_protocol({**ALERT, "start_at": start_at}, "h") is None
@@ -71,9 +80,8 @@ def run_main(monkeypatch, isolated_main, sent_payloads):
 
 
 def test_main_exports_valid_alerts_but_exits_1_when_one_has_no_timestamp(run_main):
-    good = {"id": 1, "start_at": "2026-01-02T03:04:05Z"}
     bad = {"id": 2, "start_at": None}
-    code, sent = run_main([good, bad])
+    code, sent = run_main([GOOD, bad])
     assert code == 1
     assert len(sent) == 1
     assert sent[0].count("\n") == 0

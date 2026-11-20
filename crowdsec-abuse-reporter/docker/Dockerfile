@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # Always supplied via `docker buildx build --build-arg ...` (see the root setup.conf);
 # no defaults, this image is never built without them.

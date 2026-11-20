@@ -205,7 +205,11 @@ printf '%s\n' "${healthcheck_max_age}" > "${HEALTH_LIMITS_FILE}.tmp"
 mv -f "${HEALTH_LIMITS_FILE}.tmp" "${HEALTH_LIMITS_FILE}"
 # Events older than the gap between two runs are lost unless EVENTS_SINCE covers
 # interval + jitter. Warn only; app/config.py rejects an invalid format.
-if [ "${EVENTS_ENABLED:-false}" = "true" ] && [[ "${EVENTS_SINCE:-30m}" =~ ^([0-9]+)([smhd])$ ]]; then
+# Same reading as app/config.py _env_bool: surrounding blanks and case are ignored.
+events_enabled="${EVENTS_ENABLED:-false}"
+events_enabled="${events_enabled#"${events_enabled%%[![:space:]]*}"}"
+events_enabled="${events_enabled%"${events_enabled##*[![:space:]]}"}"
+if [ "${events_enabled,,}" = "true" ] && [[ "${EVENTS_SINCE:-30m}" =~ ^([0-9]+)([smhd])$ ]]; then
     case "${BASH_REMATCH[2]}" in
         s) events_unit=1 ;;
         m) events_unit=60 ;;

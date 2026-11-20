@@ -19,13 +19,14 @@ banner are support modules.
 ## Key Files
 | File | Description |
 |------|-------------|
-| `__init__.py` | Empty package marker; contains only a comment, no re-exports. The `banner` string lives in `main.py` |
+| `__init__.py` | Empty package marker; contains only a comment, no re-exports |
+| `banner.py` | `print_banner()`, the startup banner (shared copy, see below) |
 | `config.py` | Reads `settings.env` via a small stdlib parser and exposes module-level constants |
 | `crowdsec.py` | `httpx` LAPI client: credentials resolution, `/watchers/login` token, bounded retry, `CrowdSecFetchError`, hostname, abuse-contact **stub**; `/alerts?has_active_decision` for the alert export and `/alerts?since` plus a per-alert `/alerts/{id}` fallback for the event export |
 | `events.py` | Per-event export: flattens each alert's `events[].meta` list and builds line protocol for `EVENTS_TABLE`; reuses the escaping helpers from `influxdb.py` |
 | `influxdb.py` | `TLS12Adapter`, hardened `requests` session, line-protocol escaping/formatting (shared with QuestDB) and send |
 | `questdb.py` | `httpx.Client` POST of the same line protocol to QuestDB's ILP-over-HTTP `/write` endpoint; bearer token or basic auth, no TLS hardening |
-| `logger.py` | Coloured console helpers (`print_info`/`success`/`warning`/`error`), gated by `config.LOG_LEVEL` |
+| `logger.py` | Console helpers (`print_info`/`success`/`warning`/`error`) and `setup_logging()`, gated by `config.LOG_LEVEL` |
 | `version.py` | Reads `APP_VERSION` / `GIT_SHA` (build args) for the startup banner |
 | `kbinterrupt.py` | SIGINT/SIGTERM handlers for a clean shutdown |
 
@@ -53,11 +54,9 @@ None.
   the InfluxDB endpoint. `questdb.py` reuses only
   `format_influxdb_line_protocol()` / `escape_influxdb_value()` /
   `escape_influxdb_string_field()` from `influxdb.py`, since ILP is the same
-  wire format for both backends. `httpx` is declared in the
-  `default` group specifically for this module.
+  wire format for both backends.
 - `ensure_questdb_table()` creates each QuestDB table with its dedup keys before
-  the first write. ILP-over-HTTP `/write` auto-creates additional columns; TTL
-  and the optional downsampling rollup view are post-write DDL.
+  the first write. ILP-over-HTTP `/write` auto-creates additional columns.
 - **No local state.** There is no persisted cursor and no local database
   file; the exporter re-sends everything each run and the backend
   deduplicates (series + timestamp overwrite for InfluxDB, `DEDUP ENABLE
@@ -77,14 +76,14 @@ None.
   dropped, since line protocol cannot express them.
 - QuestDB retention, deduplication and downsampling are declared from
   `questdb.py` (`ensure_questdb_table()`, `ensure_questdb_ttl()`,
-  `ensure_questdb_downsampling()`) via the `/exec` SQL endpoint. The table gate
+  `ensure_questdb_downsampling()`, `apply_questdb_retention()`: rollup, raw TTL, then state) via the `/exec` SQL endpoint. The table gate
   runs before the first write and a failure blocks it (cached per table and key
   set per process; only transport errors, 5xx and 429 are retried). TTL and
   downsampling run after the write, which is already stored. Failed retention
   or rollup setup makes `main()` exit `1` without resending. A rollup that is
   still refreshing keeps the full raw TTL and does not fail the run.
 - `ensure_questdb_downsampling()` returns a `DownsamplingResult` containing the
-  raw table TTL and setup status. `main._send()` applies that raw TTL; a failed
+  raw table TTL and setup status. `apply_questdb_retention()` applies that raw TTL; a failed
   view TTL or rollup verification returns the full `QUESTDB_TTL`, so the raw
   window is not shortened until the rollup view is valid and caught up.
 - A `RollupSpec`'s `dimensions` must stay a subset of that table's dedup keys:
@@ -130,3 +129,6 @@ gate; a real run needs CrowdSec and the configured metrics backend reachable.
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
 
 - **Log layout.** `logger.py` renders `<UTC time> | LEVEL | <source> | message` on a single line (see `docs/reference/log-format.md`); WARNING and above go to stderr, colour only on a TTY with `NO_COLOR` unset. The two no-data messages use `💤`; do not add multi-line output or summary tables.
+
+### Code shared with the abuse reporter
+`logger.py` (formatting core and `setup_logging`), `banner.py` (`print_banner`), `version.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.

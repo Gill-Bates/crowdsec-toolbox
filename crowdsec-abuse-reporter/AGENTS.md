@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-18 | Updated: 2026-11-18 -->
+<!-- Generated: 2026-09-18 | Updated: 2026-11-19 -->
 
 # crowdsec-abuse-reporter
 
@@ -7,14 +7,13 @@
 Unattended collector/reporter that turns CrowdSec bans into abuse reports. It
 fetches decisions from the CrowdSec Local API (LAPI), enriches each source IP
 with GeoIP data, resolves the responsible abuse contact via the Abusix DNS
-contact database, and emails an X-ARF v4 report to that contact. Every report
+contact database, and emails an X-ARF v4.2.0 report to that contact. Every report
 is recorded in SQLite so a ban is reported **at most once**.
 
 It can optionally export report outcomes to InfluxDB or QuestDB while SQLite
 retains the at-most-once control data and spools not-yet-acknowledged metrics
 points in `metrics_outbox`, so an unreachable backend defers points instead of
-losing them. It uses the `app/` package layout with
-a top-level `run.py` shim.
+losing them.
 
 ## Key Files
 | File | Description |
@@ -27,8 +26,9 @@ a top-level `run.py` shim.
 | `.gitignore` | Excludes `/data/` only (the repo-root `.gitignore` covers `*.db*`, `settings*.env`, `BUILD_INFO`) |
 
 Runtime deps (dnspython, geoip2, httpx, pinned) are the
-`default` group in this tool's own `pyproject.toml`; there is no
-`requirements.txt` and no root manifest.
+`default` group in this tool's own `pyproject.toml`; the `dev` group adds
+pytest, ruff and `jsonschema` (X-ARF schema tests only, never in the image).
+There is no `requirements.txt` and no root manifest.
 
 ## Subdirectories
 | Directory | Purpose |
@@ -36,21 +36,22 @@ Runtime deps (dnspython, geoip2, httpx, pinned) are the
 | `app/` | Application package — all Python logic (see `app/AGENTS.md`) |
 | `tests/` | unittest suite run via pytest (see `tests/AGENTS.md`) |
 | `docker/` | Image, compose, entrypoint, env template (see `docker/AGENTS.md`) |
+| `grafana/` | QuestDB dashboard (`dashboard_questdb.json`); the InfluxDB dashboard is still a `.todo` placeholder |
 | `data/` | Gitignored runtime state: GeoLite2 MMDBs, heartbeat files, DB |
 
 ## For AI Agents
 
 ### Working In This Directory
-- Python 3.13+ only. Modern idioms: `pathlib`, `|` unions, `StrEnum`,
+- Python 3.14+ only. Modern idioms: `pathlib`, `|` unions, `StrEnum`,
   `typing.Self`, timezone-aware datetimes. No `typing.Optional`, no `os.path`,
-  no pre-3.13 compatibility shims.
+  no pre-3.14 compatibility shims.
 - Scope changes to this project. Do not refactor across the toolbox and do not
   extract shared packages — `logger.py`, `config.py` and friends are duplicated
   across projects on purpose so each stays independently deployable.
 - Comments and docstrings in English; user-facing strings are frequently German
   and must keep their wording and non-ASCII characters.
 - `docker/settings.env.example` is the single tracked template and must list
-  every supported variable; there is no project-root copy any more.
+  every supported variable; there is no project-root copy.
 - Never hardcode or log secrets (SMTP password, LAPI password).
 - `settings.env` / `settings-*.env` hold real SMTP and LAPI credentials. They
   are gitignored and dockerignored; never commit them or copy their values
@@ -88,14 +89,9 @@ cd crowdsec-abuse-reporter && python -m pytest
 ```
 There is no typechecker in this repository — do not add mypy or pyright and do
 not claim a typecheck ran. Ruff is the single linter; the shared rules are in
-the root `ruff.toml` (this tool's `[tool.ruff]` extends it) and ignore `BLE001`, since the broad `except Exception` handlers here are
-deliberate (see Common Patterns). Do not narrow that ignore or add new
-findings.
-
-Known environment-dependent failure:
-`tests/test_hardening.py::EntrypointHardeningTest::test_entrypoint_ignores_run_jitter`
-fails on hosts without `gosu` because it executes the container entrypoint
-directly. That is environmental, not a code defect.
+the root `ruff.toml` (this tool's `[tool.ruff]` extends it) and ignore
+`BLE001`, since the broad `except Exception` handlers here are deliberate (see
+Common Patterns). Do not narrow that ignore or add new findings.
 
 ### Common Patterns
 - Broad `except Exception` at collector and outer-loop boundaries is deliberate

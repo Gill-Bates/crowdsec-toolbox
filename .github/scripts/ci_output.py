@@ -6,12 +6,11 @@
 
 """Shared header and level output for the CI tools in this directory."""
 
-from __future__ import annotations
-
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 REPO_URL = "https://github.com/Gill-Bates/crowdsec-toolbox"
@@ -58,7 +57,7 @@ def write_outputs(values: dict[str, str]) -> None:
         print(line)
 
 
-def _git(script: Path, *args: str) -> str | None:
+def git(script: Path, *args: str) -> str | None:
     """Return git's answer for the script's directory, or None without git or a checkout."""
     try:
         result = subprocess.run(
@@ -68,32 +67,39 @@ def _git(script: Path, *args: str) -> str | None:
             timeout=30,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
 
 
-def _commit(script: Path) -> str:
-    commit = _git(script, "rev-parse", "HEAD")
-    if commit:
-        return commit
+def commit(script: Path) -> str:
+    sha = git(script, "rev-parse", "HEAD")
+    if sha:
+        return sha
     for name in COMMIT_VARIABLES:
         if os.environ.get(name):
             return f"{os.environ[name]} (from {name})"
     return "unknown"
 
 
-def print_header(script: Path, description: str, author: str, help_url: str) -> None:
-    """Print the script header to stderr before the script parses its arguments.
+def print_header(
+    script: Path,
+    description: str,
+    author: str,
+    help_url: str,
+    emit: Callable[[str, str], None] = log,
+) -> None:
+    """Print the script header (to stderr unless `emit` says otherwise) before argument parsing.
 
-    It reads only git metadata and the commit variables in COMMIT_VARIABLES.
+    It reads only git metadata and the commit variables in COMMIT_VARIABLES; the default
+    `emit` (log) also reads GITHUB_ACTIONS to pick the line format.
     """
-    source = _git(script, "ls-files", "--full-name", "--", script.name) or "unknown"
-    log("info", f"Script: {script.name}")
-    log("info", f"Description: {description}")
-    log("info", f"Version: {_commit(script)}")
-    log("info", f"Source: {source}")
-    log("info", f"Author: {author}")
-    log("info", f"Help: {help_url}")
+    source = git(script, "ls-files", "--full-name", "--", script.name) or "unknown"
+    emit("info", f"Script: {script.name}")
+    emit("info", f"Description: {description}")
+    emit("info", f"Version: {commit(script)}")
+    emit("info", f"Source: {source}")
+    emit("info", f"Author: {author}")
+    emit("info", f"Help: {help_url}")

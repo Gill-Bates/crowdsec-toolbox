@@ -4,7 +4,7 @@ Both tools and both container entrypoints write one line per event in the same
 layout:
 
 ```text
-2026-11-19 12:13:50 UTC | INFO     | crowdsec_abuse | Retrieved 12 alerts from CrowdSec LAPI
+2026-11-19 12:13:50 UTC | INFO     | crowdsec_abuse | Retrieved 12 alerts from CrowdSec LAPI in 22.1s
 ```
 
 | Column | Content |
@@ -12,7 +12,7 @@ layout:
 | Time | UTC, `%Y-%m-%d %H:%M:%S UTC`; there is no timezone setting |
 | Level | `DEBUG`, `INFO`, `WARNING`, `ERROR`, padded to 8 characters. The abuse reporter adds the domain values `MAIL`, `DNS` and `PROCESS`; `CRITICAL` is logged as `ERROR` |
 | Source | `crowdsec_abuse` (reporter), `crowdsec_metrics` (exporter); the entrypoints use `entrypoint`, `heartbeat` and `metrics` |
-| Message | One line: `\r` and `\n` are escaped, and a traceback follows after ` | ` on the same line |
+| Message | One line, and a traceback follows after ` | ` on the same line. Both tools escape `\r`, `\n`, `\t`, other control characters (as `\xNN`) and the Unicode line/paragraph separators (as `\u2028`/`\u2029`) |
 
 ## Streams and colour
 

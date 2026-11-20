@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,8 +22,9 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     Returns None for blank lines, comments, and lines without a valid KEY.
     Supports an optional leading 'export ' prefix and strips a single layer of
     matching single or double quotes from the value. Unquoted values have
-    surrounding whitespace stripped (python-dotenv semantics); quoted values keep their contents byte-for-byte, so a
-    password with leading/trailing spaces survives when quoted.
+    surrounding whitespace stripped (python-dotenv semantics); quoted values
+    keep their contents byte-for-byte, so a password with leading/trailing
+    spaces survives when quoted.
     """
     stripped = line.strip()
     if not stripped or stripped.startswith("#"):
@@ -36,7 +38,7 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
 
     key, _, value = stripped.partition("=")
     key = key.strip()
-    if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
         return None
 
     value = value.strip()
@@ -78,7 +80,7 @@ load_settings_env(SETTINGS_PATH, override=False)
 
 
 def _config_line(level: str, message: str) -> str:
-    """Format a config message in the log layout (the logger imports this module)."""
+    """Format a config message in the log layout without importing the logger."""
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     return f"{now} | {level:<8} | crowdsec_abuse | {message}"
 
@@ -94,11 +96,17 @@ def _fail_clean(message: str) -> None:
     raise SystemExit(1)
 
 
+def _reject_control_chars(name: str, value: str) -> None:
+    """Fail startup when a credential holds CR/LF/NUL, which cannot appear in a header or AUTH string."""
+    if any(ch in value for ch in "\r\n\x00"):
+        _fail_clean(f"{name} contains invalid control characters (CR/LF/NUL)")
+
+
 def _get_float_env(name: str, default: float, *, minimum: float = 0.0) -> float:
     """Read a float env var with validation and fallback logging."""
     try:
         value = float(os.getenv(name, str(default)).strip())
-    except (ValueError, TypeError, AttributeError):
+    except ValueError:
         _log_config_warning(f"Invalid {name}, using default {default}")
         return default
 
@@ -120,7 +128,7 @@ def _get_int_env(name: str, default: int, *, minimum: int = 0) -> int:
     """Read an int env var with validation and fallback logging."""
     try:
         value = int(os.getenv(name, str(default)).strip())
-    except (ValueError, TypeError, AttributeError):
+    except ValueError:
         _log_config_warning(f"Invalid {name}, using default {default}")
         return default
 
@@ -163,13 +171,11 @@ def normalize_asn(value: object) -> str:
     return match.group(1) if match else ""
 
 
-_raw_smtp_password = os.getenv("SMTP_PASSWORD", "")
 # Do not normalize the secret: a password may legitimately contain leading or
 # trailing spaces, and silently stripping them causes confusing auth failures.
 # Only reject characters that cannot appear in a valid SMTP AUTH credential.
-if any(ch in _raw_smtp_password for ch in "\r\n\x00"):
-    _fail_clean("SMTP_PASSWORD contains invalid control characters (CR/LF/NUL)")
-SMTP_PASSWORD = _raw_smtp_password
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+_reject_control_chars("SMTP_PASSWORD", SMTP_PASSWORD)
 
 
 HOSTNAME_OVERRIDE = os.getenv("HOSTNAME_OVERRIDE", "")
@@ -204,12 +210,11 @@ CROWDSEC_LAPI_MACHINE_ID = os.getenv("CROWDSEC_LAPI_MACHINE_ID", "").strip()
 # legitimately carry edge whitespace, and silently trimming it causes permanent
 # auth failures in unattended runs. Only reject what cannot appear in a header.
 CROWDSEC_LAPI_PASSWORD = os.getenv("CROWDSEC_LAPI_PASSWORD", "")
-if any(ch in CROWDSEC_LAPI_PASSWORD for ch in "\r\n\x00"):
-    _fail_clean("CROWDSEC_LAPI_PASSWORD contains invalid control characters (CR/LF/NUL)")
+_reject_control_chars("CROWDSEC_LAPI_PASSWORD", CROWDSEC_LAPI_PASSWORD)
 CROWDSEC_LAPI_CREDENTIALS_PATH = os.getenv(
     "CROWDSEC_LAPI_CREDENTIALS_PATH", "/etc/crowdsec/local_api_credentials.yaml"
 ).strip()
-CROWDSEC_LAPI_VERIFY_TLS = _get_bool_env("CROWDSEC_LAPI_VERIFY_TLS", True)
+CROWDSEC_LAPI_VALIDATE_CERTIFICATE = _get_bool_env("CROWDSEC_LAPI_VALIDATE_CERTIFICATE", True)
 CROWDSEC_LAPI_TIMEOUT = _get_float_env("CROWDSEC_LAPI_TIMEOUT", 30.0, minimum=1.0)
 
 # The LAPI alert *list* endpoint returns summary alerts without events/enrichment.
@@ -232,9 +237,13 @@ def _get_port_env(name: str, default: int) -> int:
 
 SMTP_PORT = _get_port_env("SMTP_PORT", 587)
 SMTP_USE_TLS = _get_bool_env("SMTP_USE_TLS", True)
-SMTP_VERIFY_SSL = _get_bool_env("SMTP_VERIFY_SSL", True)
+SMTP_VALIDATE_CERTIFICATE = _get_bool_env("SMTP_VALIDATE_CERTIFICATE", True)
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
-SMTP_SENDER = os.getenv("SMTP_SENDER", "abuse-reporter@example.com")
+SMTP_SENDER = os.getenv("SMTP_SENDER", "abuse-reporter@example.com").strip()
+# Same shape as app.abuse.EMAIL_REGEX (not importable here: abuse imports config). It is the
+# envelope sender and feeds the X-ARF reporter contact/domain, so "Name <addr>" is not valid.
+if not re.fullmatch(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", SMTP_SENDER):
+    _fail_clean(f"SMTP_SENDER must be a plain e-mail address (user@domain.tld), got {SMTP_SENDER!r}")
 
 SLEEP_BETWEEN_MAILS = _get_int_env("SLEEP_BETWEEN_MAILS", 0)
 
@@ -308,12 +317,13 @@ QUESTDB_USERNAME = os.getenv("QUESTDB_USERNAME", "")
 QUESTDB_PASSWORD = os.getenv("QUESTDB_PASSWORD", "")
 
 _TTL_UNITS = {"h": "HOURS", "d": "DAYS", "w": "WEEKS", "M": "MONTHS", "y": "YEARS"}
+# Months and years are approximated; the day count only compares a profile's raw
+# window against the configured total retention, never computes a boundary.
+_TTL_UNIT_HOURS = {"h": 1, "d": 24, "w": 24 * 7, "M": 24 * 30, "y": 24 * 365}
 
 
-def parse_questdb_ttl(raw: str) -> str | None:
-    """Turn '365d' / '12w' / '1y' / '48h' / '6M' into QuestDB's 'TTL' clause
-    value (e.g. '365 DAYS'). '', '0' or '0d' disable the TTL (None).
-    Raises ValueError on anything else."""
+def _split_questdb_ttl(raw: str) -> tuple[int, str] | None:
+    """Split '365d' into (365, 'd'), or None when the TTL is disabled."""
     value = raw.strip()
     if value in {"", "0"}:
         return None
@@ -323,23 +333,71 @@ def parse_questdb_ttl(raw: str) -> str | None:
     amount = int(match.group(1))
     if amount == 0:
         return None
-    return f"{amount} {_TTL_UNITS[match.group(2)]}"
+    return amount, match.group(2)
 
 
-# Retention applied to the QuestDB table after each write (ALTER TABLE ... SET
-# TTL). Default 365d; "0" disables.
+def parse_questdb_ttl(raw: str) -> str | None:
+    """Turn '365d' / '12w' / '1y' / '48h' / '6M' into QuestDB's 'TTL' clause
+    value (e.g. '365 DAYS'). '', '0' or '0d' disable the TTL (None).
+    Raises ValueError on anything else."""
+    parsed = _split_questdb_ttl(raw)
+    if parsed is None:
+        return None
+    amount, unit = parsed
+    return f"{amount} {_TTL_UNITS[unit]}"
+
+
+def questdb_ttl_days(raw: str) -> int | None:
+    """Whole days covered by a QuestDB TTL string, or None when it is disabled."""
+    parsed = _split_questdb_ttl(raw)
+    if parsed is None:
+        return None
+    amount, unit = parsed
+    return amount * _TTL_UNIT_HOURS[unit] // 24
+
+
+# Total retention, set as TTL on the QuestDB table (and on the rollup view when
+# downsampling is on) after each write. Default 365d; "0" lifts the TTLs.
+_QUESTDB_TTL_RAW = os.getenv("QUESTDB_TTL", "365d")
 try:
-    QUESTDB_TTL = parse_questdb_ttl(os.getenv("QUESTDB_TTL", "365d"))
+    QUESTDB_TTL = parse_questdb_ttl(_QUESTDB_TTL_RAW)
+    QUESTDB_TTL_DAYS = questdb_ttl_days(_QUESTDB_TTL_RAW)
 except ValueError as _e:
     _fail_clean(str(_e))
+
+
+# QuestDB downsampling: same profiles as crowdsec-metrics-exporter. A profile
+# keeps full-resolution rows for a short window and the long-term history in a
+# materialized rollup view, which then carries QUESTDB_TTL.
+@dataclass(frozen=True)
+class QuestDBDownsamplingProfile:
+    raw_retention_days: int
+    rollup_interval: str
+
+
+QUESTDB_DOWNSAMPLING_PROFILES: dict[str, QuestDBDownsamplingProfile] = {
+    "low": QuestDBDownsamplingProfile(raw_retention_days=90, rollup_interval="1h"),
+    "medium": QuestDBDownsamplingProfile(raw_retention_days=30, rollup_interval="1h"),
+    "high": QuestDBDownsamplingProfile(raw_retention_days=7, rollup_interval="6h"),
+}
+# Bumping this changes the rollup view name, so a definition change is additive.
+QUESTDB_DOWNSAMPLING_SCHEMA_VERSION = 1
+QUESTDB_DOWNSAMPLING_STATE_TABLE = "_crowdsec_downsampling"
+QUESTDB_DOWNSAMPLING_DISABLED_PROFILE = "disabled"
+
+QUESTDB_DOWNSAMPLING = os.getenv("QUESTDB_DOWNSAMPLING", "").strip().lower()
+if QUESTDB_DOWNSAMPLING and QUESTDB_DOWNSAMPLING not in QUESTDB_DOWNSAMPLING_PROFILES:
+    _fail_clean(
+        "QUESTDB_DOWNSAMPLING must be empty or one of "
+        f"{', '.join(sorted(QUESTDB_DOWNSAMPLING_PROFILES))}, got {QUESTDB_DOWNSAMPLING!r}"
+    )
 
 for _name, _secret in (
     ("INFLUXDB_TOKEN", INFLUXDB_TOKEN),
     ("QUESTDB_TOKEN", QUESTDB_TOKEN),
     ("QUESTDB_PASSWORD", QUESTDB_PASSWORD),
 ):
-    if any(ch in _secret for ch in "\r\n\x00"):
-        _fail_clean(f"{_name} contains invalid control characters (CR/LF/NUL)")
+    _reject_control_chars(_name, _secret)
 
 REQUEST_TIMEOUT = _get_float_env("REQUEST_TIMEOUT", 30.0, minimum=1.0)
 

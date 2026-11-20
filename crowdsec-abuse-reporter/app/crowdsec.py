@@ -39,7 +39,7 @@ from .config import (
     CROWDSEC_LAPI_PASSWORD,
     CROWDSEC_LAPI_TIMEOUT,
     CROWDSEC_LAPI_URL,
-    CROWDSEC_LAPI_VERIFY_TLS,
+    CROWDSEC_LAPI_VALIDATE_CERTIFICATE,
     PUBLIC_IP_DETECTION,
     PUBLIC_IP_TIMEOUT,
 )
@@ -61,8 +61,6 @@ class CrowdSecFetchError(Exception):
 
 
 GOOGLE_DNS_IP = "8.8.8.8"
-MAX_RETRIES = 3
-DEFAULT_TIMEOUT = 30
 IP_DETECTION_TIMEOUT = 5
 DEFAULT_ALERT_FETCH_LIMIT = 10_000
 # Hard ceiling for the escalating alert fetch; bounds memory and response size.
@@ -137,7 +135,7 @@ def _build_lapi_client() -> httpx.Client:
     return httpx.Client(
         base_url=_get_lapi_base_url(),
         timeout=CROWDSEC_LAPI_TIMEOUT,
-        verify=CROWDSEC_LAPI_VERIFY_TLS,
+        verify=CROWDSEC_LAPI_VALIDATE_CERTIFICATE,
         headers={"Accept": "application/json"},
     )
 
@@ -148,6 +146,12 @@ def _format_lapi_auth_hint() -> str:
         "Verify that `CROWDSEC_LAPI_MACHINE_ID` and `CROWDSEC_LAPI_PASSWORD` "
         "match the CrowdSec watcher credentials. " + LAPI_CREDENTIALS_HINT
     )
+
+
+def _auth_rejected(prefix: str, status_code: int) -> CrowdSecFetchError:
+    """Build the error for a 401/403 answer, with the credentials hint."""
+    label = "Unauthorized" if status_code == 401 else "Forbidden"
+    return CrowdSecFetchError(f"{prefix} with HTTP {status_code} ({label}).", hint=_format_lapi_auth_hint())
 
 
 _RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -165,9 +169,18 @@ def _request_with_retry(  # noqa: RET503 the loop always returns or raises
     """
     delay = 1.0
     for attempt in range(1, _LAPI_MAX_ATTEMPTS + 1):
+        started = time.monotonic()
         try:
             response = client.request(method, url, **kwargs)
             response.raise_for_status()
+            logger.debug(
+                "LAPI %s %s -> %d in %.2fs, %d bytes",
+                method,
+                url,
+                response.status_code,
+                time.monotonic() - started,
+                len(response.content),
+            )
             return response
         except httpx.HTTPStatusError as e:
             if e.response.status_code not in _RETRY_STATUS_CODES:
@@ -204,28 +217,19 @@ def _get_lapi_token(client: httpx.Client) -> str:
             f"{CROWDSEC_LAPI_CREDENTIALS_PATH}.",
             hint=_format_lapi_auth_hint(),
         )
-
     try:
         response = _request_with_retry(
             client,
             "POST",
             "/watchers/login",
-            json={
-                "machine_id": machine_id,
-                "password": password,
-                "scenarios": [],
-            },
+            json={"machine_id": machine_id, "password": password, "scenarios": []},
         )
     except httpx.HTTPStatusError as e:
-        # Log the status only — the login response body can echo back
-        # credential-related or diagnostic data from this sensitive endpoint.
+        # Log the status only — the login response body of this sensitive
+        # endpoint can echo back credential-related diagnostics.
         status_code = e.response.status_code
         if status_code in (401, 403):
-            status_label = "Unauthorized" if status_code == 401 else "Forbidden"
-            raise CrowdSecFetchError(
-                f"LAPI authentication failed with HTTP {status_code} ({status_label}).",
-                hint=_format_lapi_auth_hint(),
-            ) from e
+            raise _auth_rejected("LAPI authentication failed", status_code) from e
         raise CrowdSecFetchError(f"LAPI authentication failed with HTTP {status_code}") from e
     except httpx.HTTPError as e:
         raise CrowdSecFetchError(f"LAPI authentication failed: {e}") from e
@@ -234,13 +238,8 @@ def _get_lapi_token(client: httpx.Client) -> str:
         payload = response.json()
     except ValueError as e:
         raise CrowdSecFetchError("LAPI authentication returned invalid JSON") from e
-
-    # A syntactically valid but unexpected payload (e.g. a JSON array) would
-    # otherwise raise AttributeError and abort the unattended run outside the
-    # CrowdSecFetchError path the caller handles.
     if not isinstance(payload, dict):
         raise CrowdSecFetchError("Unexpected LAPI authentication format (expected an object)")
-
     token = payload.get("token")
     if not token:
         raise CrowdSecFetchError("LAPI authentication response did not contain a token")
@@ -294,12 +293,7 @@ def _fetch_lapi_alert_page(client: httpx.Client, token: str, limit: int) -> list
         )
     except httpx.HTTPStatusError as e:
         if e.response.status_code in (401, 403):
-            status_code = e.response.status_code
-            status_label = "Unauthorized" if status_code == 401 else "Forbidden"
-            raise CrowdSecFetchError(
-                f"LAPI alerts fetch failed with HTTP {status_code} ({status_label}).",
-                hint=_format_lapi_auth_hint(),
-            ) from e
+            raise _auth_rejected("LAPI alerts fetch failed", e.response.status_code) from e
         raise CrowdSecFetchError(
             f"LAPI alerts fetch failed with HTTP {e.response.status_code}: {e.response.text[:300]}"
         ) from e
@@ -485,11 +479,7 @@ def get_node_ip() -> str:
 
 def _get_ip_from_ipv4_global() -> str:
     """Extract IPv4 address from global scope interfaces."""
-    success, output = _run_command(
-        ["ip", "-o", "-4", "addr", "show", "scope", "global"],
-        max_retries=1,
-        timeout=IP_DETECTION_TIMEOUT,
-    )
+    success, output = _run_command(["ip", "-o", "-4", "addr", "show", "scope", "global"])
 
     if success and output:
         ip_match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", output)
@@ -499,11 +489,7 @@ def _get_ip_from_ipv4_global() -> str:
 
 def _get_ip_from_ipv6_global() -> str:
     """Extract the first IPv6 address from global scope interfaces (best effort)."""
-    success, output = _run_command(
-        ["ip", "-o", "-6", "addr", "show", "scope", "global"],
-        max_retries=1,
-        timeout=IP_DETECTION_TIMEOUT,
-    )
+    success, output = _run_command(["ip", "-o", "-6", "addr", "show", "scope", "global"])
 
     if success and output:
         # Matches the hex:colon form only; zone IDs are not handled.
@@ -514,7 +500,7 @@ def _get_ip_from_ipv6_global() -> str:
 
 def _get_ip_from_hostname() -> str:
     """Extract IP address from hostname command output."""
-    success, output = _run_command(["hostname", "-I"], max_retries=1, timeout=IP_DETECTION_TIMEOUT)
+    success, output = _run_command(["hostname", "-I"])
 
     if success and output:
         ips = output.strip().split()
@@ -524,11 +510,7 @@ def _get_ip_from_hostname() -> str:
 
 def _get_ip_from_route() -> str:
     """Extract source IP from route to external destination."""
-    success, output = _run_command(
-        ["ip", "route", "get", GOOGLE_DNS_IP],
-        max_retries=1,
-        timeout=IP_DETECTION_TIMEOUT,
-    )
+    success, output = _run_command(["ip", "route", "get", GOOGLE_DNS_IP])
 
     if success and output:
         ip_match = re.search(r"src (\d+\.\d+\.\d+\.\d+)", output)
@@ -536,84 +518,39 @@ def _get_ip_from_route() -> str:
     return "unknown"
 
 
-def _run_command(
-    cmd: list[str], max_retries: int = MAX_RETRIES, timeout: int = DEFAULT_TIMEOUT
-) -> tuple[bool, str | None]:
-    """Run a system command, retrying timeouts and non-zero exits with backoff.
-
-    Args:
-        cmd: Command and arguments as list
-        max_retries: Total number of attempts
-        timeout: Per-attempt timeout in seconds
+def _run_command(cmd: list[str]) -> tuple[bool, str | None]:
+    """Run a system command once, bounded by IP_DETECTION_TIMEOUT.
 
     Returns:
         (True, stdout) on success, otherwise (False, error message).
     """
-    last_error = None
-
-    for attempt in range(max_retries):
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout,
-                encoding="utf-8",
-                errors="ignore",  # drop undecodable bytes; output is only regex-parsed
-            )
-            return True, result.stdout
-
-        except FileNotFoundError:
-            error_msg = f"Command not found: {cmd[0]}"
-            logger.error(error_msg)
-            return False, error_msg
-
-        except subprocess.TimeoutExpired:
-            error_msg = f"Command timed out after {timeout}s: {' '.join(cmd)}"
-            if attempt < max_retries - 1:
-                logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
-            else:
-                logger.error(f"Command failed after {max_retries} attempts due to timeout")
-            last_error = error_msg
-
-            if attempt < max_retries - 1:
-                retry_delay = 2 ** (attempt + 1)
-                logger.debug(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-            else:
-                return False, last_error
-
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command failed with exit code {e.returncode}: {' '.join(cmd)}"
-
-            # Use warning level for retryable errors, error for final failure
-            if attempt < max_retries - 1:
-                logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
-            else:
-                logger.error(error_msg)
-
-            if e.stderr:
-                error_level = logger.warning if attempt < max_retries - 1 else logger.error
-                error_level(f"stderr: {e.stderr.strip()}")
-
-            if e.stdout:
-                logger.debug(f"stdout: {e.stdout.strip()}")
-
-            last_error = error_msg
-
-            # Don't retry for command not found or permission errors
-            if e.returncode in [127, 126]:
-                return False, error_msg
-
-            if attempt < max_retries - 1:
-                retry_delay = 2 ** (attempt + 1)
-                logger.debug(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-            else:
-                return False, last_error
-
-    return False, last_error or f"All {max_retries} attempts failed"
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=IP_DETECTION_TIMEOUT,
+            encoding="utf-8",
+            errors="ignore",  # drop undecodable bytes; output is only regex-parsed
+        )
+    except FileNotFoundError:
+        error_msg = f"Command not found: {cmd[0]}"
+        logger.error(error_msg)
+        return False, error_msg
+    except subprocess.TimeoutExpired:
+        error_msg = f"Command timed out after {IP_DETECTION_TIMEOUT}s: {' '.join(cmd)}"
+        logger.error(error_msg)
+        return False, error_msg
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Command failed with exit code {e.returncode}: {' '.join(cmd)}"
+        logger.error(error_msg)
+        if e.stderr:
+            logger.error(f"stderr: {e.stderr.strip()}")
+        if e.stdout:
+            logger.debug(f"stdout: {e.stdout.strip()}")
+        return False, error_msg
+    return True, result.stdout
 
 
 def check_lapi_health() -> bool:
@@ -637,10 +574,14 @@ def check_lapi_health() -> bool:
         return False
 
 
-def get_crowdsec_alerts() -> list[dict[str, Any]]:
-    """Fetch active CrowdSec alerts through the Local API."""
+def get_crowdsec_alerts(*, quiet: bool = False) -> list[dict[str, Any]]:
+    """Fetch active CrowdSec alerts through the Local API; `quiet` logs the summary at DEBUG."""
+    started = time.monotonic()
     alerts = _fetch_lapi_alerts()
-    logger.info(f"Retrieved {len(alerts)} alerts from CrowdSec LAPI")
+    logger.log(
+        logging.DEBUG if quiet else logging.INFO,
+        f"Retrieved {len(alerts)} alerts from CrowdSec LAPI in {time.monotonic() - started:.1f}s",
+    )
     return alerts
 
 
@@ -745,13 +686,14 @@ def _extract_source_ip_from_alert_payload(alert: dict[str, Any]) -> str | None:
     return _source_ip_from_meta(alert)
 
 
-def get_crowdsec_decisions() -> list[dict[str, Any]]:
+def get_crowdsec_decisions(*, quiet: bool = False) -> list[dict[str, Any]]:
     """Derive reportable decisions from alerts with active decisions.
 
     Returns one enriched decision per non-CAPI ban, so a multi-IP alert yields
     several entries.
     """
-    alerts = get_crowdsec_alerts()
+    level = logging.DEBUG if quiet else logging.INFO
+    alerts = get_crowdsec_alerts(quiet=quiet)
     if not alerts:
         logger.info("CrowdSec returned no alerts with active decisions")
         return []
@@ -814,8 +756,7 @@ def get_crowdsec_decisions() -> list[dict[str, Any]]:
                 if normalized_source_ip:
                     if not ban_source.get("ip"):
                         ban_source["ip"] = normalized_source_ip
-                    if not ban_source.get("value"):
-                        ban_source["value"] = normalized_source_ip
+                    ban_source["value"] = normalized_source_ip
                     if not ban_source.get("scope"):
                         ban_source["scope"] = "Ip"
             decision["source"] = ban_source
@@ -842,7 +783,7 @@ def get_crowdsec_decisions() -> list[dict[str, Any]]:
             decisions.append(decision)
 
     if capi_skipped:
-        logger.info(f"Skipped {capi_skipped} CAPI (community) bans — not reported")
+        logger.log(level, f"Skipped {capi_skipped} CAPI (community) bans — not reported")
 
-    logger.info(f"Derived {len(decisions)} reportable decisions from {len(alerts)} active alerts")
+    logger.log(level, f"Derived {len(decisions)} reportable decisions from {len(alerts)} active alerts")
     return decisions

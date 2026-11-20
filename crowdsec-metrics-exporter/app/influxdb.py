@@ -97,7 +97,7 @@ def _coordinate(value: object, limit: float) -> float | None:
         return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return number if math.isfinite(number) and abs(number) <= limit else None
 
@@ -127,8 +127,10 @@ def format_influxdb_line_protocol(alert: dict, hostname: str, *, host: str | Non
     if host:
         tags["host"] = escape_influxdb_value(host)
 
+    events_count = alert.get("events_count", 0)
     fields = {
-        "events_count": alert.get("events_count", 0),
+        # A non-integer would make the whole batch invalid; omit the field instead.
+        "events_count": events_count if isinstance(events_count, int) and not isinstance(events_count, bool) else None,
         "latitude": _coordinate(alert.get("latitude"), 90.0),
         "longitude": _coordinate(alert.get("longitude"), 180.0),
         "message": escape_influxdb_string_field(alert.get("message", "")),
@@ -146,7 +148,7 @@ def format_influxdb_line_protocol(alert: dict, hostname: str, *, host: str | Non
             # Naive values are UTC, like in events.py; local time would skew the dedup key.
             parsed = parsed.replace(tzinfo=UTC)
         timestamp = int(parsed.timestamp() * 1e9)
-    except (ValueError, OverflowError):
+    except ValueError, OverflowError:
         print_warning(f"Skipping alert {alert.get('alert_id')!r}: no parseable start_at")
         return None
 
@@ -181,11 +183,11 @@ def send_to_influxdb(line_protocol_data: str) -> bool:
 
     session = None
     try:
-        print_info(f"Writing data to InfluxDB at {url} with hardened TLS")
-
         if INFLUXDB_USE_HTTPS:
+            print_info(f"Writing data to InfluxDB at {url} with hardened TLS")
             session = create_secure_session()
         else:
+            print_info(f"Writing data to InfluxDB at {url}")
             session = requests.Session()
 
         response = session.post(
@@ -200,7 +202,7 @@ def send_to_influxdb(line_protocol_data: str) -> bool:
         if response.status_code == 204:
             print_success("Wrote data to InfluxDB")
             return True
-        print_error(f"InfluxDB API error: {response.status_code} - {response.text}")
+        print_error(f"InfluxDB API error: {response.status_code} - {response.text[:300]}")
         return False
 
     except ssl.SSLError as e:

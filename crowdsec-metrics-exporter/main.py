@@ -18,6 +18,7 @@ import sys
 from enum import Enum
 from typing import Any
 
+from app.banner import print_banner
 from app.config import (
     EVENTS_ENABLED,
     EVENTS_SINCE,
@@ -52,15 +53,13 @@ from app.logger import (
     print_warning,
 )
 from app.questdb import (
-    DownsamplingStatus,
     RollupSpec,
-    ensure_questdb_downsampling,
+    apply_questdb_retention,
     ensure_questdb_table,
-    ensure_questdb_ttl,
     ensure_questdb_version,
+    questdb_rollup_baseline,
     send_to_questdb,
 )
-from app.version import GIT_SHA, VERSION
 
 # Columns that identify an alert row in QuestDB, passed to
 # `DEDUP ENABLE UPSERT KEYS`. These are exactly the tag columns written by
@@ -90,33 +89,6 @@ ALERT_ROLLUP = RollupSpec(
         ("events_count_max", "max", "events_count"),
     ),
 )
-
-banner = r"""
-   ______                       _______
-  / ____/________ _      ______/ / ___/___  _____
- / /   / ___/ __ \ | /| / / __  /\__ \/ _ \/ ___/
- / /___/ /  / /_/ / |/ |/ / /_/ /___/ /  __/ /__
- \____/_/   \____/|__/|__/\__,_//____/\___/\___/
-"""
-
-
-def _print_banner() -> None:
-    """Print the tool logo, centered metadata, and a blank log separator."""
-    lines = [line.rstrip() for line in banner.splitlines() if line.strip()]
-    min_indent = min((len(line) - len(line.lstrip()) for line in lines), default=0)
-    title = ">>> crowdsec-metrics-exporter | Metrics Export Tool for CrowdSec <<<"
-    version = f"v{VERSION} ({GIT_SHA[:7]}) | by Gill-Bates"
-    disclaimer = "Independent project; not affiliated with CrowdSec"
-    width = max(max(map(len, lines), default=0) - min_indent, len(title), len(version), len(disclaimer), 1)
-
-    def center(text: str) -> str:
-        return (" " * min_indent) + text.center(width)
-
-    print("\n".join(lines))
-    print(center(title))
-    print(center(version))
-    print(center(disclaimer))
-    print()
 
 
 def warn_insecure_transport() -> None:
@@ -152,11 +124,12 @@ def _send(
     For QuestDB, `ensure_questdb_table()` verifies deduplication before the
     first write: ILP auto-creates tables without it, so an earlier write could
     store a batch that later runs duplicate. When the gate fails, nothing is
-    written. After a successful write, `ensure_questdb_downsampling()` returns
-    the raw TTL and setup status. The raw TTL is shortened only after the rollup
-    view is valid and current; a pending refresh keeps full retention. Failed
-    rollup or TTL setup keeps full raw retention where possible and reports
-    `WRITTEN_UNCONFIGURED`; the payload is never posted again. For InfluxDB 2.x
+    written. After a successful write, `apply_questdb_retention()` verifies the
+    rollup, applies the raw TTL and only then publishes the effective state. The
+    raw TTL is shortened only once the view is valid and current; a pending
+    refresh keeps full retention. Failed rollup or TTL setup keeps full raw
+    retention where possible and reports `WRITTEN_UNCONFIGURED`; the payload is
+    never posted again. For InfluxDB 2.x
     no DDL is needed: a point that repeats an existing series + timestamp
     overwrites it, and it has no equivalent of the rollup view.
     """
@@ -165,13 +138,10 @@ def _send(
     if not ensure_questdb_table(table, dedup_keys):
         print_error(f"QuestDB table {table!r} is not safely configured for idempotent exports; nothing was written")
         return SendStatus.NOT_WRITTEN
+    baseline_txn = questdb_rollup_baseline(table, rollup)
     if not send_to_questdb(payload):
         return SendStatus.NOT_WRITTEN
-    downsampling = ensure_questdb_downsampling(table, rollup)
-    ttl_set = ensure_questdb_ttl(table, downsampling.raw_ttl)
-    if not ttl_set or downsampling.status is DownsamplingStatus.FAILED:
-        return SendStatus.WRITTEN_UNCONFIGURED
-    return SendStatus.OK
+    return SendStatus.OK if apply_questdb_retention(table, rollup, baseline_txn) else SendStatus.WRITTEN_UNCONFIGURED
 
 
 def _report_send(status: SendStatus, what: str) -> bool:
@@ -242,7 +212,7 @@ def main() -> int:
     without a usable timestamp). Usable records are still exported in that case,
     and the alert and event tables are attempted independently.
     """
-    _print_banner()
+    print_banner()
     print_info(f"Starting CrowdSec → {METRICS_BACKEND} export")
 
     register_handlers()
@@ -353,7 +323,6 @@ def main() -> int:
     else:
         print_info("💤 No decisions to export")
 
-    # Both passes are attempted; any failure marks the run as failed for the health check.
     if EVENTS_ENABLED and not export_events(hostname):
         complete = False
 

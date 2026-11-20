@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
-  <a href="https://github.com/Gill-Bates/crowdsec-toolbox#deployment"><img src="https://img.shields.io/badge/Python-3.13%2B-3776AB?logo=python&logoColor=white" alt="Python 3.13 or newer"></a>
+  <a href="https://github.com/Gill-Bates/crowdsec-toolbox#deployment"><img src="https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white" alt="Python 3.14 or newer"></a>
   <a href="https://github.com/Gill-Bates/crowdsec-toolbox#features-at-a-glance"><img src="https://img.shields.io/badge/Tools-2-4C8BF5" alt="Two standalone tools"></a>
   <a href="https://github.com/Gill-Bates/crowdsec-toolbox#deployment"><img src="https://img.shields.io/badge/Deployment-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose deployment"></a>
 </p>
@@ -29,7 +29,7 @@ monitor. Each tool is independent, so you can run only the part you need.
 |---|---|---|
 | **What it does** | Turns CrowdSec bans into abuse reports | Exports CrowdSec decisions as time series |
 | 📥 **Source** | CrowdSec Local API (LAPI), direct | CrowdSec Local API (LAPI), direct |
-| 📤 **Output** | X-ARF v4 email to the responsible abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
+| 📤 **Output** | X-ARF v4.2.0 email to the responsible abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
 | 🌍 **Enrichment** | GeoIP (GeoLite2 City + ASN) | — |
 | 📇 **Contact lookup** | Abusix DNS abuse-contact database | — |
 | 🔁 **Idempotency** | SQLite, at-most-once per `(AlertId, IPAddress)` | Backend-side deduplication, no local state |
@@ -45,7 +45,7 @@ itself. InfluxDB dashboards do not exist yet.
 
 | | Dashboard | Panels | Highlights |
 |---|---|---|---|
-| **Metrics export** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-metrics-exporter/grafana/dashboard_questdb.json) | 22 | World map of source IPs coloured per host, alert and event history, top countries, networks/ASN, scenarios and source IPs each paired with a chart overview above its detail table, and — with the per-event export enabled — top endpoints and target FQDNs |
+| **Metrics export** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-metrics-exporter/grafana/dashboard_questdb.json) | 20 | World map of source IPs coloured per host, alert and event history, top countries, networks/ASN, scenarios and source IPs each paired with a chart overview above its detail table, and — with the per-event export enabled — top endpoints and target FQDNs |
 | **Abuse reporting** | [`dashboard_questdb.json`](https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/crowdsec-abuse-reporter/grafana/dashboard_questdb.json) | 7 | A four-card KPI header (sent, failed, success rate, total), daily reports, origin countries, and a paginated detail table |
 
 Country values render as flag emoji, and hosts keep a stable colour across
@@ -68,8 +68,8 @@ no geo columns.
 
 ## Deployment
 
-Both tools provide Docker and Compose deployments. The metrics exporter can also
-run directly as a Python script on the CrowdSec host. They have separate entry
+Both tools support Docker Compose and direct host runs. On a host, each tool is
+a one-shot Python script that you schedule with cron. They have separate entry
 points and their own `pyproject.toml` dependency manifests, so their
 deployments can be managed independently. Follow each tool's README for setup,
 configuration, and operating notes.

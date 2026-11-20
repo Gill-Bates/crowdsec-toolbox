@@ -35,6 +35,8 @@ class FakeQuestDB:
         self.ignore_alter: set[str] = set()  # tables owned by someone else: ALTER has no effect
         self.alter_lag = 0  # tables() reports dedup=false for this many reads after an ALTER
         self.views: list[list] = []
+        self.state_rows: list[list] = []  # rows served for the downsampling state lookup
+        self.on_write = None  # called after each /write, to model the async refresh
         self.empty_show_create = False
         self.sleeps: list[float] = []  # recorded instead of sleeping
         self.logs: list[str] = []  # captured print_* output as "level: message"
@@ -50,6 +52,8 @@ class FakeQuestDB:
         if request.url.path == "/write":
             self.log.append("WRITE")
             self.writes.append(request.content.decode())
+            if self.on_write:
+                self.on_write()
             return httpx.Response(self.write_status)
         sql = request.url.params["query"]
         self.log.append(sql)
@@ -91,6 +95,8 @@ class FakeQuestDB:
             return [[f"CREATE TABLE ... DEDUP {table['mode']} KEYS({','.join(table['keys'])})"]]
         elif "materialized_views()" in sql:
             return self.views
+        elif "LATEST ON timestamp PARTITION BY table_name" in sql:
+            return self.state_rows
         return []
 
 
@@ -103,6 +109,7 @@ def db(monkeypatch, isolated_main):
     )
     monkeypatch.setattr(questdb.time, "sleep", fake.sleeps.append)
     monkeypatch.setattr(questdb, "_GATE_RESULTS", {})
+    monkeypatch.setattr(questdb, "_VERSION_RESULT", {})
     monkeypatch.setattr(isolated_main, "METRICS_BACKEND", "questdb")
     monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "")
     # The logger writes to its own stream, so capture the calls instead.
@@ -245,6 +252,43 @@ def test_failed_rollup_ttl_keeps_full_raw_ttl_and_exits_1(db, monkeypatch):
     assert f'ALTER TABLE "{ALERT_TABLE}" SET TTL 365 DAYS' in db.log
 
 
+def _state_inserts(db):
+    return [sql for sql in db.log if sql.startswith('INSERT INTO "_crowdsec_downsampling"')]
+
+
+def test_state_is_published_only_after_the_raw_ttl_is_in_force(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.views = [["crowdsec_rollup_1h_v1", ALERT_TABLE, "valid", 9, 9]]
+    db.fail[f'ALTER TABLE "{ALERT_TABLE}" SET TTL'] = [400]
+    assert _send_alerts() is main.SendStatus.WRITTEN_UNCONFIGURED
+    assert _state_inserts(db) == []
+
+    questdb._GATE_RESULTS.clear()
+    assert _send_alerts() is main.SendStatus.OK
+    (insert,) = _state_inserts(db)
+    assert "true, 30," in insert
+    ttl_index = db.log.index(f'ALTER TABLE "{ALERT_TABLE}" SET TTL 30 DAYS')
+    assert ttl_index < db.log.index(insert)
+
+
+def test_a_refreshing_rollup_publishes_the_full_raw_window_not_an_active_profile(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.views = [["crowdsec_rollup_1h_v1", ALERT_TABLE, "valid", 5, 9]]
+    assert _send_alerts() is main.SendStatus.OK
+    (insert,) = _state_inserts(db)
+    assert "'disabled'" in insert and "false, 365," in insert
+
+
+def test_disabled_total_ttl_removes_an_existing_rollup_view_ttl(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    monkeypatch.setattr(questdb, "QUESTDB_TTL", None)
+    monkeypatch.setattr(questdb, "QUESTDB_TTL_DAYS", None)
+    db.views = [["crowdsec_rollup_1h_v1", ALERT_TABLE, "valid", 9, 9]]
+    assert _send_alerts() is main.SendStatus.OK
+    assert 'ALTER MATERIALIZED VIEW "crowdsec_rollup_1h_v1" SET TTL 0 HOURS' in db.log
+    assert f'ALTER TABLE "{ALERT_TABLE}" SET TTL 30 DAYS' in db.log
+
+
 def test_gate_runs_once_per_table_and_process(db):
     assert _send_alerts() is main.SendStatus.OK
     assert _send_alerts() is main.SendStatus.OK
@@ -344,3 +388,66 @@ def test_influxdb_backend_skips_the_version_check(db, monkeypatch):
     monkeypatch.setattr(main, "send_to_influxdb", lambda _payload: True)
     assert _run_main(monkeypatch) == 0
     assert db.log == []
+
+
+VIEW = "crowdsec_rollup_1h_v1"
+
+
+def _raw_ttl(db):
+    return [sql for sql in db.log if sql.startswith(f'ALTER TABLE "{ALERT_TABLE}" SET TTL')]
+
+
+def test_a_refresh_that_lags_only_this_runs_own_write_still_shortens_the_raw_ttl(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.views = [[VIEW, ALERT_TABLE, "valid", 9, 9]]
+    # The write commits txn 10; the async refresh has not started when the check runs.
+    db.on_write = lambda: db.views.__setitem__(0, [VIEW, ALERT_TABLE, "refreshing", 9, 10])
+    assert _send_alerts() is main.SendStatus.OK
+    assert _raw_ttl(db) == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 30 DAYS']
+    assert not any(line.startswith("warning:") for line in db.logs)
+
+
+def test_a_view_behind_the_state_before_the_write_keeps_the_raw_ttl_and_only_informs(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.views = [[VIEW, ALERT_TABLE, "refreshing", 5, 9]]
+    db.on_write = lambda: db.views.__setitem__(0, [VIEW, ALERT_TABLE, "refreshing", 5, 10])
+    assert _send_alerts() is main.SendStatus.OK
+    assert _raw_ttl(db) == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 365 DAYS']
+    assert any(line.startswith("info:") and "still refreshing" in line for line in db.logs)
+    assert not any(line.startswith("warning:") for line in db.logs)
+
+
+def test_a_view_created_in_this_run_is_pending_at_info_level(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.on_write = lambda: setattr(db, "views", [[VIEW, ALERT_TABLE, "refreshing", 0, 1]])
+    assert _send_alerts() is main.SendStatus.OK
+    assert _raw_ttl(db) == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 365 DAYS']
+    assert not any(line.startswith("warning:") for line in db.logs)
+
+
+def test_an_invalid_view_still_warns_and_fails_the_run(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.views = [[VIEW, ALERT_TABLE, "invalid", 9, 9]]
+    assert _send_alerts() is main.SendStatus.WRITTEN_UNCONFIGURED
+    assert _raw_ttl(db) == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 365 DAYS']
+    assert any(line.startswith("warning:") and "invalid" in line for line in db.logs)
+
+
+def test_a_lag_that_persists_over_several_runs_escalates_to_a_warning(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    monkeypatch.setattr(questdb, "_PENDING_RUNS", {})
+    db.views = [[VIEW, ALERT_TABLE, "refreshing", 5, 9]]
+    for _ in range(questdb._PENDING_WARN_AFTER):
+        db.logs.clear()
+        assert _send_alerts() is main.SendStatus.OK
+    assert any(line.startswith("warning:") and "consecutive runs" in line for line in db.logs)
+
+
+def test_the_state_row_is_not_reinserted_when_quest_db_returns_null_for_empty_symbols(db, monkeypatch):
+    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.views = [[VIEW, ALERT_TABLE, "valid", 5, 9]]  # unready: published as disabled with empty strings
+    db.state_rows = [["disabled", 1, False, 0, None, None, None]]
+    monkeypatch.setattr(questdb, "QUESTDB_TTL", None)
+    monkeypatch.setattr(questdb, "QUESTDB_TTL_DAYS", None)
+    assert _send_alerts() is main.SendStatus.OK
+    assert _state_inserts(db) == []

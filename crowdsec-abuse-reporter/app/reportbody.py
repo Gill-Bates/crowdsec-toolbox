@@ -4,11 +4,14 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# Human-readable mail body and X-ARF v4 JSON rendering, with secret redaction of context.
+# Human-readable mail body and X-ARF v4.2.0 JSON rendering, with secret redaction of context.
+import base64
+import hashlib
 import ipaddress
 import json
 import logging
 import re
+import textwrap
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -39,8 +42,13 @@ _SENSITIVE_CONTEXT_EXACT: frozenset[str] = frozenset(
 )
 
 
+def _normalize_key(key: str) -> str:
+    """Lowercase a context key and map hyphens to underscores."""
+    return key.strip().lower().replace("-", "_")
+
+
 def _is_sensitive_key(key: str) -> bool:
-    normalized = key.strip().lower().replace("-", "_")
+    normalized = _normalize_key(key)
     if normalized in _SENSITIVE_CONTEXT_EXACT:
         return True
     return "password" in normalized or normalized.endswith(("_token", "_secret", "_key"))
@@ -103,17 +111,58 @@ MAX_DICT_ITEMS = 50
 # while staying readable in proportional-font clients (no dot-leaders).
 _LABEL_WIDTH = 18
 
+# Plain-text lines stay within 76 columns (RFC 5322 recommends 78; 76 also avoids quoted-printable soft breaks).
+_MAX_LINE_WIDTH = 76
+# A label whose padded prefix is wider than this moves its value to the next line.
+_MAX_PREFIX_WIDTH = 32
+
+
+def _wrap(text: str, initial_indent: str, subsequent_indent: str) -> list[str]:
+    """Wrap one logical line to the line width; long tokens are split as a last resort."""
+    return textwrap.wrap(
+        text,
+        width=_MAX_LINE_WIDTH,
+        initial_indent=initial_indent,
+        subsequent_indent=subsequent_indent,
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+
 
 def _field(label: str, value: Any) -> str:
-    """Render a 'Label: value' line with a padded label for tidy alignment."""
+    """Render a 'Label: value' line with a padded label, wrapped under the value column."""
     field_name = f"{label}:"
     padding = " " * max(_LABEL_WIDTH - len(field_name), 1)
-    return f"  {field_name}{padding}{value}"
+    prefix = f"  {field_name}{padding}"
+    lines: list[str] = []
+    if len(prefix) > _MAX_PREFIX_WIDTH:
+        lines.extend(_wrap(f"  {field_name}", "", "    "))
+        first_indent = rest_indent = "      "
+    else:
+        first_indent, rest_indent = prefix, " " * len(prefix)
+    value_lines = str(value).splitlines() or [""]
+    for index, value_line in enumerate(value_lines):
+        indent = first_indent if index == 0 and not lines else rest_indent
+        wrapped = _wrap(value_line.strip(), indent, rest_indent)
+        lines.extend(wrapped or [indent.rstrip()])
+    return "\n".join(lines)
 
 
 def _section(title: str) -> str:
     """Render a section heading underlined with dashes."""
     return f"{title}\n{'-' * len(title)}"
+
+
+def _wrap_long_lines(text: str) -> str:
+    """Wrap every line over the line width, keeping its indent for continuation lines."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        if len(line) <= _MAX_LINE_WIDTH:
+            out.append(line)
+            continue
+        leading = line[: len(line) - len(line.lstrip())]
+        out.extend(_wrap(line.strip(), leading, leading + "  " if leading else ""))
+    return "\n".join(out)
 
 
 def _is_present(value: Any) -> bool:
@@ -179,6 +228,18 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _lookup_geo(ip: str) -> GeoInfo | None:
+    """Return GeoIP data for ip, or None: enrichment is optional and never fatal."""
+    if ip == "unknown":
+        return None
+    try:
+        from app.geoip import lookup
+
+        return lookup(ip)
+    except Exception:
+        return None
+
+
 def _decisions_for(alert: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the alert's decisions, falling back to the object itself when it
     is a single derived decision (carries type/scope/value at top level)."""
@@ -195,29 +256,24 @@ def _decisions_for(alert: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def build_mail_body(alert: dict[str, Any], hostname: str) -> str:
+def build_mail_body(alert: dict[str, Any], hostname: str, ip: str | None = None) -> str:
     """Build the plain-text abuse report body from a CrowdSec alert.
 
     Args:
         alert: CrowdSec alert dictionary
         hostname: Reporting host identifier
+        ip: Offender already derived by the caller; derived from the alert when omitted
     """
     alert_id = _extract_alert_id(alert)
     source = _dict_or_empty(alert.get("source"))
-    ip = _extract_report_ip(alert)
+    ip = ip or _extract_report_ip(alert)
     scenario = _limit_value(alert.get("scenario", "unknown"))
 
     created_at = format_timestamp(alert.get("created_at"))
     start_at = format_timestamp(alert.get("start_at"))
     stop_at = format_timestamp(alert.get("stop_at"))
 
-    # GeoIP enrichment is optional: any failure leaves geo as None.
-    try:
-        from app.geoip import lookup as _geoip_lookup
-
-        geo = _geoip_lookup(ip) if ip != "unknown" else None
-    except Exception:
-        geo = None
+    geo = _lookup_geo(ip)
 
     blocking_reasons = extract_blocking_reasons(_decisions_for(alert))
     context_details = extract_context_details(_dict_or_empty(alert.get("context")), alert)
@@ -282,12 +338,11 @@ def build_mail_body(alert: dict[str, Any], hostname: str) -> str:
         "the IP address and timestamps above when replying."
     )
 
-    return "\n".join(lines).strip()
+    return _wrap_long_lines("\n".join(lines).strip())
 
 
 def _extract_alert_id(alert: dict[str, Any]) -> str:
     """Return the alert identifier as a string, or 'unknown' if none is present."""
-    # Priority order for alert identification
     if alert.get("alert_id"):
         return str(alert["alert_id"])
     if alert.get("alert_ids"):
@@ -310,145 +365,230 @@ def normalize_timestamp(timestamp: object) -> str:
     if dt.tzinfo is None:
         # CrowdSec emits RFC3339 with an offset; a naive value means an unusual
         # producer. UTC stays the best available reading — dropping the stamp
-        # would push _xarf_timestamp() onto "now", which is further from the
-        # truth than the event time itself — but it must not be silent.
+        # would leave _xarf_timestamp() without an incident time and fail the
+        # report — but it must not be silent.
         logger.warning("Timestamp %r has no timezone; assuming UTC for the report", timestamp)
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC).isoformat()
 
 
 def _xarf_timestamp(alert: dict[str, Any]) -> str:
-    """Return a valid UTC timestamp for the X-ARF report, falling back to now."""
-    return (
-        normalize_timestamp(alert.get("created_at"))
-        or normalize_timestamp(alert.get("start_at"))
-        or datetime.now(UTC).isoformat()
-    )
+    """Return the incident start as UTC timestamp for the X-ARF report.
+
+    Raises ValueError without a usable start_at/created_at: the schema defines
+    the field as the time the incident occurred, which "now" would only invent.
+    The caller records the alert as a failed send instead of mailing a false time.
+    """
+    timestamp = normalize_timestamp(alert.get("start_at")) or normalize_timestamp(alert.get("created_at"))
+    if not timestamp:
+        raise ValueError("alert has no usable start_at or created_at; the X-ARF incident time is required")
+    return timestamp
 
 
-# Maps keyword fragments found in CrowdSec scenario names to
-# (category, type) pairs defined by the XARF v4 specification.
-# Evaluated in order; first match wins.
-_XARF_SCENARIO_RULES: list[tuple] = [
-    # keywords                                               category          type
-    (["bruteforce", "brute-force", "brute_force", "-bf", "_bf", "login"], "connection", "login_attack"),
-    (["scan", "crawl", "probe", "spider", "fingerprint"], "connection", "port_scan"),
-    (["exploit", "injection", "sqli", "xss", "lfi", "rfi", "rce"], "vulnerability", "exploit_attempt"),
-    (["ddos", "flood", "amplif"], "connection", "ddos_attack"),
-    (["spam", "phish"], "messaging", "spam"),
-    (["malware", "botnet", "c2", "backdoor", "rootkit"], "infrastructure", "malware"),
+XARF_VERSION = "4.2.0"
+# Per-item decoded evidence limit of the v4.2.0 core schema (evidence_item.size maximum).
+XARF_MAX_EVIDENCE_BYTES = 5_242_880
+
+# Maps whole name tokens of a CrowdSec scenario (split on non-alphanumerics) to an
+# intent that _xarf_classification() turns into a category/type valid under XARF v4.2.0.
+# Evaluated in order, most specific first; first match wins. Token matching avoids
+# substring hits such as "rce" in "resource" or "rdp" in "wordpress".
+_XARF_SCENARIO_RULES: list[tuple[frozenset[str], str]] = [
+    (frozenset({"bruteforce", "brute", "bf", "login"}), "login"),
+    (frozenset({"sqli", "sql"}), "sqli"),
+    (
+        frozenset({"exploit", "exploits", "injection", "xss", "lfi", "rfi", "rce", "cve", "traversal"}),
+        "exploit",
+    ),
+    (frozenset({"malware", "botnet", "c2", "backdoor", "backdoors", "rootkit"}), "malware"),
+    (frozenset({"ddos", "flood", "amplification"}), "ddos"),
+    (frozenset({"spam", "phish", "phishing"}), "spam"),
+    (frozenset({"scan", "scans", "crawl", "probe", "probes", "probing", "spider", "fingerprint"}), "scan"),
 ]
 
-_XARF_PROTO_KEYWORDS: list[tuple] = [
-    ("ssh", "ssh"),
-    ("rdp", "rdp"),
-    ("ftp", "ftp"),
-    ("smtp", "smtp"),
-    ("http", "http"),
-    ("imap", "imap"),
-    ("pop3", "pop3"),
-]
+# The first protocol named in the scenario wins. All of them run over TCP,
+# which is the only transport fact the scenario implies.
+_XARF_PROTOCOLS = frozenset({"ssh", "rdp", "ftp", "smtp", "http", "imap", "pop3"})
+
+# Intents whose v4.2.0 type schema requires source_port when the source is an IP.
+_XARF_PORT_REQUIRED = frozenset({"login", "ddos"})
+
+# threat_type reported when the scenario fits no connection type (free text in the schema).
+_XARF_THREAT_TYPES = {
+    "login": "brute_force",
+    "scan": "scan",
+    "sqli": "sql_injection",
+    "exploit": "exploit_attempt",
+    "ddos": "ddos",
+    "spam": "spam",
+    "malware": "malware",
+}
+
+_CVE_RE = re.compile(r"cve-\d{4}-\d{4,}", re.IGNORECASE)
+_PORT_CONTEXT_KEYS = ("source_port", "src_port", "sport")
 
 
-def _scenario_to_xarf(scenario: str) -> tuple:
-    """Return (category, type, protocol | None) for a CrowdSec scenario name."""
-    s = scenario.lower()
-
-    protocol: str | None = None
-    for keyword, proto in _XARF_PROTO_KEYWORDS:
-        if keyword in s:
-            protocol = proto
-            break
-
-    for keywords, category, xarf_type in _XARF_SCENARIO_RULES:
-        if any(k in s for k in keywords):
-            return category, xarf_type, protocol
-
-    return "connection", "abusive_content", protocol
+def _scenario_tokens(scenario: str) -> list[str]:
+    return [t for t in re.split(r"[^a-z0-9]+", scenario.lower()) if t]
 
 
-def _xarf_reporter(sender_email: str, sender_name: str) -> dict[str, str]:
-    """Build an XARF v4 reporter/sender object."""
-    org = sender_name.strip()
-    if not org:
-        # Derive display name from email domain when no explicit name is set.
-        org = sender_email.rsplit("@", maxsplit=1)[-1] if "@" in sender_email else sender_email
-    return {"org": org, "contact": sender_email}
+def _scenario_intent(scenario: str) -> tuple[str | None, str | None]:
+    """Return (intent | None, application protocol | None) for a CrowdSec scenario name."""
+    tokens = _scenario_tokens(scenario)
+    protocol = next((t for t in tokens if t in _XARF_PROTOCOLS), None)
+    for keywords, intent in _XARF_SCENARIO_RULES:
+        if any(t in keywords for t in tokens):
+            return intent, protocol
+    return None, protocol
 
 
-def build_xarf_report(alert: dict[str, Any], hostname: str) -> str:  # noqa: ARG001 public signature, kept for callers
-    """Build an XARF v4-compliant abuse report from a CrowdSec alert.
+def _extract_source_port(context: dict[str, Any]) -> int | None:
+    """Return the offender's source port only when the alert states exactly one."""
+    for key in _PORT_CONTEXT_KEYS:
+        value = context.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            continue
+        text = str(value).strip()
+        if text.isdecimal() and 1 <= int(text) <= 65535:
+            return int(text)
+    return None
 
-    Schema: https://xarf.org/docs/specification/
-    Mandatory fields: xarf_version, report_id (UUID v4), timestamp,
-    reporter, sender, source_identifier, category, type.
-    CrowdSec-specific data is carried in the evidence object.
+
+def _xarf_classification(scenario: str, source_port: int | None) -> tuple[str, str, dict[str, Any]]:
+    """Return (category, type, type-specific fields) valid under the v4.2.0 schemas.
+
+    Only facts the alert supports are used. Where a connection type needs a
+    field the alert cannot supply (source_port, a transport protocol), the
+    report is filed as reputation/threat_intelligence, which needs neither.
+    """
+    intent, app_protocol = _scenario_intent(scenario)
+    transport = "tcp" if app_protocol else None
+    service: dict[str, Any] = {"service": app_protocol} if app_protocol else {}
+
+    if intent in _XARF_PORT_REQUIRED and transport and source_port:
+        xarf_type = "login_attack" if intent == "login" else "ddos"
+        return "connection", xarf_type, {"protocol": transport, **service}
+    if intent == "sqli" and transport:
+        return "connection", "sql_injection", {"protocol": transport}
+    if intent in ("scan", "exploit"):
+        if intent == "exploit":
+            scan_type = "web_vuln_scan" if app_protocol == "http" else "vulnerability_scan"
+        else:
+            scan_type = "port_scan" if {"port", "ports"} & set(_scenario_tokens(scenario)) else "mixed"
+        fields: dict[str, Any] = {
+            "scan_type": scan_type,
+            "protocol": transport or "mixed",
+            **({"targeted_services": [app_protocol]} if app_protocol else {}),
+        }
+        cves = sorted({m.upper() for m in _CVE_RE.findall(scenario)})
+        if cves:
+            fields["vulnerabilities_probed"] = cves
+        return "connection", "vulnerability_scan", fields
+    threat_type = _XARF_THREAT_TYPES.get(intent or "", "other")
+    return "reputation", "threat_intelligence", {"threat_type": threat_type, **service}
+
+
+def _xarf_contact(sender_email: str, sender_name: str) -> dict[str, str]:
+    """Build an XARF v4 reporter/sender object (org, contact, domain)."""
+    domain = sender_email.rsplit("@", maxsplit=1)[-1] if "@" in sender_email else sender_email
+    org = sender_name.strip() or domain
+    return {"org": org[:200], "contact": sender_email, "domain": domain}
+
+
+def _evidence_item(content: dict[str, Any], description: str) -> dict[str, Any]:
+    """Wrap a JSON-serializable dict as a base64 XARF evidence item with SHA-256 hash."""
+    raw = json.dumps(content, ensure_ascii=False).encode("utf-8")
+    if len(raw) > XARF_MAX_EVIDENCE_BYTES:
+        # Truncating evidence would misstate it; fail the build so the alert is recorded as failed.
+        raise ValueError(f"evidence item is {len(raw)} bytes, above the X-ARF limit of {XARF_MAX_EVIDENCE_BYTES}")
+    return {
+        "content_type": "application/json",
+        "description": description,
+        "payload": base64.b64encode(raw).decode("ascii"),
+        "hash": f"sha256:{hashlib.sha256(raw).hexdigest()}",
+        "size": len(raw),
+    }
+
+
+def build_xarf_report(alert: dict[str, Any], hostname: str, ip: str | None = None) -> str:  # noqa: ARG001 public signature, kept for callers
+    """Build an XARF v4.2.0 abuse report (JSON) from a CrowdSec alert.
+
+    ip is the offender the caller already derived (alert, context or meta); it
+    is validated here and derived from the alert when omitted.
+
+    Schema: https://github.com/xarf/xarf-spec/tree/v4.2.0/schemas
+    Core fields follow xarf-core.json; category/type and the type-specific
+    fields follow the matching schema in schemas/v4/types/. CrowdSec-specific
+    data travels as a base64 JSON evidence item.
     """
     from app.config import SENDER_NAME, SMTP_SENDER
 
     alert_id = _extract_alert_id(alert)
     source = _dict_or_empty(alert.get("source"))
-    ip = _extract_report_ip(alert)
+    ip = ip or _extract_report_ip(alert)
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        # source_identifier is the offender the report accuses; never send a placeholder.
+        raise ValueError(f"X-ARF report needs a valid source IP, got {ip!r}") from None
     scenario = _limit_value(alert.get("scenario", "unknown"))
 
-    start_at = normalize_timestamp(alert.get("start_at") or "")
-    stop_at = normalize_timestamp(alert.get("stop_at") or "")
+    start_at = normalize_timestamp(alert.get("start_at"))
+    stop_at = normalize_timestamp(alert.get("stop_at"))
 
-    # GeoIP enrichment
-    try:
-        from app.geoip import lookup as _geoip_lookup
-
-        _geo = _geoip_lookup(ip) if ip != "unknown" else None
-    except Exception:
-        _geo = None
+    geo = _lookup_geo(ip) or {}
 
     decisions = ensure_decisions_format(_decisions_for(alert))
     context_data = extract_context_for_json(_dict_or_empty(alert.get("context")), alert)
 
-    category, xarf_type, protocol = _scenario_to_xarf(str(scenario))
-    reporter = _xarf_reporter(SMTP_SENDER, SENDER_NAME)
+    source_port = _extract_source_port(context_data)
+    category, xarf_type, type_fields = _xarf_classification(str(scenario), source_port)
+    reporter = _xarf_contact(SMTP_SENDER, SENDER_NAME)
 
     # GeoIP-enriched geo fields (fall back to CrowdSec source metadata)
-    country = (_geo or {}).get("country") or _limit_value(source.get("cn"))
-    city = (_geo or {}).get("city")
-    asn_num = (_geo or {}).get("asn") or _limit_value(source.get("as_number"))
-    asn_name = (_geo or {}).get("provider") or _limit_value(source.get("as_name"))
+    country = geo.get("country") or _limit_value(source.get("cn"))
+    city = geo.get("city")
+    asn_num = geo.get("asn") or _limit_value(source.get("as_number"))
+    asn_name = geo.get("provider") or _limit_value(source.get("as_name"))
+
+    timestamp = _xarf_timestamp(alert)
+    crowdsec_evidence = {
+        "alert_id": alert_id,
+        "scenario": scenario,
+        "events_count": alert.get("events_count", 0),
+        "start_at": start_at,
+        "stop_at": stop_at,
+        "message": _limit_value(alert.get("message", "")),
+        "decisions": decisions,
+        "source": {
+            "ip": ip,
+            "country": country,
+            "city": city,
+            "as_number": asn_num,
+            "as_name": asn_name,
+            "range": _limit_value(source.get("range")),
+        },
+        "context": context_data,
+        "simulated": alert.get("simulated", False),
+    }
 
     xarf_payload: dict[str, Any] = {
-        # --- XARF v4 mandatory fields ---
-        "xarf_version": "4.0.0",
+        "xarf_version": XARF_VERSION,
         "report_id": str(uuid.uuid4()),
-        "timestamp": _xarf_timestamp(alert),
+        "timestamp": timestamp,
         "reporter": reporter,
         "sender": reporter,
         "source_identifier": ip,
+        **({"source_port": source_port} if source_port else {}),
         "category": category,
         "type": xarf_type,
-        # --- XARF v4 recommended fields ---
-        "description": f"Automated security alert: {scenario}",
-        **({"protocol": protocol} if protocol else {}),
-        # --- CrowdSec-specific evidence ---
-        "evidence": {
-            "crowdsec": {
-                "alert_id": alert_id,
-                "scenario": scenario,
-                "events_count": alert.get("events_count", 0),
-                "start_at": start_at,
-                "stop_at": stop_at,
-                "message": _limit_value(alert.get("message", "")),
-                "decisions": decisions,
-                "source": {
-                    "ip": ip,
-                    "country": country,
-                    "city": city,
-                    "as_number": asn_num,
-                    "as_name": asn_name,
-                    "range": _limit_value(source.get("range")),
-                },
-                "context": context_data,
-                "simulated": alert.get("simulated", False),
-            }
-        },
+        "evidence_source": "ids_detection",
+        "description": f"Automated security alert: {scenario}"[:1000],
+        **type_fields,
+        "first_seen": start_at or timestamp,
+        **({"last_seen": stop_at} if stop_at else {}),
+        "evidence": [_evidence_item(crowdsec_evidence, "CrowdSec alert data (JSON)")],
+        "tags": ["source:crowdsec"],
         "remarks": (
             "This report was generated automatically by our abuse reporting "
             "system based on CrowdSec metrics (https://www.crowdsec.net/) "
@@ -482,7 +622,7 @@ def ensure_decisions_format(decisions: list[dict[str, Any]]) -> list[dict[str, A
 
 def extract_network_info(
     source: dict[str, Any],
-    geo: "GeoInfo | None" = None,
+    geo: GeoInfo | None = None,
 ) -> str:
     """Format network information for the email body.
 
@@ -537,11 +677,7 @@ def extract_context_details(context_data: dict[str, Any], alert: dict[str, Any])
     for key, value in combined_context.items():
         formatted_line = _format_context_line(key, value)
         if formatted_line:
-            if "\n" in formatted_line:
-                # Handle multi-line entries (like headers)
-                context_lines.extend(formatted_line.split("\n"))
-            else:
-                context_lines.append(formatted_line)
+            context_lines.append(formatted_line)
 
     if not context_lines:
         return "No specific context information available."
@@ -603,7 +739,12 @@ def _limit_value(value: Any) -> Any:
     return value
 
 
-_HEADER_LINE_RE = re.compile(r"^([ \t]*)([A-Za-z][\w.-]*)([ \t]*:[ \t]*)(.+)$", re.MULTILINE)
+# A folded header (obs-fold) continues on indented lines; a continuation that
+# itself starts with "Name:" is a separate header and is judged on its own.
+_HEADER_LINE_RE = re.compile(
+    r"^([ \t]*)([A-Za-z][\w.-]*)([ \t]*:[ \t]*)(.+(?:\n[ \t]+(?![A-Za-z][\w.-]*[ \t]*:).*)*)$",
+    re.MULTILINE,
+)
 
 
 def _redact_header_lines(text: str) -> str:
@@ -628,7 +769,7 @@ def _redact_context_value(key: str, value: Any) -> Any:
     """
     if _is_sensitive_key(key):
         return "[REDACTED]"
-    normalized_key = key.strip().lower().replace("-", "_")
+    normalized_key = _normalize_key(key)
     if isinstance(value, str):
         value = _redact_header_lines(value)
         if normalized_key in _URI_CONTEXT_KEYS:
@@ -706,18 +847,25 @@ def _extract_meta_context(meta_list: list[dict[str, Any]]) -> dict[str, Any]:
     return context
 
 
+# Context keys rendered under a fixed label, list values joined with ", ".
+_JOINED_CONTEXT_LABELS: dict[str, str] = {
+    "username": "Username(s)",
+    "user": "Username(s)",
+    "usernames": "Username(s)",
+    "service": "Service",
+    "method": "HTTP Method",
+    "status": "HTTP Status",
+}
+
+
 def _format_context_line(key: str, value: Any) -> str | None:
     """Format one context key-value pair, or return None for a suppressed key."""
     if key in _CONTEXT_SUPPRESSED_KEYS:
         return None
 
-    if key in ("username", "user", "usernames"):
+    if key in _JOINED_CONTEXT_LABELS:
         text = ", ".join(str(v) for v in value) if isinstance(value, list) else value
-        return _field("Username(s)", text)
-
-    if key == "service":
-        text = ", ".join(str(v) for v in value) if isinstance(value, list) else value
-        return _field("Service", text)
+        return _field(_JOINED_CONTEXT_LABELS[key], text)
 
     if key == "user_agent":
         if isinstance(value, list):
@@ -729,33 +877,25 @@ def _format_context_line(key: str, value: Any) -> str | None:
                     seen.append(ua_s)
                 if len(seen) == 3:
                     break
-            text = seen[0] if len(seen) == 1 else "; ".join(seen)
+            text = "; ".join(seen)
         else:
             text = str(value)
         return _field("User-Agent", text)
 
-    if key == "method":
-        text = ", ".join(value) if isinstance(value, list) else value
-        return _field("HTTP Method", text)
-
-    if key == "status":
-        text = ", ".join(str(v) for v in value) if isinstance(value, list) else value
-        return _field("HTTP Status", text)
-
     if key == "target_uri":
         if isinstance(value, list):
-            uri_text = ", ".join(value[:3])
+            uri_text = ", ".join(str(v) for v in value[:3])
             if len(value) > 3:
                 uri_text += f" … and {len(value) - 3} more"
             return _field("Target URIs", uri_text)
         return _field("Target URI", value)
 
     if key in ("path", "http_path"):
-        text = ", ".join(value[:5]) if isinstance(value, list) else value
+        text = ", ".join(str(v) for v in value[:5]) if isinstance(value, list) else value
         return _field("Request Path", text)
 
     if key == "http_args":
-        text = ", ".join(value[:5]) if isinstance(value, list) else value
+        text = ", ".join(str(v) for v in value[:5]) if isinstance(value, list) else value
         return _field("Query Args", text)
 
     if key == "headers":

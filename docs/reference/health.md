@@ -80,7 +80,7 @@ One file:
 
 | File | Written by | Staleness limit |
 |---|---|---|
-| `/tmp/state/heartbeat` | The entrypoint, only after `main.py` exits `0` | `HEALTHCHECK_MAX_AGE_SECONDS`, default `900` (15 min) |
+| `/tmp/state/heartbeat` | The entrypoint, only after `main.py` exits `0` | `HEALTHCHECK_MAX_AGE_SECONDS`, default `max(900, run interval + max jitter + 300)` (`900`, 15 min, at the 60 s default) |
 
 Check parameters: `--interval=5m --timeout=10s --start-period=3m --retries=3`.
 

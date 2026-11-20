@@ -14,10 +14,11 @@ uses the `default` dependency group from this tool's own `pyproject.toml`.
 
 | File | Description |
 |------|-------------|
-| `Dockerfile` | Builds the `python:3.13-slim` image and runs as the non-root user `10001:10001` from the start (`USER`), with `tini` as PID 1; no Docker CLI |
+| `Dockerfile` | Builds the `python:3.14-slim` image and runs as the non-root user `10001:10001` from the start (`USER`), with `tini` as PID 1; no Docker CLI |
 | `docker-compose.yml` | Compose service with a tmpfs (`mode=1777`) at `/tmp` for the heartbeat, `restart: unless-stopped`, no added capabilities; no Docker socket; the only mount is the host's `/etc/hostname` (read-only); scheduling lives in `settings.env` |
 | `entrypoint.sh` | Creates `/tmp/state` as the unprivileged user, runs `main.py` once or periodically, and updates the heartbeat |
 | `settings.env.example` | Container configuration template |
+| `Dockerfile.dockerignore` | BuildKit allowlist for the repo-root build context: only `crowdsec-metrics-exporter/pyproject.toml`, `app/`, `main.py` and `docker/entrypoint.sh` get in; `**/tests/` and `**/AGENTS.md` are excluded explicitly. The root `.dockerignore` is the fallback for legacy builders |
 
 ## Working in this directory
 
@@ -49,8 +50,8 @@ uses the `default` dependency group from this tool's own `pyproject.toml`.
   runs with restart policy `no`); otherwise the entrypoint runs periodically using `RUN_INTERVAL`
   or `RUN_EVERY_HOUR` (which takes precedence), with automatic jitter (`min(interval / 10, 300)` s: a random start offset, then a fixed run grid plus random jitter; missed slots of an overrunning run are skipped; with `EVENTS_ENABLED` a warning is logged if `EVENTS_SINCE` is shorter than interval + jitter).
   These scheduling settings are read by `entrypoint.sh`, not by the application
-  — a direct host run ignores them. `RUN_EVERY_HOUR` is not in
-  `settings.env.example`. The optional `HEALTHCHECK_MAX_AGE_SECONDS` override
+  — a direct host run ignores them. `RUN_EVERY_HOUR` is only a
+  commented-out example in `settings.env.example`. The optional `HEALTHCHECK_MAX_AGE_SECONDS` override
   must be at least `max(900, interval + jitter + 300)`; otherwise startup fails.
 
 ## Health and failure behavior

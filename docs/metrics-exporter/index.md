@@ -30,7 +30,7 @@ same data again and the result is identical. See
 - An InfluxDB 2.x write endpoint, or a **QuestDB 10.x** instance with
   ILP-over-HTTP enabled (default port `9000`); other QuestDB versions are
   rejected at startup with exit `1`
-- Python 3.13+ with the `default` dependency group of `crowdsec-metrics-exporter/pyproject.toml` installed
+- Python 3.14+ with the `default` dependency group of `crowdsec-metrics-exporter/pyproject.toml` installed
 
 ## Exit codes
 

@@ -8,7 +8,7 @@ cd crowdsec-metrics-exporter && python -m pytest
 ```
 
 !!! note "The exporter suite is small on purpose"
-    `crowdsec-metrics-exporter/tests/` holds 146 offline tests: config parsing and
+    `crowdsec-metrics-exporter/tests/` holds 204 offline tests: config parsing and
     validation, line-protocol escaping, the rule that dedup keys are tags, LAPI
     fetch completeness and the QuestDB dedup gate against an in-memory fake. A
     real run needs a reachable CrowdSec instance and a live backend, so there is
@@ -24,18 +24,18 @@ silently regress. They are not broad functional coverage.
 
 | File | Tests | Covers |
 |---|---|---|
-| `test_hardening.py` | 104 | The main suite; one class per app module, plus `ReviewFindingsTest` and the entrypoint/Dockerfile checks |
-| `test_main.py` | 21 | `app.main` helpers: IP/ID/confidence extraction, dedup, stats |
-| `test_metrics.py` | 60 | `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB dedup gate and TTL, the outbox, SQLite control-data-only property |
+| `test_hardening.py` | 108 | The main suite; one class per app module, plus `ReviewFindingsTest` and the entrypoint/Dockerfile checks |
+| `test_main.py` | 24 | `app.main` helpers: IP/ID/confidence extraction, dedup, stats |
+| `test_metrics.py` | 67 | `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB dedup gate and TTL, the outbox, SQLite control-data-only property |
 | `test_banner.py` | 1 | Smoke test that the banner renders |
 
-The suite collects **186 tests** across those four files.
+The suite collects **200 tests** across those four files.
 
 ### Notable classes
 
 | Class | Protects |
 |---|---|
-| `ReviewFindingsTest` | Fixes from past code reviews, kept as explicit regressions — the largest class at 22 tests, and the only coverage of `config.normalize_asn`, the `main.py` extraction helpers, the GeoIP download flow and the claim failure path |
+| `ReviewFindingsTest` | Fixes from past code reviews, kept as explicit regressions — the largest class at 23 tests, and the only coverage of `config.normalize_asn`, the `main.py` extraction helpers, the GeoIP download flow and the claim failure path |
 | `QuestDbDedupTest` | That every dedup key is a **tag** column; a field key would be rejected by QuestDB |
 | `QuestDbGateTest`, `QuestDbFlushGateTest`, `QuestDbSnapshotGateTest` | That nothing is written to QuestDB before dedup is verified, that a failed gate keeps the whole outbox, and that snapshots pass the same gate (against a fake `/exec`, not a live server) |
 | `SqliteControlDataOnlyTest` | That with a backend enabled, SQLite stores control data only |

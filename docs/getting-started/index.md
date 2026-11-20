@@ -11,7 +11,7 @@ you deploy.
 |---|---|---|
 | CrowdSec with a reachable Local API | required | required |
 | Watcher credentials (machine ID + password) | required | required |
-| Python 3.13+ (host runs only) | required | required |
+| Python 3.14+ (host runs only) | required | required |
 | SMTP server | required | — |
 | Outbound DNS to the Abusix zone | required | — |
 | InfluxDB 2.x or QuestDB 10.x | optional | required |

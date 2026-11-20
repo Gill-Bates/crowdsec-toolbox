@@ -1,0 +1,76 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://xarf.org/schemas/v4/types/copyright-copyright.json",
+	"title": "XARF v4 Copyright - Copyright Type Schema",
+	"description": "Schema for Copyright infringement and DMCA violations",
+	"allOf": [
+		{
+			"$ref": "../xarf-core.json"
+		},
+		{
+			"type": "object",
+			"properties": {
+				"category": {
+					"const": "copyright"
+				},
+				"type": {
+					"const": "copyright"
+				},
+				"infringing_url": {
+					"type": "string",
+					"format": "uri",
+					"description": "REQUIRED: URL of the infringing content - this is what's being reported",
+					"examples": [
+						"http://piracy-site.example.com/movies/copyrighted-movie.mp4",
+						"https://file-sharing.example.org/download/12345"
+					]
+				},
+				"work_title": {
+					"type": "string",
+					"maxLength": 500,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Title of the copyrighted work",
+					"examples": [
+						"Avengers: Endgame",
+						"Beatles - Abbey Road",
+						"Adobe Photoshop"
+					]
+				},
+				"rights_holder": {
+					"type": "string",
+					"maxLength": 200,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Organization or person holding the copyright",
+					"examples": [
+						"Disney Enterprises, Inc.",
+						"Sony Music",
+						"Adobe Systems"
+					]
+				},
+				"original_url": {
+					"type": "string",
+					"format": "uri",
+					"description": "OPTIONAL: URL of the legitimate/original content",
+					"examples": [
+						"https://www.studio.example/movies/blockbuster-film"
+					]
+				},
+				"infringement_type": {
+					"type": "string",
+					"enum": [
+						"direct_copy",
+						"modified_copy",
+						"streaming",
+						"download",
+						"distribution"
+					],
+					"x-recommended": true,
+					"description": "RECOMMENDED: Type of copyright infringement"
+				}
+			},
+			"required": [
+				"infringing_url"
+			]
+		}
+	]
+}

@@ -10,7 +10,7 @@ reporter it is optional and off by default.
 | Default table | `crowdsec-abuse` | `crowdsec` |
 | What a point represents | one sent or failed report | one alert (or one event) |
 
-Any value other than the three supported ones aborts at startup.
+Any other value aborts at startup; `none` exists only in the abuse reporter.
 
 ## Transport
 
@@ -107,9 +107,9 @@ unreachable backend, which stays a deferred batch with exit `0`. The next run
 repeats the gate and sends the outbox when it passes.
 
 Two outcomes are kept apart in the log and in the result: *data written* and
-*database correctly configured*. After a successful write, a `QUESTDB_TTL` that
-cannot be set exits `1` as well, but the data stays stored and is not sent again;
-the next run sends it anyway. The reporter behaves the same: rows already
+*database correctly configured*. After a successful write, a `QUESTDB_TTL` or rollup that
+cannot be set up exits `1` as well, but the data stays stored and is not sent again.
+The reporter behaves the same: rows already
 acknowledged leave the outbox and are not resent for a failed TTL. A failed
 downsampling rollup logs an error and
 keeps the full raw TTL, which loses no data and does not change the exit code.
@@ -150,21 +150,22 @@ table above):
    table above, and copy the rows with `INSERT INTO new SELECT * FROM old`; the
    upsert keys collapse the duplicates.
 3. Rename the old table out of the way and the new one to the original name.
-4. Bump `QUESTDB_DOWNSAMPLING_SCHEMA_VERSION` in `app/config.py` when downsampling
-   is on: a rollup view stays bound to the old base table, so the swapped table
+4. Bump `QUESTDB_DOWNSAMPLING_SCHEMA_VERSION` in the tool's `app/config.py`
+   when downsampling is on: a rollup view stays bound to the old base table, so the swapped table
    needs a new view.
 5. Start the tool and check that the gate reports dedup as verified.
 
 ## Retention
 
 `QUESTDB_TTL` is applied after each successful write with
-`ALTER TABLE ... SET TTL`.
+`ALTER TABLE ... SET TTL`; `0` removes an existing TTL with `SET TTL 0 HOURS`
+([TTL: removing](https://questdb.com/docs/concepts/ttl/)).
 
 | Value | Meaning |
 |---|---|
 | `365d` | Default |
 | `12w`, `6M`, `1y`, `48h` | Other accepted units |
-| `0` | Retention disabled |
+| `0` | Retention disabled; an existing TTL on the table and on the rollup view is removed |
 
 A failure logs a warning; both tools also exit `1` (the data stays
 stored and is not sent again). InfluxDB retention is configured on the bucket, not
@@ -174,11 +175,14 @@ by these tools.
     The events table grows far faster than the alert table. See
     [Per-Event Export](../metrics-exporter/events.md#cost).
 
-### Downsampling (QuestDB only)
+### Downsampling (QuestDB)
 
-`QUESTDB_DOWNSAMPLING` keeps the raw rows for a short window and the long-term
-history in a materialized rollup view. The view carries `QUESTDB_TTL`, the raw
-table the profile's shorter window.
+`QUESTDB_DOWNSAMPLING` is opt-in in both tools and takes the same profiles. It
+keeps the raw rows for a short window and the long-term history in a
+materialized rollup view. The view carries `QUESTDB_TTL`, the raw table the
+profile's shorter window. Without a profile both tools keep the raw table at
+`QUESTDB_TTL` and create no view. A view's TTL is independent of its base
+table's TTL ([TTL: materialized views](https://questdb.com/docs/concepts/ttl/)).
 
 | Profile | Raw window | Rollup interval |
 |---|---|---|
@@ -187,18 +191,31 @@ table the profile's shorter window.
 | `medium` | 30 days | 1h |
 | `high` | 7 days | 6h |
 
-The rollup keeps `host`, `country` and `scenario` and aggregates
-`count()` as `decisions_count` plus `sum`/`max` of `events_count`. Dropping
-`ip_address`, `as_name` and `as_number` is what shrinks the history; the
-per-IP coordinates are meaningless once IPs are collapsed and are not carried
-over. The view is named
+Exporter alert table: the rollup keeps `host`, `country` and `scenario` and
+aggregates `count()` as `decisions_count` plus `sum`/`max` of `events_count`.
+Dropping `ip_address`, `as_name` and `as_number` is what shrinks the history;
+the per-IP coordinates are meaningless once IPs are collapsed and are not
+carried over.
+
+Abuse reporter report table: the rollup keeps `host`, `country`, `scenario` and
+`status` and aggregates `count()` as `reports_count` plus `avg`/`max` of
+`processing_time`. `abuse_email` and `error_message` are strings and `alert_id`
+is an identity, so none of them has a meaningful aggregate and they are not
+carried over. `METRICS_ONLY` snapshot points (`status=observed`) land in the
+same table and are counted under that status. The dimensions are a subset of
+the table's dedup keys, as QuestDB requires for a view over a deduplicated
+table ([Materialized views](https://questdb.com/docs/concepts/materialized-views/)). The view is named
 `<table>_rollup_<interval>_v<schema version>`, so a later definition change
 creates a new view instead of altering an existing one.
 
-The raw TTL is only shortened once `materialized_views()` reports the view as
-`valid` and caught up with the base table. Any failure — unreachable database,
-a view that is still refreshing, a missing column — leaves the full raw
-retention in place, so no interval is dropped before the rollup covers it.
+Order in both tools after a successful write: create the view if missing,
+set the view's TTL, check `materialized_views()`, set the raw TTL, then publish
+the effective state. The raw TTL is only shortened once the view is `valid` and
+`refresh_base_table_txn` has reached `base_table_txn`. A view that is still
+refreshing keeps the full raw retention and does not fail the run; an `invalid`
+view, failed DDL or an unreadable status keeps it too but exits `1`. QuestDB
+documents `REFRESH MATERIALIZED VIEW ... FULL` as the recovery for an invalid
+view; it deletes the view's data and is never run automatically.
 
 !!! warning "Switching a profile off does not restore raw history"
     Clearing `QUESTDB_DOWNSAMPLING` puts `QUESTDB_TTL` back on the raw table at
@@ -213,9 +230,12 @@ resolution for the whole `QUESTDB_TTL` window.
 
 ### The effective retention is queryable
 
-Both the configured TTL and the active profile are written into the
-`_crowdsec_downsampling` table after each run, so a dashboard does not have to
-read `settings.env`:
+Both tools write the configured TTL and the effective profile into the shared
+`_crowdsec_downsampling` table (one row per `table_name`) after each run, so a
+dashboard does not have to read `settings.env`. The row is written only after
+the raw TTL is in force, and `enabled` is true only for a valid, caught-up
+rollup; a refreshing or failed rollup is published as `disabled` with the full
+raw window:
 
 | Column | Meaning |
 |---|---|
@@ -226,6 +246,10 @@ read `settings.env`:
 | `raw_days` | Days of full-resolution history |
 | `rollup_interval`, `rollup_view` | Sample interval and view name, empty when disabled |
 | `total_ttl` | The configured `QUESTDB_TTL`, e.g. `365 DAYS` |
+
+`raw_days` counts whole days. A value of `0` can mean that TTL is disabled or
+that the configured TTL is shorter than one day; check `total_ttl` to tell them
+apart.
 
 ```sql
 SELECT * FROM _crowdsec_downsampling
@@ -256,9 +280,8 @@ at the start of a run (draining what an earlier run could not deliver) and at th
 end (this run's points, oldest first, in one batch).
 
 !!! note "Replay is safe because it is exactly idempotent"
-    This is what makes the whole approach work without bookkeeping. The timestamp
-    is baked into the line by `format_report_line()` and is part of the dedup key
-    set, so re-sending a point the backend already holds collapses onto the same
+    The timestamp is baked into the line by `format_report_line()` and is part of
+    the dedup key set, so re-sending a point the backend already holds collapses onto the same
     row. There is no need to determine *which* point of a failed batch was
     rejected — the spool is simply replayed in full.
 
@@ -301,13 +324,13 @@ entrypoint's metrics loop logs without touching the heartbeat.
 
 ## Variable reference
 
-The variables are identical for both tools:
+The variables are identical for both tools (`QUESTDB_DOWNSAMPLING` is described under Retention):
 
 | Variable | Applies to |
 |---|---|
 | `METRICS_BACKEND`, `REQUEST_TIMEOUT` | both backends |
 | `INFLUXDB_URL`, `INFLUXDB_PORT`, `INFLUXDB_USE_HTTPS`, `INFLUXDB_VALIDATE_CERTIFICATE`, `INFLUXDB_ORGANIZATION`, `INFLUXDB_BUCKET`, `INFLUXDB_TOKEN` | `influxdb2` |
-| `QUESTDB_URL`, `QUESTDB_PORT`, `QUESTDB_USE_HTTPS`, `QUESTDB_VALIDATE_CERTIFICATE`, `QUESTDB_TABLE`, `QUESTDB_TTL`, `QUESTDB_TOKEN`, `QUESTDB_USERNAME`, `QUESTDB_PASSWORD` | `questdb` |
+| `QUESTDB_URL`, `QUESTDB_PORT`, `QUESTDB_USE_HTTPS`, `QUESTDB_VALIDATE_CERTIFICATE`, `QUESTDB_TABLE`, `QUESTDB_TTL`, `QUESTDB_DOWNSAMPLING`, `QUESTDB_TOKEN`, `QUESTDB_USERNAME`, `QUESTDB_PASSWORD` | `questdb` |
 
 Full descriptions: [exporter](../metrics-exporter/configuration.md) ·
 [abuse reporter](../abuse-reporter/configuration.md#metrics-backend).

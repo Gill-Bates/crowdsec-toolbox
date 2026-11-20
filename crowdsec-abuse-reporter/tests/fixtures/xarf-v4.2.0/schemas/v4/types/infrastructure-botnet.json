@@ -1,0 +1,88 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://xarf.org/schemas/v4/types/infrastructure-botnet.json",
+	"title": "XARF v4 Infrastructure - Botnet Type Schema",
+	"description": "Schema for Botnet infections and compromised systems",
+	"allOf": [
+		{
+			"$ref": "../xarf-core.json"
+		},
+		{
+			"type": "object",
+			"properties": {
+				"category": {
+					"const": "infrastructure"
+				},
+				"type": {
+					"const": "botnet"
+				},
+				"malware_family": {
+					"type": "string",
+					"maxLength": 200,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Malware family classification",
+					"examples": [
+						"conficker",
+						"mirai",
+						"emotet",
+						"zeus"
+					]
+				},
+				"c2_server": {
+					"type": "string",
+					"x-recommended": true,
+					"description": "RECOMMENDED: Command and control server domain or IP",
+					"examples": [
+						"evil-c2.example.com",
+						"192.0.2.100"
+					]
+				},
+				"c2_protocol": {
+					"type": "string",
+					"enum": [
+						"http",
+						"https",
+						"tcp",
+						"udp",
+						"dns",
+						"irc",
+						"p2p",
+						"custom"
+					],
+					"x-recommended": true,
+					"description": "RECOMMENDED: Protocol used for C2 communications"
+				},
+				"bot_capabilities": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"enum": [
+							"ddos",
+							"spam",
+							"proxy",
+							"keylogger",
+							"file_download",
+							"remote_shell",
+							"cryptocurrency_mining",
+							"data_theft"
+						]
+					},
+					"x-recommended": true,
+					"description": "RECOMMENDED: Capabilities observed in the bot"
+				},
+				"compromise_evidence": {
+					"type": "string",
+					"description": "REQUIRED: Evidence of how compromise was detected",
+					"examples": [
+						"C2 communication observed",
+						"Malicious process running",
+						"Suspicious network traffic patterns"
+					]
+				}
+			},
+			"required": [
+				"compromise_evidence"
+			]
+		}
+	]
+}

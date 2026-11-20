@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 from datetime import UTC, datetime
 
 # Color codes for terminal output (only used when stdout/stderr is a TTY)
@@ -47,11 +48,33 @@ def format_timestamp() -> str:
 
 def _sanitize_log_message(message: object) -> str:
     """Escape control characters to keep log entries single-line."""
-    return str(message).replace("\r", "\\r").replace("\n", "\\n")
+    escaped = []
+    for char in str(message):
+        if char == "\r":
+            escaped.append("\\r")
+        elif char == "\n":
+            escaped.append("\\n")
+        elif char == "\t":
+            escaped.append("\\t")
+        elif unicodedata.category(char) == "Cc":
+            escaped.append(f"\\x{ord(char):02x}")
+        elif char in {"\u2028", "\u2029"}:
+            escaped.append(f"\\u{ord(char):04x}")
+        else:
+            escaped.append(char)
+    return "".join(escaped)
 
 
 def _format_line(tag: str, message: str) -> str:
     return f"{format_timestamp()} | {tag:<8} | {LOG_SOURCE} | {_sanitize_log_message(message)}"
+
+
+def _write_line(level: str, line: str) -> None:
+    """Write a formatted line to stderr (WARNING and above) or stdout, coloured on a TTY."""
+    stream = sys.stderr if level in _STDERR_LEVELS else sys.stdout
+    if stream.isatty() and not os.environ.get("NO_COLOR"):
+        line = f"{COLORS.get(level, COLORS['INFO'])}{line}{COLORS['RESET']}"
+    print(line, file=stream)
 
 
 def print_log(level: str, tag: str, message: str) -> None:
@@ -61,11 +84,10 @@ def print_log(level: str, tag: str, message: str) -> None:
     ``tag`` is the level-column value, usually TAGS[level] (mail errors log as
     MAIL on stderr). Colour only on a TTY with NO_COLOR unset.
     """
-    stream = sys.stderr if level in _STDERR_LEVELS else sys.stdout
-    line = _format_line(tag, message)
-    if stream.isatty() and not os.environ.get("NO_COLOR"):
-        line = f"{COLORS.get(level, COLORS['INFO'])}{line}{COLORS['RESET']}"
-    print(line, file=stream)
+    levelno = logging.getLevelName(level)
+    if isinstance(levelno, int) and not logging.getLogger().isEnabledFor(levelno):
+        return
+    _write_line(level, _format_line(tag, message))
 
 
 class _AppLogFormatter(logging.Formatter):
@@ -86,11 +108,7 @@ class _SplitStreamHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            stream = sys.stderr if record.levelname in _STDERR_LEVELS else sys.stdout
-            line = self.format(record)
-            if stream.isatty() and not os.environ.get("NO_COLOR"):
-                line = f"{COLORS.get(record.levelname, COLORS['INFO'])}{line}{COLORS['RESET']}"
-            print(line, file=stream)
+            _write_line(record.levelname, self.format(record))
         except Exception:
             self.handleError(record)
 
@@ -249,8 +267,22 @@ def print_config_info(message: str) -> None:
 
 def print_debug(message: str) -> None:
     """Print debug-level message — suppressed unless LOG_LEVEL=DEBUG."""
-    if logging.getLogger().isEnabledFor(logging.DEBUG):
-        print_log("DEBUG", TAGS["DEBUG"], message)
+    print_log("DEBUG", TAGS["DEBUG"], message)
+
+
+def print_info(message: str) -> None:
+    """Print an informational message."""
+    print_log("INFO", TAGS["INFO"], message)
+
+
+def print_warning(message: str) -> None:
+    """Print a warning to stderr."""
+    print_log("WARNING", TAGS["WARNING"], message)
+
+
+def print_error(message: str) -> None:
+    """Print an error to stderr."""
+    print_log("ERROR", TAGS["ERROR"], message)
 
 
 def print_summary_header(message: str) -> None:

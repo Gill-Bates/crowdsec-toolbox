@@ -39,7 +39,7 @@ crowdsec-toolbox/
 ```bash
 git clone https://github.com/Gill-Bates/crowdsec-toolbox.git
 cd crowdsec-toolbox
-python3 -m venv .venv && source .venv/bin/activate
+python3.14 -m venv .venv && source .venv/bin/activate
 pip install --upgrade "pip>=25.1"
 pip install --group crowdsec-abuse-reporter/pyproject.toml:default \
             --group crowdsec-abuse-reporter/pyproject.toml:dev \
@@ -55,9 +55,9 @@ lets ruff resolve imports across the whole repository in one pass.
 
 ## Conventions
 
-- **Python 3.13+ only.** Modern idioms: `pathlib`, `|` unions, `StrEnum`,
+- **Python 3.14+ only.** Modern idioms: `pathlib`, `|` unions, `StrEnum`,
   `typing.Self`, timezone-aware datetimes. No `typing.Optional`, no `os.path`, no
-  pre-3.13 compatibility shims.
+  pre-3.14 compatibility shims.
 - **Comments and docstrings in English.** User-facing strings are frequently
   German and must keep their wording and non-ASCII characters.
 - **Keep changes scoped to one tool.** Do not refactor across the toolbox.

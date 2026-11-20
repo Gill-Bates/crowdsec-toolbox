@@ -61,7 +61,7 @@ class _FakeQuestDb:
         dedup=True,
         wal=True,
         keys=None,
-        show_create="",
+        show_create="CREATE TABLE t (...) WAL DEDUP UPSERT KEYS(timestamp, host)",
         ttl_status=200,
         alter_applies=True,
         build_info="Build Information: QuestDB 10.0.0, JDK 25, Commit Hash abc",
@@ -70,6 +70,9 @@ class _FakeQuestDb:
         self.keys = list(keys if keys is not None else metrics.DEDUP_KEYS)
         self.show_create, self.ttl_status, self.alter_applies = show_create, ttl_status, alter_applies
         self.exec_fail = None
+        self.views: list[list] = []
+        self.state_rows: list[list] = []
+        self.on_write = None  # called after each /write, to model the async refresh
         self.build_info = build_info
         self.events: list[tuple[str, str]] = []
 
@@ -82,11 +85,14 @@ class _FakeQuestDb:
         return [value for kind, value in self.events if kind == "write"]
 
     def count(self, prefix):
-        return sum(1 for query in self.queries if query.startswith(prefix))
+        # The shared downsampling state table has its own CREATE TABLE; it is not the report table.
+        return sum(1 for query in self.queries if query.startswith(prefix) and "_crowdsec_downsampling" not in query)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/write":
             self.events.append(("write", request.content.decode()))
+            if self.on_write:
+                self.on_write()
             return httpx.Response(204)
         query = request.url.params["query"]
         self.events.append(("exec", query))
@@ -105,6 +111,10 @@ class _FakeQuestDb:
         elif "DEDUP ENABLE UPSERT KEYS" in query:
             if self.alter_applies:
                 self.dedup, self.keys = True, re.findall(r'"([^"]+)"', query.split("KEYS", 1)[1])
+        elif "materialized_views()" in query:
+            rows = self.views
+        elif "LATEST ON timestamp PARTITION BY table_name" in query:
+            rows = self.state_rows
         elif "table_columns(" in query:
             rows = [[key] for key in self.keys]
         elif query.startswith("SHOW CREATE TABLE"):
@@ -126,7 +136,11 @@ class _QuestDbStubMixin:
         stack.enter_context(patch.dict(metrics._VERSION_RESULT, clear=True))
         stack.enter_context(patch.object(metrics.time, "sleep"))
         stack.enter_context(patch.object(metrics, "print_config_info"))
-        self.log = stack.enter_context(patch.object(metrics, "print_log"))
+        self.log = MagicMock()
+        for level in ("info", "warning", "error"):
+            stack.enter_context(
+                patch.object(metrics, f"print_{level}", side_effect=lambda msg, lv=level: self.log(lv.upper(), msg))
+            )
         stack.enter_context(
             patch.object(
                 metrics.httpx,
@@ -413,13 +427,13 @@ class MainMetricsFlowTest(unittest.TestCase):
             gih = stack.enter_context(patch.object(crowdsec_main, "GracefulInterruptHandler"))
             gih.return_value.__enter__.return_value.interrupted = False
             code = crowdsec_main.main()
-        wp, run_state = values["flush_points"], values["set_run_state"]
-        return code, wp, run_state
+        flush, run_state = values["flush_points"], values["set_run_state"]
+        return code, flush, run_state
 
     def test_points_written_and_run_state_recorded(self):
-        code, wp, run_state = self._run_main(write_ok=True)
+        code, flush, run_state = self._run_main(write_ok=True)
         self.assertEqual(code, 0)
-        lines = wp.call_args.args[0]
+        lines = flush.call_args.args[0]
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].startswith("crowdsec-abuse,ip_address=8.8.8.8,"))
         final = run_state.call_args_list[-1].args[0]
@@ -430,51 +444,59 @@ class MainMetricsFlowTest(unittest.TestCase):
         # unreachable backend costs a retry on the next run, not the data.
         # Failing the run here would withhold the heartbeat - and eventually flip
         # the container unhealthy - for a condition that loses nothing.
-        code, _wp, run_state = self._run_main(write_ok=False)
+        code, _flush, run_state = self._run_main(write_ok=False)
         self.assertEqual(code, 0)
         self.assertEqual(run_state.call_args_list[-1].args[0]["last_run_exit_code"], "0")
 
     def test_points_lost_when_spool_and_backend_both_fail_fails_the_run(self):
-        code, _wp, run_state = self._run_main(write_ok=False, flush_error=metrics.MetricsLostError("lost"))
+        code, _flush, run_state = self._run_main(write_ok=False, flush_error=metrics.MetricsLostError("lost"))
         self.assertEqual(code, 1)
         self.assertEqual(run_state.call_args_list[-1].args[0]["last_run_exit_code"], "1")
 
     def test_saturated_outbox_fails_a_run_without_decisions(self):
         with patch.object(crowdsec_main, "METRICS_OUTBOX_MAX_ROWS", 100):
-            code, _wp, _rs = self._run_main(write_ok=True, outbox_count=95, decisions=[])
+            code, _flush, _rs = self._run_main(write_ok=True, outbox_count=95, decisions=[])
         self.assertEqual(code, 1)
 
     def test_unsaturated_outbox_keeps_a_run_without_decisions_healthy(self):
         with patch.object(crowdsec_main, "METRICS_OUTBOX_MAX_ROWS", 100):
-            code, _wp, _rs = self._run_main(write_ok=True, outbox_count=5, decisions=[])
+            code, _flush, _rs = self._run_main(write_ok=True, outbox_count=5, decisions=[])
         self.assertEqual(code, 0)
 
     def test_saturated_outbox_fails_the_run(self):
         # Once the spool nears its bound the next prune starts discarding points
         # for real, which is the failure that has to become visible.
         with patch.object(crowdsec_main, "METRICS_OUTBOX_MAX_ROWS", 100):
-            code, _wp, run_state = self._run_main(write_ok=False, outbox_count=95)
+            code, _flush, run_state = self._run_main(write_ok=False, outbox_count=95)
         self.assertEqual(code, 1)
         self.assertEqual(run_state.call_args_list[-1].args[0]["last_run_exit_code"], "1")
 
     def test_pruned_points_fail_the_run(self):
         # Undelivered rows dropped by the outbox bounds are lost data.
-        code, _wp, _rs = self._run_main(write_ok=True, flush_error=metrics.MetricsPrunedError("2 dropped"))
+        code, _flush, _rs = self._run_main(write_ok=True, flush_error=metrics.MetricsPrunedError("2 dropped"))
         self.assertEqual(code, 1)
 
     def test_failed_dedup_gate_fails_the_run_at_once(self):
         # The outbox is below saturation, yet a gate failure must not exit 0.
-        code, _wp, run_state = self._run_main(write_ok=True, flush_error=metrics.MetricsGateError("no dedup"))
+        code, _flush, run_state = self._run_main(write_ok=True, flush_error=metrics.MetricsGateError("no dedup"))
         self.assertEqual(code, 1)
         self.assertEqual(run_state.call_args_list[-1].args[0]["last_run_exit_code"], "1")
 
     def test_failed_dedup_gate_at_startup_flush_is_counted_too(self):
-        code, wp, _rs = self._run_main(write_ok=True, outbox_count=3, flush_error=metrics.MetricsGateError("no dedup"))
+        error = metrics.MetricsGateError("no dedup")
+        code, flush, _rs = self._run_main(write_ok=True, outbox_count=3, flush_error=error)
         self.assertEqual(code, 1)
-        self.assertEqual(wp.call_count, 2)
+        self.assertEqual(flush.call_count, 2)
+
+    def test_startup_flush_error_fails_run_without_new_alerts(self):
+        code, _flush, run_state = self._run_main(
+            write_ok=True, outbox_count=3, flush_error=metrics.MetricsGateError("no dedup"), decisions=[]
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(run_state.call_args_list[-1].args[0]["last_run_exit_code"], "1")
 
     def test_failed_ttl_fails_the_run(self):
-        code, _wp, _rs = self._run_main(write_ok=True, flush_error=metrics.MetricsTtlError("no ttl"))
+        code, _flush, _rs = self._run_main(write_ok=True, flush_error=metrics.MetricsTtlError("no ttl"))
         self.assertEqual(code, 1)
 
 
@@ -635,6 +657,104 @@ class QuestDbDedupTest(unittest.TestCase):
             self.assertNotIn(key, field_names)
 
 
+class QuestDbDownsamplingTest(_QuestDbStubMixin, unittest.TestCase):
+    TABLE = metrics.QUESTDB_TABLE
+    VIEW = f"{metrics.QUESTDB_TABLE}_rollup_1h_v1"
+
+    def _write(self, fake, *, ttl="365 DAYS", profile="medium"):
+        self.start_questdb(fake, ttl=ttl)
+        patcher = patch.object(metrics, "QUESTDB_DOWNSAMPLING", profile)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        days = {"365 DAYS": 365, None: None}[ttl]
+        days_patch = patch.object(metrics, "QUESTDB_TTL_DAYS", days)
+        days_patch.start()
+        self.addCleanup(days_patch.stop)
+        return metrics.write_points(["a"])
+
+    @staticmethod
+    def _state(fake):
+        return [q for q in fake.queries if q.startswith('INSERT INTO "_crowdsec_downsampling"')]
+
+    def test_rollup_dimensions_stay_within_the_dedup_keys(self):
+        self.assertLessEqual(set(metrics.ROLLUP.dimensions), set(metrics.DEDUP_KEYS))
+
+    def test_current_view_shortens_raw_ttl_and_publishes_after_it(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "valid", 4, 4]]
+        self.assertEqual(self._write(fake), metrics.WriteStatus.OK)
+        raw = f'ALTER TABLE "{self.TABLE}" SET TTL 30 DAYS'
+        (state,) = self._state(fake)
+        self.assertIn(f'ALTER MATERIALIZED VIEW "{self.VIEW}" SET TTL 365 DAYS', fake.queries)
+        self.assertLess(fake.queries.index(raw), fake.queries.index(state))
+        self.assertIn("true, 30,", state)
+
+    def test_refreshing_view_keeps_full_raw_ttl_without_failing(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "refreshing", 1, 4]]
+        self.assertEqual(self._write(fake), metrics.WriteStatus.OK)
+        self.assertIn(f'ALTER TABLE "{self.TABLE}" SET TTL 365 DAYS', fake.queries)
+        (state,) = self._state(fake)
+        self.assertIn("'disabled'", state)
+
+    def _warnings(self):
+        return [call.args[1] for call in self.log.call_args_list if call.args[0] == "WARNING"]
+
+    def _raw_ttl(self, fake):
+        return [q for q in fake.queries if q.startswith(f'ALTER TABLE "{self.TABLE}" SET TTL')]
+
+    def test_refresh_lagging_only_this_runs_own_write_still_shortens_the_raw_ttl(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "valid", 4, 4]]
+        fake.on_write = lambda: fake.views.__setitem__(0, [self.VIEW, self.TABLE, "refreshing", 4, 5])
+        self.assertEqual(self._write(fake), metrics.WriteStatus.OK)
+        self.assertEqual(self._warnings(), [])
+        self.assertEqual(self._raw_ttl(fake), [f'ALTER TABLE "{self.TABLE}" SET TTL 30 DAYS'])
+
+    def test_view_behind_the_state_before_the_write_keeps_the_raw_ttl(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "refreshing", 1, 4]]
+        self.assertEqual(self._write(fake), metrics.WriteStatus.OK)
+        self.assertEqual(self._raw_ttl(fake), [f'ALTER TABLE "{self.TABLE}" SET TTL 365 DAYS'])
+
+    def test_persistent_lag_escalates_to_a_warning(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "refreshing", 1, 4]]
+        patcher = patch.object(metrics, "_PENDING_RUNS", {})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for _ in range(metrics._PENDING_WARN_AFTER - 1):
+            self._write(fake)
+        self._write(fake)
+        self.assertIn("consecutive runs", "\n".join(self._warnings()))
+
+    def test_null_symbols_in_the_state_row_do_not_trigger_a_new_insert(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "refreshing", 1, 4]]
+        fake.state_rows = [["disabled", 1, False, 365, None, None, "365 DAYS"]]
+        self.assertEqual(self._write(fake), metrics.WriteStatus.OK)
+        self.assertEqual(self._state(fake), [])
+
+    def test_failed_raw_ttl_publishes_nothing_and_keeps_the_data(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "valid", 4, 4]]
+        fake.exec_fail = lambda q: 400 if q.startswith("ALTER TABLE") and "SET TTL" in q else None
+        self.assertEqual(self._write(fake), metrics.WriteStatus.WRITTEN_TTL_FAILED)
+        self.assertEqual(self._state(fake), [])
+
+    def test_disabled_total_ttl_lifts_the_view_ttl(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "valid", 4, 4]]
+        self.assertEqual(self._write(fake, ttl=None), metrics.WriteStatus.OK)
+        self.assertIn(f'ALTER MATERIALIZED VIEW "{self.VIEW}" SET TTL 0 HOURS', fake.queries)
+
+    def test_profile_off_creates_no_view(self):
+        fake = _FakeQuestDb()
+        self.assertEqual(self._write(fake, profile=""), metrics.WriteStatus.OK)
+        self.assertEqual(fake.count("CREATE MATERIALIZED VIEW"), 0)
+        self.assertIn(f'ALTER TABLE "{self.TABLE}" SET TTL 365 DAYS', fake.queries)
+
+
 class QuestDbGateTest(_QuestDbStubMixin, unittest.TestCase):
     """Dedup is a hard precondition: nothing is written to QuestDB before it is verified."""
 
@@ -678,7 +798,7 @@ class QuestDbGateTest(_QuestDbStubMixin, unittest.TestCase):
 
     def test_non_wal_table_and_skip_mode_block_the_write(self):
         for fake in (_FakeQuestDb(exists=True, wal=False), _FakeQuestDb(show_create="... DEDUP SKIP ...")):
-            with self.subTest(wal=fake.wal):
+            with self.subTest(exists=fake.exists, wal=fake.wal):
                 self.start_questdb(fake)
                 with self.assertRaises(metrics.MetricsGateError):
                     metrics.write_points(["a"])
@@ -704,7 +824,7 @@ class QuestDbGateTest(_QuestDbStubMixin, unittest.TestCase):
     def test_enabling_dedup_on_an_existing_table_warns_with_runbook(self):
         self.start_questdb(_FakeQuestDb(exists=True, dedup=False))
         self.assertEqual(metrics.write_points(["a"]), metrics.WriteStatus.OK)
-        warnings = [c.args[2] for c in self.log.call_args_list if c.args[0] == "WARNING"]
+        warnings = [c.args[1] for c in self.log.call_args_list if c.args[0] == "WARNING"]
         self.assertTrue(any("metrics-backends.md" in w and "NOT deduplicated" in w for w in warnings))
 
     def test_influxdb_needs_no_gate(self):
@@ -801,6 +921,9 @@ class QuestDbSnapshotGateTest(_QuestDbStubMixin, unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(self.fake.writes, [])
         err.assert_called()
+        message = err.call_args.args[1]
+        self.assertIn("point(s) were not written", message)
+        self.assertNotIn("outbox", message)
 
     def test_snapshot_exits_1_after_a_failed_ttl(self):
         self.start_questdb(_FakeQuestDb(ttl_status=500))
@@ -833,10 +956,8 @@ class QuestDbVersionGateTest(_QuestDbStubMixin, _TempDbMixin, unittest.TestCase)
         ):
             with self.subTest(info=info):
                 self.start_questdb(_FakeQuestDb(build_info=info))
-                metrics._VERSION_RESULT.clear()
-                self.log.reset_mock()
                 self.assertFalse(metrics.ensure_questdb_version())
-                message = self.log.call_args_list[-1].args[2]
+                message = self.log.call_args_list[-1].args[1]
                 self.assertIn(f"found {found}, required 10.x; nothing was written", message)
 
     def test_unreachable_server_is_rejected_after_retries(self):

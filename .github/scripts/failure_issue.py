@@ -5,10 +5,9 @@
 #
 
 """Open or update the one tracking issue of a failed scheduled workflow run.
+
 Runs inside GitHub Actions with GH_TOKEN set; the issue is found by its exact title.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -20,7 +19,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ci_output import REPO_URL, log, print_header, write_outputs
+from ci_output import REPO_URL, log, print_header
 
 __author__ = "Gill-Bates"
 SCRIPT = Path(__file__).resolve()
@@ -126,7 +125,7 @@ def build_body(workflow: str, event: str, url: str) -> str:
     )
 
 
-def run(args: argparse.Namespace) -> dict[str, str]:
+def run(args: argparse.Namespace) -> None:
     repo = env_value("GITHUB_REPOSITORY", REPO_RE)
     url = run_url()
     body = build_body(
@@ -138,13 +137,12 @@ def run(args: argparse.Namespace) -> dict[str, str]:
     if number is None:
         created = gh("issue", "create", "--repo", repo, "--title", args.title, "--body", body).strip()
         log("info", f"Opened tracking issue: {created}")
-        return {"issue": created, "action": "created"}
+        return
     if mentions_run(repo, number, url):
         log("info", f"Issue #{number} already names this run attempt")
-        return {"issue": str(number), "action": "unchanged"}
+        return
     gh("issue", "comment", str(number), "--repo", repo, "--body", body)
     log("info", f"Added a comment to tracking issue #{number}")
-    return {"issue": str(number), "action": "commented"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -159,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not args.title.strip() or len(args.title) > TITLE_MAX or "\n" in args.title:
             raise IssueError(f"the title must be one line of 1 to {TITLE_MAX} chars")
-        write_outputs(run(args))
+        run(args)
     except (IssueError, OSError, ValueError) as exc:
         log("error", str(exc))
         return 1

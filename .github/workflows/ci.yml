@@ -42,6 +42,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       # The helper lives in the repository, so the checkout has to come first. It prints
       # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
       - name: Agent banner and job temp directory
@@ -91,6 +96,7 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/test_ci_helpers.py
           python3 .github/scripts/test_failure_issue.py
+          python3 .github/scripts/test_shared_code.py
           node --test .github/scripts/test_release_publish.cjs
 
   workflows:
@@ -103,8 +109,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -142,8 +151,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -181,8 +193,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -222,22 +237,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 1
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
-      - name: Agent banner and job temp directory
-        run: python3 .github/scripts/ci_job_setup.py
-
+      # Before the banner: the helper scripts need the requires-python interpreter too.
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           # Matches requires-python in each tool's pyproject.toml.
-          python-version: '3.13'
+          python-version: '3.14'
           cache: pip
           cache-dependency-path: |
             crowdsec-abuse-reporter/pyproject.toml
             crowdsec-metrics-exporter/pyproject.toml
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
 
       # pip >= 25.1 is required for PEP 735 `--group` installs. ruff needs both tools
       # installed to resolve imports across the repository; pytest runs both suites.
@@ -279,8 +291,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -298,8 +313,8 @@ jobs:
       # Exit 0 even with findings: the verdict comes from the report in the next step, and
       # a scanner error still fails this step. Excluded paths are tooling and build output
       # that never ship: .git, virtualenvs, bytecode, the built docs site and tool caches.
-      # Dockerfile misconfiguration is not scanned: both images start as root on purpose
-      # (entrypoint drops to `app` through gosu), which Trivy reports as a HIGH finding.
+      # Dockerfile misconfiguration is not scanned: the reporter image starts as root on
+      # purpose (entrypoint drops to `app` through gosu), which Trivy reports as a HIGH finding.
       - name: Trivy source scan
         run: |
           set -euo pipefail

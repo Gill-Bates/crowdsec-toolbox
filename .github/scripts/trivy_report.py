@@ -11,8 +11,6 @@ Exit 1: findings present and --fail-on-findings was given.
 Exit 2: scanner evidence is invalid, such as a missing report or scan input.
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import re
@@ -26,7 +24,9 @@ __author__ = "Gill-Bates"
 SCRIPT = Path(__file__).resolve()
 HELP_URL = f"{REPO_URL}/blob/main/.github/scripts/{SCRIPT.name}"
 
-CLASSES = ("os-pkgs", "lang-pkgs", "config", "secret")
+CLASSES = ("os-pkgs", "lang-pkgs", "secret")
+# Report schema this gate was written against; an unknown one is refused, not guessed at.
+SUPPORTED_SCHEMA_VERSIONS = (2,)
 SCOPE_LINE = (
     "_Scope: HIGH/CRITICAL findings from enabled scanners; vulnerability scans exclude unfixed CVEs "
     "and `.trivyignore` entries._"
@@ -47,7 +47,7 @@ class ScanError(Exception):
 
 
 def load_report(path: Path) -> dict[str, Any]:
-    """Read the report and check it is a Trivy report with an integer SchemaVersion."""
+    """Read the report and check it is a Trivy report with a supported SchemaVersion."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -55,6 +55,8 @@ def load_report(path: Path) -> dict[str, Any]:
     version = data.get("SchemaVersion") if isinstance(data, dict) else None
     if not isinstance(version, int) or isinstance(version, bool):
         raise ScanError("not a Trivy report (SchemaVersion is not an integer)")
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        raise ScanError(f"unsupported Trivy report SchemaVersion {version}")
     results = data.get("Results")
     if results is not None and not (isinstance(results, list) and all(isinstance(r, dict) for r in results)):
         raise ScanError("Results is not a list of objects")
@@ -82,19 +84,14 @@ def prove_coverage(report: dict[str, Any], classes: list[str], scan_input: Path 
                 raise ScanError("secret scan input missing or empty")
             covered.append(f"secret input: {scan_input} is present and non-empty")
             continue
-        field = "MisconfSummary" if cls == "config" else "Packages"
         proofs = [
             r
             for r in results_of(report)
-            if r.get("Class") == cls
-            and (isinstance(r.get(field), dict) if cls == "config" else isinstance(r.get(field), list) and r[field])
+            if r.get("Class") == cls and isinstance(r.get("Packages"), list) and r["Packages"]
         ]
         if not proofs:
-            hint = "" if cls == "config" else " (scan without list-all-pkgs?)"
-            raise ScanError(f"no {cls} result with {field} in the report{hint}")
-        for r in proofs:
-            size = "" if cls == "config" else f", {len(r[field])} packages"
-            covered.append(f"{cls}: {r.get('Target', 'unknown target')}{size}")
+            raise ScanError(f"no {cls} result with Packages in the report (scan without list-all-pkgs?)")
+        covered.extend(f"{cls}: {r.get('Target', 'unknown target')}, {len(r['Packages'])} packages" for r in proofs)
     return covered
 
 
@@ -177,15 +174,6 @@ def render(title: str | None, verdict: str, rows: list[tuple[str, ...]], limit: 
     return "\n".join(lines)
 
 
-def write_verdict(path: Path | None, verdict: str) -> None:
-    if path is None:
-        return
-    try:
-        path.write_text(f"{verdict}\n", encoding="utf-8")
-    except OSError as exc:
-        raise ScanError(f"cannot write verdict file ({exc.__class__.__name__})") from exc
-
-
 def run_status(args: argparse.Namespace) -> int:
     report = load_report(args.report)
     # A clean secret scan has no Results, so the log must show the scanner was enabled.
@@ -201,7 +189,6 @@ def run_status(args: argparse.Namespace) -> int:
     critical = sum(1 for row in rows if row[0] == "CRITICAL")
     high = len(rows) - critical
     verdict = verdict_line(critical, high)
-    write_verdict(args.verdict_file, verdict)
     summary = render(args.summary_title, verdict, rows, args.list)
     if "secret" in args.expect_class and not verdict.startswith(FAILED_PREFIX):
         summary = f"{summary}\n\n_{SCAN_EVIDENCE_NOTE}_"
@@ -233,7 +220,6 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--log-file", type=Path, help="Captured scanner log; required for class secret")
     status.add_argument("--input", type=Path, help="Scan input, required for 'secret'")
     status.add_argument("--fail-on-findings", action="store_true", help="Exit 1 on findings")
-    status.add_argument("--verdict-file", type=Path, help="Also write the verdict line here")
     status.add_argument("--summary-title", help="Print a markdown summary under this heading")
     status.add_argument("--list", type=int, default=0, help="List up to N findings")
     return parser
@@ -248,10 +234,6 @@ def main(argv: list[str] | None = None) -> int:
     except ScanError as exc:
         verdict = f"{FAILED_PREFIX}{exc}"
         log("error", verdict)
-        try:
-            write_verdict(args.verdict_file, verdict)
-        except ScanError as write_exc:
-            log("error", str(write_exc))
         print(render(args.summary_title, verdict, [], 0))
         return 2
 

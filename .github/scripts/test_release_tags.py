@@ -16,6 +16,7 @@ import release_tags
 AMD64 = "sha256:" + "a" * 64
 ARM64 = "sha256:" + "b" * 64
 INDEX = "sha256:" + "c" * 64
+IMAGE = "giiibates/crowdsec-toolbox"
 
 
 def manifest_json(*descriptors: dict) -> str:
@@ -35,18 +36,18 @@ class ReleaseTagParsingTest(unittest.TestCase):
             "metrics-exporter-latest",
         ]
 
-        self.assertEqual(release_tags.newer_release_tags("1.9.0", tags), [])
+        self.assertEqual(release_tags.newer_stable_release_tags("1.9.0", tags), [])
 
     def test_real_release_tag_from_either_tool_blocks_older_latest(self):
         self.assertEqual(
-            release_tags.newer_release_tags("1.9.0", ["metrics-exporter-2.0.0"]),
+            release_tags.newer_stable_release_tags("1.9.0", ["metrics-exporter-2.0.0"]),
             ["metrics-exporter-2.0.0"],
         )
 
     def test_numeric_prerelease_identifiers_sort_numerically(self):
-        self.assertEqual(
-            release_tags.newer_release_tags("1.2.3-rc.2", ["abuse-reporter-1.2.3-rc.10"]),
-            ["abuse-reporter-1.2.3-rc.10"],
+        self.assertGreater(
+            release_tags.release_tag_key("abuse-reporter-1.2.3-rc.10"),
+            release_tags.version_key("1.2.3-rc.2"),
         )
 
     def test_newest_output_ignores_a_newer_prerelease(self):
@@ -94,17 +95,18 @@ class ManifestVerificationTest(unittest.TestCase):
         tag = Mock()
 
         release_tags.publish_verified_version_tag(
-            "giiibates/crowdsec-toolbox",
+            IMAGE,
             "abuse-reporter",
             "1.9.0",
             INDEX,
             expected,
             already_published=True,
+            exists=Mock(),
             inspect=inspect,
             tag=tag,
         )
 
-        inspect.assert_called_once_with("giiibates/crowdsec-toolbox:abuse-reporter-1.9.0")
+        inspect.assert_called_once_with(f"{IMAGE}:abuse-reporter-1.9.0")
         tag.assert_not_called()
 
     def test_existing_version_tag_with_a_different_digest_is_rejected(self):
@@ -114,17 +116,65 @@ class ManifestVerificationTest(unittest.TestCase):
 
         with self.assertRaisesRegex(release_tags.ReleaseTagsError, "already points to a different digest"):
             release_tags.publish_verified_version_tag(
-                "giiibates/crowdsec-toolbox",
+                IMAGE,
                 "abuse-reporter",
                 "1.9.0",
                 INDEX,
                 expected,
                 already_published=True,
+                exists=Mock(),
                 inspect=inspect,
                 tag=tag,
             )
 
         tag.assert_not_called()
+
+    def test_version_tag_missing_from_the_list_but_present_with_another_digest_is_not_overwritten(self):
+        expected = release_tags.expected_manifest(self.digest_dir, "abuse-reporter")
+        inspect = Mock(return_value=(AMD64, expected))
+        tag = Mock()
+        with self.assertRaisesRegex(release_tags.ReleaseTagsError, "already points to a different digest"):
+            release_tags.publish_verified_version_tag(
+                IMAGE,
+                "abuse-reporter",
+                "1.9.0",
+                INDEX,
+                expected,
+                already_published=False,
+                exists=lambda name: name == "abuse-reporter-1.9.0",
+                inspect=inspect,
+                tag=tag,
+            )
+        tag.assert_not_called()
+
+    def test_failed_version_tag_lookup_stops_before_any_write(self):
+        expected = release_tags.expected_manifest(self.digest_dir, "abuse-reporter")
+        tag = Mock()
+        exists = Mock(side_effect=release_tags.ReleaseTagsError("Docker Hub API returned HTTP 500"))
+        with self.assertRaises(release_tags.ReleaseTagsError):
+            release_tags.publish_verified_version_tag(
+                IMAGE,
+                "abuse-reporter",
+                "1.9.0",
+                INDEX,
+                expected,
+                already_published=False,
+                exists=exists,
+                inspect=Mock(),
+                tag=tag,
+            )
+        tag.assert_not_called()
+
+    def test_tag_lookup_treats_404_as_free_and_other_errors_as_failures(self):
+        with patch.object(release_tags, "_request_json", return_value=(404, None)):
+            self.assertFalse(release_tags.tag_exists("owner", "token", "abuse-reporter-1.9.0"))
+        with patch.object(release_tags, "_request_json", return_value=(200, {"name": "abuse-reporter-1.9.0"})):
+            self.assertTrue(release_tags.tag_exists("owner", "token", "abuse-reporter-1.9.0"))
+        with (
+            patch.object(release_tags, "_request_json", return_value=(204, None)),
+            self.assertRaises(release_tags.ReleaseTagsError),
+        ):
+            release_tags.tag_exists("owner", "token", "abuse-reporter-1.9.0")
 
     def test_duplicate_platform_is_rejected(self):
         output = manifest_json(descriptor("amd64", AMD64), descriptor("amd64", ARM64))
@@ -146,17 +196,15 @@ class ManifestVerificationTest(unittest.TestCase):
             patch.object(release_tags, "docker_command", docker),
             patch.object(release_tags, "inspect_manifest", inspect),
         ):
-            digest = release_tags.create_candidate(
-                "giiibates/crowdsec-toolbox", "abuse-reporter", "1.9.0", "123456", self.digest_dir
-            )
+            digest = release_tags.create_candidate(IMAGE, "abuse-reporter", "1.9.0", "123456", self.digest_dir)
 
         self.assertEqual(digest, INDEX)
         command = docker.call_args.args[0]
         self.assertEqual(command[0:3], ["buildx", "imagetools", "create"])
         self.assertIn("--tag", command)
-        self.assertIn("giiibates/crowdsec-toolbox:abuse-reporter-candidate-123456", command)
-        self.assertIn(f"giiibates/crowdsec-toolbox@{AMD64}", command)
-        self.assertIn(f"giiibates/crowdsec-toolbox@{ARM64}", command)
+        self.assertIn(f"{IMAGE}:abuse-reporter-candidate-123456", command)
+        self.assertIn(f"{IMAGE}@{AMD64}", command)
+        self.assertIn(f"{IMAGE}@{ARM64}", command)
 
 
 class PushedDigestParsingTest(unittest.TestCase):
@@ -211,13 +259,14 @@ class PromotionOrderingTest(unittest.TestCase):
             events.append(("tag", name, digest))
 
         is_newest = release_tags.promote_release(
-            "giiibates/crowdsec-toolbox",
+            IMAGE,
             "1.9.0",
             "123456",
             self.digest_dir,
             list_tags,
             inspect,
             tag,
+            lambda _tag: False,
         )
 
         self.assertTrue(is_newest)
@@ -229,8 +278,8 @@ class PromotionOrderingTest(unittest.TestCase):
         self.assertEqual(
             set(candidates_before_listing),
             {
-                "giiibates/crowdsec-toolbox:abuse-reporter-candidate-123456",
-                "giiibates/crowdsec-toolbox:metrics-exporter-candidate-123456",
+                f"{IMAGE}:abuse-reporter-candidate-123456",
+                f"{IMAGE}:metrics-exporter-candidate-123456",
             },
         )
         self.assertLess(listing_position, tag_positions[0])
@@ -264,13 +313,14 @@ class PromotionOrderingTest(unittest.TestCase):
         tag = Mock(side_effect=lambda *_: events.append(("tag",)))
         with self.assertRaisesRegex(release_tags.ReleaseTagsError, "does not match"):
             release_tags.promote_release(
-                "giiibates/crowdsec-toolbox",
+                IMAGE,
                 "1.9.0",
                 "123456",
                 self.digest_dir,
                 list_tags,
                 inspect,
                 tag,
+                lambda _tag: False,
             )
 
         self.assertNotIn(("list-tags",), events)
@@ -295,13 +345,14 @@ class PromotionOrderingTest(unittest.TestCase):
         tag = Mock()
         with self.assertRaisesRegex(release_tags.ReleaseTagsError, "does not match"):
             release_tags.promote_release(
-                "giiibates/crowdsec-toolbox",
+                IMAGE,
                 "1.9.0",
                 "123456",
                 self.digest_dir,
                 list_tags,
                 inspect,
                 tag,
+                lambda _tag: False,
             )
 
         self.assertIn(("list-tags",), events)
@@ -318,13 +369,14 @@ class PromotionOrderingTest(unittest.TestCase):
         tag = Mock()
         with self.assertRaisesRegex(release_tags.ReleaseTagsError, "already points to a different digest"):
             release_tags.promote_release(
-                "giiibates/crowdsec-toolbox",
+                IMAGE,
                 "1.9.0",
                 "123456",
                 self.digest_dir,
                 lambda: existing,
                 inspect,
                 tag,
+                lambda _tag: False,
             )
 
         tag.assert_not_called()
@@ -334,13 +386,14 @@ class PromotionOrderingTest(unittest.TestCase):
         inspect = Mock(return_value=(INDEX, self.expected))
         tag = Mock(side_effect=lambda _image, name, _digest: tags.append(name))
         is_newest = release_tags.promote_release(
-            "giiibates/crowdsec-toolbox",
+            IMAGE,
             "1.9.0",
             "123456",
             self.digest_dir,
             lambda: ["metrics-exporter-2.0.0"],
             inspect,
             tag,
+            lambda _tag: False,
         )
 
         self.assertFalse(is_newest)
@@ -352,13 +405,14 @@ class PromotionOrderingTest(unittest.TestCase):
         tag = Mock(side_effect=lambda _image, name, _digest: tags.append(name))
 
         is_newest = release_tags.promote_release(
-            "giiibates/crowdsec-toolbox",
+            IMAGE,
             "1.9.0",
             "123456",
             self.digest_dir,
             lambda: ["metrics-exporter-2.0.0-rc.1"],
             inspect,
             tag,
+            lambda _tag: False,
         )
 
         self.assertTrue(is_newest)
@@ -377,13 +431,14 @@ class PromotionOrderingTest(unittest.TestCase):
         inspect = Mock(return_value=(INDEX, self.expected))
         tag = Mock(side_effect=lambda _image, name, _digest: tags.append(name))
         is_newest = release_tags.promote_release(
-            "giiibates/crowdsec-toolbox",
+            IMAGE,
             "1.9.0-rc.1",
             "123456",
             self.digest_dir,
             list,
             inspect,
             tag,
+            lambda _tag: False,
         )
 
         self.assertTrue(is_newest)
@@ -418,6 +473,21 @@ class ReleaseNotesCompositionTest(unittest.TestCase):
         self.assertIn("`Fix` Metrics Exporter fix.", notes)
         self.assertIn("1 file, 2 lines", notes)
         self.assertNotIn("Previous release content", notes)
+
+    def test_collapsed_previous_versions_stay_out_of_the_notes(self):
+        def changelog(entry: str) -> str:
+            return (
+                f"## [1.0.3] - 2026-11-19\n\n- `New` {entry}\n\n"
+                '<details markdown="1">\n<summary>Previous versions...</summary>\n\n'
+                "## [1.0.2] - 2026-11-01\n\n- Old entry.\n\n</details>\n"
+            )
+
+        notes = release_notes.compose_release_notes("1.0.3", changelog("Abuse"), changelog("Metrics"), "cloc table")
+
+        self.assertNotIn("details", notes)
+        self.assertNotIn("Previous versions", notes)
+        self.assertNotIn("Old entry", notes)
+        self.assertIn("cloc table", notes)
 
     def test_requires_matching_release_dates(self):
         abuse = "## [1.0.2] - 2026-11-19\n\n- `New` Abuse Reporter entry."

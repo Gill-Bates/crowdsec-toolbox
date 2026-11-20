@@ -1,10 +1,10 @@
 [project]
 name = "crowdsec-abuse-reporter"
-version = "1.0.2"
+version = "1.0.3"
 description = "CrowdSec bans to X-ARF abuse reports; at-most-once delivery with SQLite"
 license = "MIT"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 
 [dependency-groups]
 # Runtime dependencies for abuse reporter
@@ -16,8 +16,9 @@ default = [
 # Development dependencies (testing, linting). Pinned on purpose: none of it ships in
 # an image, so a ruff release that changes its rules must not fail CI on untouched code.
 dev = [
+    "jsonschema==4.26.0",
     "pytest==9.2.0",
-    "ruff==0.17.5",
+    "ruff==0.17.6",
 ]
 
 [tool.pytest.ini_options]

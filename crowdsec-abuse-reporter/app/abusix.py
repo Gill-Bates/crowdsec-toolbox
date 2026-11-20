@@ -27,18 +27,12 @@ def _build_resolver() -> dns.resolver.Resolver:
     - ``timeout``  caps each individual nameserver attempt.
     - ``lifetime`` caps the total time spent on one lookup (all retries).
 
-    The resolver is taken exclusively from the container's system
-    configuration. Under Docker this is normally the embedded resolver,
-    which forwards to the daemon/host upstream DNS servers.
+    The nameservers come exclusively from the container's system
+    configuration (``get_effective_nameservers``). Under Docker this is
+    normally the embedded resolver, which forwards to the upstream DNS servers.
     """
-    try:
-        resolver = dns.resolver.Resolver()
-    except dns.resolver.NoResolverConfiguration:
-        # No usable /etc/resolv.conf (can happen in minimal containers)
-        resolver = dns.resolver.Resolver(configure=False)
-
+    resolver = dns.resolver.Resolver(configure=False)
     resolver.nameservers = get_effective_nameservers()
-
     resolver.timeout = ABUSIX_TIMEOUT
     resolver.lifetime = ABUSIX_DNS_LIFETIME
     return resolver
@@ -116,9 +110,9 @@ def query_abuse_contact_dns(ip: str) -> str | None:
                 recipients = split_recipients(contact)
                 if recipients:
                     return ",".join(recipients)
-        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        except dns.resolver.NXDOMAIN, dns.resolver.NoAnswer:
             return None
-        except (dns.resolver.Timeout, dns.exception.DNSException) as e:
+        except dns.exception.DNSException as e:
             raise AbuseContactDnsError(str(e)) from e
 
     except ValueError:

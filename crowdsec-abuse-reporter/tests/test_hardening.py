@@ -4,7 +4,9 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
+import base64
 import contextlib
+import email
 import io
 import json
 import logging
@@ -22,6 +24,11 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+try:
+    import jsonschema
+except ImportError:  # dev dependency; the conformance test is skipped without it
+    jsonschema = None
 
 import dns.resolver
 import httpx
@@ -45,6 +52,7 @@ from app import main as crowdsec_main
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENTRYPOINT = _REPO_ROOT / "docker" / "entrypoint.sh"
+_DOCKERFILE = _REPO_ROOT / "docker" / "Dockerfile"
 _STUB_ID = "#!/bin/sh\necho 1000\n"  # non-root uid: skips the chown/gosu branch
 
 
@@ -81,6 +89,20 @@ class AbuseHardeningTest(unittest.TestCase):
 
         self.assertFalse(result[0])
         mail_error.assert_called_once()
+
+    def test_from_header_survives_special_characters_in_sender_name(self):
+        from email import message_from_string, policy
+
+        for name in ("Müller IT", "Doe, John (IT)", "Müller, IT (Security) " + "x" * 60):
+            with patch.object(abuse, "SENDER_NAME", name), patch.object(abuse, "SMTP_SENDER", "abuse@example.org"):
+                msg = abuse._create_mime_message(["a@example.com"], "s", "body", None)
+            raw = msg.as_string()
+            parsed = message_from_string(raw, policy=policy.default)
+            addresses = parsed["From"].addresses
+            self.assertEqual(len(addresses), 1, name)
+            self.assertEqual(addresses[0].addr_spec, "abuse@example.org", name)
+            self.assertEqual(addresses[0].display_name, name, name)
+            self.assertTrue(all(len(line) <= 78 for line in raw.split("\n\n", 1)[0].splitlines()), name)
 
     def _send_with_sendmail(self, **sendmail_kwargs):
         server = MagicMock()
@@ -122,7 +144,7 @@ class AbuseHardeningTest(unittest.TestCase):
 
     def test_xarf_attachment_failure_is_logged_once(self):
         with (
-            patch.object(abuse, "MIMEApplication", side_effect=ValueError("bad attachment")),
+            patch.object(abuse, "MIMEBase", side_effect=ValueError("bad attachment")),
             patch.object(abuse, "print_mail_error") as mail_error,
         ):
             result = abuse.send_abuse_mail("a@example.com", "subject", "body", xarf_attachment="{}", max_retries=1)
@@ -140,6 +162,33 @@ class AbuseHardeningTest(unittest.TestCase):
         self.assertEqual(msg["To"], "one@example.com")
         self.assertEqual(msg["Subject"], "Hello Injected: no")
         self.assertIsNone(msg["Bcc"])
+
+    def test_report_mail_follows_xarf_email_transport_layout(self):
+        # XARF e-mail transport: multipart/report with text, feedback headers, base64 JSON.
+        xarf = json.dumps({"xarf_version": "4.2.0", "note": "Übung"})
+        text = "Zeile mit Umlaut: ü\n" + "word " * 60
+        msg = email.message_from_string(abuse._create_mime_message(["a@example.com"], "s", text, xarf).as_string())
+
+        self.assertEqual(msg.get_content_type(), "multipart/report")
+        self.assertEqual(msg.get_param("report-type"), "feedback-report")
+        parts = msg.get_payload()
+        self.assertEqual(
+            [p.get_content_type() for p in parts],
+            ["text/plain", "message/feedback-report", "application/json"],
+        )
+        self.assertIn("ü", parts[0].get_payload(decode=True).decode("utf-8"))
+        # The parser exposes message/* parts as a nested message holding the headers.
+        self.assertEqual(parts[1].get_payload(0)["Feedback-Type"], "xarf")
+        self.assertEqual(parts[2].get_filename(), "xarf.json")
+        self.assertEqual(parts[2]["Content-Transfer-Encoding"], "base64")
+        self.assertEqual(json.loads(parts[2].get_payload(decode=True)), json.loads(xarf))
+        self.assertTrue(msg["Message-ID"] and msg["Date"])
+        longest = max(len(line) for line in msg.as_string().splitlines())
+        self.assertLessEqual(longest, 78)
+
+    def test_mail_without_xarf_report_is_plain_text(self):
+        msg = abuse._create_mime_message(["a@example.com"], "s", "body")
+        self.assertEqual(msg.get_content_type(), "text/plain")
 
     def test_normalize_recipients_validates_list_entries(self):
         recipients = abuse._normalize_recipients(
@@ -195,6 +244,53 @@ class AbusixHardeningTest(unittest.TestCase):
 
 
 class DatabaseHardeningTest(unittest.TestCase):
+    def test_get_alert_stats_counts_only_failed_status_as_failed(self):
+        with self._fresh_db():
+            statuses = (
+                (1, 1, "sent"),
+                (2, 0, "failed"),
+                (3, 0, "pending"),
+                (4, 0, "unknown_send_state"),
+            )
+            with database.db_transaction() as conn:
+                conn.executemany(
+                    "INSERT INTO abuse_alerts (AlertId, Recipient, IPAddress, Scenario, Sent, Status) "
+                    "VALUES (?, 'a@example.com', ?, 'test', ?, ?)",
+                    [(alert_id, f"203.0.113.{alert_id}", sent, status) for alert_id, sent, status in statuses],
+                )
+
+            self.assertEqual(database.get_alert_stats(), {"total": 4, "successful": 1, "failed": 1})
+
+    def test_database_connection_uses_five_second_busy_timeout(self):
+        with self._fresh_db():
+            conn = database.get_connection()
+            self.assertEqual(conn.execute("PRAGMA busy_timeout").fetchone()[0], 5_000)
+
+    def test_schema_migration_drops_duplicate_indexes(self):
+        with self._fresh_db():
+            with database.db_read() as conn:
+                fresh_alert_indexes = {row[1] for row in conn.execute("PRAGMA index_list('abuse_alerts')")}
+                fresh_cache_indexes = {row[1] for row in conn.execute("PRAGMA index_list('abuse_contacts_cache')")}
+            self.assertNotIn("idx_alert_id", fresh_alert_indexes)
+            self.assertNotIn("idx_cache_prefix", fresh_cache_indexes)
+
+            with database.db_transaction() as conn:
+                conn.execute("CREATE INDEX idx_alert_id ON abuse_alerts(AlertId)")
+                conn.execute("CREATE INDEX idx_cache_prefix ON abuse_contacts_cache(ip_prefix)")
+                conn.execute("PRAGMA user_version = 0")
+            database.close_connection()
+            with patch.object(database, "_db_initialized", False):
+                database.init_db()
+
+            with database.db_read() as conn:
+                alert_indexes = {row[1] for row in conn.execute("PRAGMA index_list('abuse_alerts')")}
+                cache_indexes = {row[1] for row in conn.execute("PRAGMA index_list('abuse_contacts_cache')")}
+                schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+            self.assertNotIn("idx_alert_id", alert_indexes)
+            self.assertNotIn("idx_cache_prefix", cache_indexes)
+            self.assertEqual(schema_version, database._SCHEMA_VERSION)
+
     def test_batch_check_processed_alerts_chunks_large_queries(self):
         class FakeCursor:
             def __init__(self):
@@ -660,10 +756,8 @@ class CrowdsecHardeningTest(unittest.TestCase):
         self.assertEqual(decisions[0]["source"]["ip"], "4.4.4.4")
 
     def test_get_crowdsec_decisions_recovers_ip_from_event_meta_when_source_is_unusable(self):
-        # Models a local crowdsec observation where the ban value is empty but
-        # the source IP is recoverable from event metadata. Using a clearly local
-        # origin avoids confusion with community-blocklist (CAPI) logic, which is
-        # tested separately in test_get_crowdsec_decisions_skips_capi_bans.
+        # A local observation whose ban value is empty but whose source IP is
+        # recoverable from event metadata.
         alerts = [
             {
                 "id": 321,
@@ -861,18 +955,23 @@ class DnsUtilsHardeningTest(unittest.TestCase):
         )
 
 
+def _import_config_with_env(name: str, value: str) -> subprocess.CompletedProcess:
+    """Import app.config in a fresh interpreter with ``name=value`` and no settings file."""
+    env = {**os.environ, name: value, "SETTINGS_PATH": os.devnull}
+    return subprocess.run(
+        [sys.executable, "-c", "from app import config"],
+        check=False,
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 class ConfigWhitelistTest(unittest.TestCase):
     def _import_config(self, value: str) -> subprocess.CompletedProcess:
-        env = {**os.environ, "WHITELISTED_ASN": value, "SETTINGS_ENV": "/nonexistent"}
-        return subprocess.run(
-            [sys.executable, "-c", "from app import config"],
-            check=False,
-            cwd=_REPO_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        return _import_config_with_env("WHITELISTED_ASN", value)
 
     def test_invalid_whitelist_entry_stops_startup(self):
         result = self._import_config("AS8881, AS12foo34")
@@ -881,6 +980,21 @@ class ConfigWhitelistTest(unittest.TestCase):
 
     def test_valid_whitelist_is_accepted(self):
         self.assertEqual(self._import_config("AS8881, 51167,").returncode, 0)
+
+
+class ConfigSmtpSenderTest(unittest.TestCase):
+    def _import_config(self, value: str) -> subprocess.CompletedProcess:
+        return _import_config_with_env("SMTP_SENDER", value)
+
+    def test_non_address_sender_stops_startup(self):
+        for value in ("", "Abuse <abuse@example.net>", "abuse", "abuse@localhost"):
+            with self.subTest(value=value):
+                result = self._import_config(value)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("SMTP_SENDER", result.stderr)
+
+    def test_plain_address_is_accepted(self):
+        self.assertEqual(self._import_config("abuse@example.net").returncode, 0)
 
 
 class ConfigEnvLoaderTest(unittest.TestCase):
@@ -937,7 +1051,6 @@ class ConfigEnvLoaderTest(unittest.TestCase):
 
     def test_missing_file_is_not_an_error(self):
         tmp_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        # Must not raise.
         config.load_settings_env(tmp_dir / "does-not-exist.env", override=True)
 
     def test_unreadable_settings_path_is_an_error(self):
@@ -953,6 +1066,13 @@ class _TtyStream(io.StringIO):
 
 
 class LoggerHardeningTest(unittest.TestCase):
+    def setUp(self):
+        # The print_* helpers honour the root level; capture every level in these tests.
+        root = logging.getLogger()
+        previous = root.level
+        root.setLevel(logging.DEBUG)
+        self.addCleanup(root.setLevel, previous)
+
     def test_print_log_sanitizes_newlines(self):
         stream = io.StringIO()
         with (
@@ -963,6 +1083,19 @@ class LoggerHardeningTest(unittest.TestCase):
 
         self.assertIn("line1\\nline2", stream.getvalue())
 
+    def test_print_log_escapes_terminal_control_characters(self):
+        stream = io.StringIO()
+        message = "before\x1b[31mred\x1b[0m\x07\x7f\x85\t\u2028after"
+        with (
+            patch.object(sys, "stdout", stream),
+            patch.object(sys, "stderr", stream),
+        ):
+            logger.print_log("INFO", "INFO", message)
+
+        output = stream.getvalue()
+        self.assertIn(r"\x1b[31mred\x1b[0m\x07\x7f\x85\t\u2028", output)
+        self.assertFalse(any(char in output for char in "\x1b\x07\x7f\x85\t\u2028"))
+
     def _capture(self, call):
         """Run ``call`` and return (stdout_text, stderr_text) with colours on."""
         out, err = _TtyStream(), _TtyStream()
@@ -971,9 +1104,7 @@ class LoggerHardeningTest(unittest.TestCase):
         return out.getvalue(), err.getvalue()
 
     def test_print_helpers_emit_expected_tag_colour_and_stream(self):
-        # Pins the rendered tag, ANSI colour and target stream of every print_*
-        # helper, so the formatting stays identical when call sites stop passing
-        # a colour that print_log already derives from the level.
+        # Pins the rendered tag, ANSI colour and target stream of every print_* helper.
         cases = [
             (lambda: logger.print_processing(1, 2, "203.0.113.5", "scan"), "PROCESS", "PROCESSING", False),
             (lambda: logger.print_dns_query("203.0.113.5", "IPv4"), "DNS", "DNS_QUERY", False),
@@ -1326,17 +1457,17 @@ class ReviewFindingsTest(unittest.TestCase):
         self.assertNotIn("${DATA_DIR:-/data}", content)
 
     def test_dockerfile_keeps_app_root_owned(self):
-        content = (_REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        content = _DOCKERFILE.read_text(encoding="utf-8")
         self.assertNotIn("chown -R app:app /app", content)
         self.assertIn("chown -R app:app /data", content)
 
     def test_dockerfile_healthcheck_rejects_future_timestamps(self):
-        content = (_REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        content = _DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn('test "$age" -ge 0', content)
         self.assertIn('test "$api_age" -ge 0', content)
 
     def test_dockerfile_runs_tini_and_healthcheck_mirrors_metrics_enable_condition(self):
-        dockerfile = (_REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn('ENTRYPOINT ["/usr/bin/tini", "--", "./entrypoint.sh"]', dockerfile)
         self.assertNotIn("init: true", (_REPO_ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8"))
         # The metrics heartbeat is only required where the entrypoint starts the loop.
@@ -1347,12 +1478,40 @@ class ReviewFindingsTest(unittest.TestCase):
         self.assertIn('test -n "${METRICS_BACKEND:-}" && test "${METRICS_BACKEND}" != none', dockerfile)
 
 
+_XARF_SCHEMA_DIR = Path(__file__).resolve().parent / "fixtures" / "xarf-v4.2.0" / "schemas" / "v4"
+
+
+def _xarf_schema_errors(report: dict) -> list[str]:
+    """Validate a report against the vendored XARF v4.2.0 master schema.
+
+    Mirrors scripts/validate-schemas.py of xarf-spec v4.2.0: relative $refs are
+    inlined, then Draft 2020-12 is applied with format checking.
+    """
+
+    def inline(node, base: Path):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and not ref.startswith(("http", "#")):
+                target = (base / ref).resolve()
+                return inline(json.loads(target.read_text(encoding="utf-8")), target.parent)
+            return {key: inline(value, base) for key, value in node.items()}
+        if isinstance(node, list):
+            return [inline(item, base) for item in node]
+        return node
+
+    master = _XARF_SCHEMA_DIR / "xarf-v4-master.json"
+    schema = inline(json.loads(master.read_text(encoding="utf-8")), master.parent)
+    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
+    return [f"{'/'.join(map(str, e.absolute_path)) or 'root'}: {e.message}" for e in validator.iter_errors(report)]
+
+
 class ReportBodyHardeningTest(unittest.TestCase):
     def test_sensitive_header_lines_are_redacted_in_every_container_shape(self):
         secret = "example-secret-token"  # noqa: S105
         alert = {
             "id": 7,
             "scenario": "s",
+            "start_at": "2026-06-23T19:25:48Z",
             "source": {"ip": "203.0.113.9"},
             "decisions": [{"type": "ban", "scope": "Ip", "value": "203.0.113.9"}],
             "meta": [
@@ -1367,7 +1526,10 @@ class ReportBodyHardeningTest(unittest.TestCase):
         body = reportbody.build_mail_body(alert, hostname="h")
         xarf = reportbody.build_xarf_report(alert, hostname="h")
         self.assertNotIn(secret, body)
-        self.assertNotIn(secret, xarf if isinstance(xarf, str) else json.dumps(xarf))
+        self.assertNotIn(secret, xarf)
+        # The CrowdSec data travels base64-encoded, so check the decoded evidence too.
+        evidence = base64.b64decode(json.loads(xarf)["evidence"][0]["payload"]).decode("utf-8")
+        self.assertNotIn(secret, evidence)
         self.assertIn("Host: example.org", body)
 
     def test_build_mail_body_footer_describes_crowdsec_as_metric_source(self):
@@ -1387,12 +1549,16 @@ class ReportBodyHardeningTest(unittest.TestCase):
         self.assertIn(
             "This report was generated automatically by our abuse reporting system "
             "based on CrowdSec metrics (https://www.crowdsec.net/).",
-            body,
+            " ".join(body.split()),  # the footer is wrapped to the mail line width
         )
         self.assertNotIn("generated automatically by CrowdSec", body)
 
     @patch.object(reportbody.uuid, "uuid4", return_value="fixed-report-id")
-    @patch.object(reportbody, "_xarf_reporter", return_value={"org": "Example", "contact": "abuse@example.net"})
+    @patch.object(
+        reportbody,
+        "_xarf_contact",
+        return_value={"org": "Example", "contact": "abuse@example.net", "domain": "example.net"},
+    )
     def test_build_xarf_report_remarks_describe_crowdsec_as_metric_source(
         self,
         _mock_reporter,
@@ -1416,6 +1582,159 @@ class ReportBodyHardeningTest(unittest.TestCase):
         self.assertIn("based on CrowdSec metrics", payload["remarks"])
         self.assertIn("XARF v4", payload["remarks"])
         self.assertNotIn("generated automatically by CrowdSec", payload["remarks"])
+
+    @unittest.skipIf(jsonschema is None, "jsonschema (dev dependency) not installed")
+    def test_xarf_reports_conform_to_v420_schemas(self):
+        # Every generated report must validate; scenarios cover each type mapping.
+        contact = {"org": "Example", "contact": "abuse@example.net", "domain": "example.net"}
+        cases = {
+            "crowdsecurity/ssh-bf": {},
+            "crowdsecurity/ssh-bf with port": {"meta": [{"key": "source_port", "value": "40222"}]},
+            "crowdsecurity/http-probing": {},
+            "crowdsecurity/http-sqli-probing-detection": {},
+            "crowdsecurity/http-sqli-probing with port": {"meta": [{"key": "source_port", "value": "40222"}]},
+            "crowdsecurity/http-path-traversal-probing": {},
+            "crowdsecurity/http-wordpress-scan": {},
+            "crowdsecurity/http-wordpress_bf_xmlrpc with port": {"meta": [{"key": "source_port", "value": "40222"}]},
+            "crowdsecurity/iptables-scan-multi_ports": {},
+            "crowdsecurity/http-cve-2021-41773": {},
+            "local/uiw-scan-one_port": {},
+            "crowdsecurity/unknown-thing": {},
+            "crowdsecurity/ddos-flood": {},
+            "crowdsecurity/spam-wave": {},
+        }
+        types = {}
+        for scenario, extra in cases.items():
+            alert = {
+                "id": 5,
+                "scenario": scenario.split(" ")[0],
+                "created_at": "2026-06-23T19:26:20Z",
+                "start_at": "2026-06-23T19:25:48Z",
+                "stop_at": "2026-06-23T19:26:19Z",
+                "events_count": 7,
+                "source": {"ip": "198.51.100.7", "cn": "DE"},
+                "decisions": [{"type": "ban", "scope": "Ip", "value": "198.51.100.7"}],
+                **extra,
+            }
+            with patch.object(reportbody, "_xarf_contact", return_value=contact):
+                report = json.loads(reportbody.build_xarf_report(alert, hostname="h"))
+            self.assertEqual(_xarf_schema_errors(report), [], scenario)
+            types[scenario] = (report["category"], report["type"])
+        # Without a stated source port a login attack must not be filed as login_attack.
+        self.assertEqual(types["crowdsecurity/ssh-bf"], ("reputation", "threat_intelligence"))
+        self.assertEqual(types["crowdsecurity/ssh-bf with port"], ("connection", "login_attack"))
+        self.assertEqual(types["crowdsecurity/unknown-thing"], ("reputation", "threat_intelligence"))
+
+    def test_scenario_names_map_to_expected_xarf_types(self):
+        # (scenario, source_port) -> (category, type, key fields); matching is by name token.
+        tm = ("reputation", "threat_intelligence")
+        vs = ("connection", "vulnerability_scan")
+        cases = [
+            ("crowdsecurity/ssh-bf", None, (*tm, {"threat_type": "brute_force", "service": "ssh"})),
+            ("crowdsecurity/ssh-slow-bf", 4000, ("connection", "login_attack", {"service": "ssh"})),
+            ("crowdsecurity/http-probing", None, (*vs, {"scan_type": "mixed", "targeted_services": ["http"]})),
+            ("crowdsecurity/http-crawl-non_statics", None, (*vs, {"scan_type": "mixed"})),
+            ("crowdsecurity/http-bad-user-agent", None, (*tm, {"threat_type": "other", "service": "http"})),
+            ("crowdsecurity/http-sqli-probing", None, ("connection", "sql_injection", {"protocol": "tcp"})),
+            ("crowdsecurity/http-xss-probing", None, (*vs, {"scan_type": "web_vuln_scan"})),
+            ("crowdsecurity/http-path-traversal-probing", None, (*vs, {"scan_type": "web_vuln_scan"})),
+            ("crowdsecurity/http-wordpress-scan", None, (*vs, {"targeted_services": ["http"]})),
+            ("crowdsecurity/http-wordpress_wpconfig", None, (*tm, {"service": "http"})),
+            ("crowdsecurity/http-wordpress_user-enum", None, (*tm, {"service": "http"})),
+            ("crowdsecurity/http-wordpress_bf_xmlrpc", 5000, ("connection", "login_attack", {"service": "http"})),
+            (
+                "crowdsecurity/http-cve-2021-41773",
+                None,
+                (*vs, {"scan_type": "web_vuln_scan", "vulnerabilities_probed": ["CVE-2021-41773"]}),
+            ),
+            ("crowdsecurity/http-backdoors-attempts", None, (*tm, {"threat_type": "malware", "service": "http"})),
+            ("crowdsecurity/http-sensitive-files", None, (*tm, {"threat_type": "other"})),
+            ("crowdsecurity/iptables-scan-multi_ports", None, (*vs, {"scan_type": "port_scan"})),
+            ("crowdsecurity/mysql-bf", None, (*tm, {"threat_type": "brute_force"})),
+            ("crowdsecurity/postfix-spam", None, (*tm, {"threat_type": "spam"})),
+            ("crowdsecurity/smb-bf", 4000, (*tm, {"threat_type": "brute_force"})),
+            ("crowdsecurity/rdp-bf", 4000, ("connection", "login_attack", {"service": "rdp"})),
+            ("custom/http-resource-limit", None, (*tm, {"threat_type": "other", "service": "http"})),
+            ("custom/http-resource-flood", None, (*tm, {"threat_type": "ddos", "service": "http"})),
+            ("local/something-else", None, (*tm, {"threat_type": "other"})),
+        ]
+        for scenario, port, (category, xarf_type, fields) in cases:
+            got_cat, got_type, got_fields = reportbody._xarf_classification(scenario, port)
+            self.assertEqual((got_cat, got_type), (category, xarf_type), scenario)
+            for key, value in fields.items():
+                self.assertEqual(got_fields.get(key), value, f"{scenario}: {key}")
+        # No wrong service from substrings ("rdp" in "wordpress").
+        for scenario, _port, _exp in cases:
+            if "wordpress" in scenario:
+                _, _, got = reportbody._xarf_classification(scenario, 5000)
+                self.assertNotIn("rdp", json.dumps(got), scenario)
+
+    def test_context_redacts_folded_header_continuation_lines(self):
+        text = "Authorization: Bearer abc\n   folded-secret\nUser-Agent: curl\nCookie: a=b;\n\tc=d"
+        redacted = reportbody._redact_header_lines(text)
+        self.assertNotIn("abc", redacted)
+        self.assertNotIn("folded-secret", redacted)
+        self.assertNotIn("c=d", redacted)
+        self.assertIn("User-Agent: curl", redacted)
+
+    def test_xarf_report_requires_an_incident_time_and_never_invents_one(self):
+        base = {"id": 1, "scenario": "crowdsecurity/http-probing", "source": {"ip": "198.51.100.7"}}
+        for alert in (base, {**base, "start_at": "garbage", "created_at": ""}):
+            with self.assertRaises(ValueError):
+                reportbody.build_xarf_report(alert, hostname="h")
+        report = json.loads(reportbody.build_xarf_report({**base, "created_at": "2026-06-23T19:26:20Z"}, hostname="h"))
+        self.assertEqual(report["timestamp"], "2026-06-23T19:26:20+00:00")
+
+    def test_xarf_report_never_accuses_an_unknown_source(self):
+        # source_identifier names the offender; a placeholder must fail the build, not be sent.
+        base = {"id": 1, "scenario": "crowdsecurity/http-probing", "start_at": "2026-06-23T19:25:48Z"}
+        for source in ({}, {"ip": "not-an-ip"}, {"range": "203.0.113.0/24", "scope": "Range"}):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                reportbody.build_xarf_report({**base, "source": source}, hostname="h")
+
+    def test_xarf_report_uses_the_ip_the_caller_already_derived(self):
+        # main derives the IP also from context/meta; the report must accuse that IP, still validated.
+        alert = {"id": 1, "scenario": "crowdsecurity/http-probing", "start_at": "2026-06-23T19:25:48Z", "source": {}}
+        report = json.loads(reportbody.build_xarf_report(alert, hostname="h", ip="203.0.113.5"))
+        self.assertEqual(report["source_identifier"], "203.0.113.5")
+        with self.assertRaises(ValueError):
+            reportbody.build_xarf_report(alert, hostname="h", ip="not-an-ip")
+
+    def test_xarf_report_rejects_oversized_evidence_instead_of_truncating(self):
+        alert = {
+            "id": 1,
+            "scenario": "crowdsecurity/http-probing",
+            "start_at": "2026-06-23T19:25:48Z",
+            "source": {"ip": "198.51.100.7"},
+        }
+        with (
+            patch.object(reportbody, "XARF_MAX_EVIDENCE_BYTES", 200),
+            self.assertRaisesRegex(ValueError, "X-ARF limit"),
+        ):
+            reportbody.build_xarf_report(alert, hostname="h")
+
+    def test_xarf_contact_carries_domain_of_sender_address(self):
+        self.assertEqual(
+            reportbody._xarf_contact("abuse@example.net", ""),
+            {"org": "example.net", "contact": "abuse@example.net", "domain": "example.net"},
+        )
+
+    def test_mail_body_lines_are_wrapped_but_keep_non_ascii(self):
+        alert = {
+            "id": 9,
+            "scenario": "crowdsecurity/http-probing",
+            "source": {"ip": "198.51.100.7"},
+            "decisions": [{"type": "ban", "scope": "Ip", "value": "198.51.100.7"}],
+            "message": "Ünïcode " + "lange Nachricht " * 30,
+            "meta": [
+                {"key": "user_agent", "value": "Mozilla/5.0 " * 40},
+                {"key": "target_uri", "value": json.dumps(["/" + "a" * 300])},
+                {"key": "a_very_long_context_key_name_beyond_any_column", "value": "x " * 80},
+            ],
+        }
+        body = reportbody.build_mail_body(alert, hostname="h")
+        self.assertLessEqual(max(len(line) for line in body.splitlines()), 78)
+        self.assertIn("Ünïcode", body)
 
     def test_context_redacts_sensitive_headers_and_limits_large_values(self):
         large_value = "x" * (reportbody.MAX_FIELD_LENGTH + 50)
@@ -1451,7 +1770,6 @@ class ReportBodyHardeningTest(unittest.TestCase):
         context = reportbody.extract_context_details({}, alert)
         lines = {line.strip().split(":", 1)[0]: line for line in context.splitlines() if ":" in line}
 
-        # source_ip and SourceRange must be absent (suppressed)
         self.assertNotIn("Source IP", lines)
         self.assertNotIn("SourceRange", lines)
 
@@ -1468,7 +1786,7 @@ class HeartbeatHardeningTest(unittest.TestCase):
     """Tests for app/heartbeat.py failure paths."""
 
     @patch.object(heartbeat, "setup_logging")
-    @patch.object(heartbeat, "print_config_info")
+    @patch.object(heartbeat, "print_debug")
     @patch.object(heartbeat, "check_lapi_health", return_value=True)
     def test_run_heartbeat_fails_when_heartbeat_file_cannot_be_updated(
         self,
@@ -1529,15 +1847,18 @@ class EntrypointHardeningTest(_EntrypointSandbox, unittest.TestCase):
     so the pipes are released and communicate() can return.
     """
 
-    def _run_entrypoint(self, env_overrides: dict, timeout: int = 3):
+    def _run_entrypoint(self, env_overrides: dict, timeout: int = 3, extra_stubs=None, prepare=None):
         with tempfile.TemporaryDirectory(prefix="entrypoint-hardening-") as temp_dir:
             stubs = {
                 "id": _STUB_ID,
                 "python": "#!/bin/sh\nprintf 'STUB_PYTHON:%s\\n' \"$*\"\nexit 0\n",
                 # Stop after one run instead of waiting on the production intervals.
                 "sleep": "#!/bin/sh\nexit 77\n",
+                **(extra_stubs or {}),
             }
             script, data_dir, _runtime_dir, stub_bin = self._sandbox_entrypoint(Path(temp_dir), stubs)
+            if prepare:
+                prepare(data_dir)
 
             env = {
                 **os.environ,
@@ -1545,6 +1866,8 @@ class EntrypointHardeningTest(_EntrypointSandbox, unittest.TestCase):
                 "SMTP_SERVER": "smtp.example.net",
                 "RUN_ONCE": "false",
                 "ABUSE_DB_PATH": str(data_dir / "abuse_alerts.db"),
+                "GEOIP_DIR": str(Path(temp_dir) / "geoip"),
+                "STUB_MARK": str(Path(temp_dir) / "dropped"),
                 **env_overrides,
             }
             proc = self._spawn_entrypoint(script, env)
@@ -1600,6 +1923,45 @@ class EntrypointHardeningTest(_EntrypointSandbox, unittest.TestCase):
         self.assertNotIn("RUN_EVERY_HOUR", result.stderr)
         self.assertIn("running every 08 hour(s) (28800s)", result.stdout)
 
+    def test_restricted_subdirectory_warning_names_the_paths_and_start_continues(self):
+        # Root phase simulated: stub id reports 0 until the stub gosu has dropped privileges.
+        stubs = {
+            "id": '#!/bin/sh\nif [ -e "$STUB_MARK" ]; then echo 1000; else echo 0; fi\n',
+            "gosu": '#!/bin/sh\ntouch "$STUB_MARK"\nshift\nexec bash "$@"\n',
+            "chown": (
+                "#!/bin/sh\n"
+                'case "$3" in */data) '
+                "for n in 1 2 3 4 5 6 7; do "
+                "echo \"chown: cannot read directory '/data/restricted$n': Permission denied\" >&2; done; "
+                "exit 1;; esac\nexit 0\n"
+            ),
+        }
+        result = self._run_entrypoint({}, extra_stubs=stubs)
+        self.assertIn("| WARNING  | entrypoint | chown -R on", result.stderr)
+        self.assertIn("/data/restricted1, /data/restricted2", result.stderr)
+        self.assertIn("/data/restricted5 (+2 more)", result.stderr)
+        self.assertNotIn("/data/restricted6", result.stderr)
+        self.assertIn("STUB_PYTHON:", result.stdout)
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses file permissions")
+    def test_unwritable_data_dir_fails_fast_with_a_clear_error(self):
+        result = self._run_entrypoint({}, prepare=lambda d: d.chmod(0o500))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("| ERROR    | entrypoint | ", result.stderr)
+        self.assertIn("is not writable by uid", result.stderr)
+        self.assertNotIn("STUB_PYTHON:", result.stdout)
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses file permissions")
+    def test_unwritable_database_file_fails_fast(self):
+        def readonly_db(data_dir):
+            db = data_dir / "abuse_alerts.db"
+            db.write_text("")
+            db.chmod(0o400)
+
+        result = self._run_entrypoint({}, prepare=readonly_db)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("database file", result.stderr)
+
     def test_entrypoint_does_not_duplicate_successful_heartbeat_logs(self):
         content = _ENTRYPOINT.read_text(encoding="utf-8")
 
@@ -1632,7 +1994,7 @@ def _bash_at_least_5_1() -> bool:
             check=False,
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return False
     return probe.returncode == 0 and int(probe.stdout.strip() or 0) >= 501
 
@@ -1692,7 +2054,7 @@ class EntrypointSupervisionTest(_EntrypointSandbox, unittest.TestCase):
     def _alive(pid):
         try:
             state = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0]
-        except (FileNotFoundError, ProcessLookupError):
+        except FileNotFoundError, ProcessLookupError:
             return False
         return state != "Z"
 
@@ -1744,7 +2106,7 @@ class EntrypointSupervisionTest(_EntrypointSandbox, unittest.TestCase):
         self.assertEqual(limits, [100, 50, 8 * 10 + 300])
 
     def test_healthcheck_runs_under_posix_sh_with_leading_zero_values(self):
-        dockerfile = (_REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
         match = re.search(r"HEALTHCHECK .*?CMD sh -ec '(.*?)'\n", dockerfile, re.DOTALL)
         self.assertIsNotNone(match)
         script = match.group(1).replace("\\\n", "\n")

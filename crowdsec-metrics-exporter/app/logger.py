@@ -7,79 +7,132 @@
 """
 Logging module: one line per record, "<UTC time> | LEVEL | source | message".
 WARNING and above go to stderr, the rest to stdout; colour only on a TTY.
+
+The formatting core (``format_timestamp`` through ``setup_logging``, minus
+the tool-specific tables) is a copy of the abuse reporter's logger.py and must
+stay identical; see the app AGENTS.md and test_shared_code.py.
 """
 
 import logging
 import os
 import sys
-import time
-from typing import ClassVar
+import unicodedata
+from datetime import UTC, datetime
 
 from .config import LOG_LEVEL
 
-_RESET = "\033[0m"
-_CYAN = "\033[36m"
-_YELLOW = "\033[33m"
-_RED = "\033[31m"
+# Color codes for terminal output (only used when stdout/stderr is a TTY)
+COLORS = {
+    "DEBUG": "\033[36m",  # Cyan
+    "INFO": "\033[37m",  # White
+    "WARNING": "\033[93m",  # Yellow
+    "ERROR": "\033[91m",  # Red
+    "RESET": "\033[0m",  # Reset
+}
+
+# Level-column values; CRITICAL maps to ERROR.
+TAGS = {
+    "DEBUG": "DEBUG",
+    "INFO": "INFO",
+    "WARNING": "WARNING",
+    "ERROR": "ERROR",
+    "CRITICAL": "ERROR",
+}
+
+LOG_SOURCE = "crowdsec_metrics"
+_STDERR_LEVELS = {"WARNING", "ERROR", "CRITICAL"}
 
 
-LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S UTC"
+def format_timestamp() -> str:
+    """Return the UTC timestamp of a log line."""
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def _escape(text: str) -> str:
-    """Keep a log entry on one line."""
-    return text.replace("\r", "\\r").replace("\n", "\\n")
+def _sanitize_log_message(message: object) -> str:
+    """Escape control characters to keep log entries single-line."""
+    escaped = []
+    for char in str(message):
+        if char == "\r":
+            escaped.append("\\r")
+        elif char == "\n":
+            escaped.append("\\n")
+        elif char == "\t":
+            escaped.append("\\t")
+        elif unicodedata.category(char) == "Cc":
+            escaped.append(f"\\x{ord(char):02x}")
+        elif char in {"\u2028", "\u2029"}:
+            escaped.append(f"\\u{ord(char):04x}")
+        else:
+            escaped.append(char)
+    return "".join(escaped)
 
 
-class ColorFormatter(logging.Formatter):
-    """Single-line formatter; colours are decided per stream at emit time."""
+def _format_line(tag: str, message: str) -> str:
+    return f"{format_timestamp()} | {tag:<8} | {LOG_SOURCE} | {_sanitize_log_message(message)}"
 
-    # Log timestamps are always UTC, independent of the container timezone.
-    converter = staticmethod(time.gmtime)
 
-    COLORS: ClassVar[dict[str, str]] = {"DEBUG": _CYAN, "INFO": _CYAN, "WARNING": _YELLOW, "ERROR": _RED}
+def _write_line(level: str, line: str) -> None:
+    """Write a formatted line to stderr (WARNING and above) or stdout, coloured on a TTY."""
+    stream = sys.stderr if level in _STDERR_LEVELS else sys.stdout
+    if stream.isatty() and not os.environ.get("NO_COLOR"):
+        line = f"{COLORS.get(level, COLORS['INFO'])}{line}{COLORS['RESET']}"
+    print(line, file=stream)
 
-    def __init__(self, *args, color: bool = False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.color = color
+
+class _AppLogFormatter(logging.Formatter):
+    """Render a stdlib record as one app log line, traceback appended after ` | `."""
 
     def format(self, record: logging.LogRecord) -> str:
-        """Format a record on one line, with the traceback appended after ` | `."""
-        record.message = _escape(record.getMessage())
-        line = f"{self.formatTime(record, self.datefmt)} | {record.levelname:<8} | {record.name} | {record.message}"
+        message = _sanitize_log_message(record.getMessage())
+        # Without this, logger.exception() would drop the traceback entirely.
         if record.exc_info:
-            line += f" | {_escape(self.formatException(record.exc_info))}"
-        if not self.color:
-            return line
-        return f"{self.COLORS.get(record.levelname, '')}{line}{_RESET}"
+            message = f"{message} | {_sanitize_log_message(self.formatException(record.exc_info))}"
+        if record.stack_info:
+            message = f"{message} | {_sanitize_log_message(record.stack_info)}"
+        return _format_line(TAGS.get(record.levelname, TAGS["INFO"]), message)
 
 
 class _SplitStreamHandler(logging.Handler):
-    """WARNING and above to stderr, everything else to stdout."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setFormatter(ColorFormatter(datefmt=LOG_DATE_FORMAT))
+    """WARNING and above to stderr, the rest to stdout; colour only on a TTY."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        stream = sys.stderr if record.levelno >= logging.WARNING else sys.stdout
         try:
-            self.formatter.color = stream.isatty() and not os.environ.get("NO_COLOR")  # type: ignore[union-attr]
-            stream.write(self.format(record) + "\n")
-            stream.flush()
+            _write_line(record.levelname, self.format(record))
         except Exception:
             self.handleError(record)
 
 
-logger = logging.getLogger("crowdsec_metrics")
-# LOG_LEVEL is validated once in config.py and imported as the single source of truth.
-logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
-logger.propagate = False
-logger.addHandler(_SplitStreamHandler())
+def setup_logging(level: str = "INFO") -> None:
+    """Configure root logging once so module-level ``logger.*`` calls are emitted. Idempotent."""
+    root = logging.getLogger()
+    if getattr(root, "_app_logging_configured", False):
+        return
+
+    resolved = getattr(logging, str(level).upper(), None)
+    if not isinstance(resolved, int):
+        resolved = logging.INFO
+
+    handler = _SplitStreamHandler()
+    handler.setFormatter(_AppLogFormatter())
+
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(resolved)
+
+    # Keep third-party HTTP libraries quiet unless explicitly debugging.
+    for noisy in ("httpx", "httpcore", "urllib3", "asyncio"):
+        logging.getLogger(noisy).setLevel(max(resolved, logging.WARNING))
+
+    root._app_logging_configured = True  # noqa: SLF001 marker attribute on the root logger
+
+
+logger = logging.getLogger(LOG_SOURCE)
+# LOG_LEVEL is validated once in config.py; configure the root logger on import.
+setup_logging(LOG_LEVEL)
 
 
 def print_debug(message: str) -> None:
-    """Log a debug message (only visible when the logger level is DEBUG)."""
+    """Log a debug message (only visible when the log level is DEBUG)."""
     logger.debug(message)
 
 

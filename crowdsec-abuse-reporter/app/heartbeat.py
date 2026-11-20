@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from app.crowdsec import check_lapi_health
-from app.logger import print_config_info, setup_logging
+from app.logger import print_debug, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def run_heartbeat() -> bool:
         logger.error("Could not update %s: %s", _HEARTBEAT_FILE, e)
         return False
 
-    print_config_info("LAPI heartbeat: OK")
+    print_debug("LAPI heartbeat: OK")
     return True
 
 

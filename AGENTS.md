@@ -1,4 +1,4 @@
-<!-- Generated: 2026-09-23 | Updated: 2026-11-18 -->
+<!-- Generated: 2026-09-23 | Updated: 2026-11-19 -->
 
 # crowdsec-toolbox
 
@@ -25,7 +25,7 @@ path, and shares no application code with its siblings. Each tool has its own
 | `crowdsec-abuse-reporter/` | CrowdSec LAPI bans → Abusix contact lookup → X-ARF abuse mail, at-most-once (see `crowdsec-abuse-reporter/AGENTS.md`) |
 | `crowdsec-metrics-exporter/` | CrowdSec decisions via the Local API → InfluxDB 2.x or QuestDB time series (see `crowdsec-metrics-exporter/AGENTS.md`) |
 | `docs/` | Central documentation site (Zensical) — see `docs/AGENTS.md` |
-| `.github/` | `workflows/` (`ci.yml` PR gate and release gate, `release.yml`, `docs-build.yml`), `scripts/` (`ci_job_setup.py`, `ci_output.py`, `trivy_report.py`, `failure_issue.py`, `release_tags.py` and their tests), `zizmor.yml` (reasoned ignores for the zizmor job), `img/` (logos); pipelines are documented in `docs/development/pipelines.md`. `.github/skills/` is gitignored local tooling |
+| `.github/` | `workflows/` (`ci.yml` PR gate and release gate, `release.yml`, `docs-build.yml`), `scripts/` (`ci_job_setup.py`, `ci_output.py`, `trivy_report.py`, `failure_issue.py`, `release_tags.py`, `release_notes.py`, `release_publish.cjs` and their tests), `zizmor.yml` (reasoned ignores for the zizmor job), `img/` (logos); pipelines are documented in `docs/development/pipelines.md`. `.github/skills/` is gitignored local tooling |
 
 ## For AI Agents
 
@@ -47,7 +47,7 @@ path, and shares no application code with its siblings. Each tool has its own
   `docker/Dockerfile.dockerignore` allowlist must therefore name
   `<tool>/pyproject.toml` — a root-level `!pyproject.toml` leaves it outside the
   context and the pip layer fails with "not found".
-- Python 3.13+. Comments/docstrings in English; user-facing strings are often
+- Python 3.14+. Comments/docstrings in English; user-facing strings are often
   German and must keep their wording and non-ASCII characters.
 - Real configuration (`settings.env`, `settings-*.env`) is gitignored; only
   `settings.env.example` templates are tracked. Never commit secrets.
@@ -65,7 +65,10 @@ ruff format --check .                                  # formatter is enforced t
 cd crowdsec-abuse-reporter && python -m pytest
 cd crowdsec-metrics-exporter && python -m pytest
 ```
-There is no typechecker configured. The exporter's suite is offline: it uses
+There is no typechecker configured. Run the suites with each tool's `dev`
+group installed: the abuse reporter's X-ARF conformance tests need `jsonschema`
+and validate against the X-ARF v4.2.0 schemas vendored in
+`crowdsec-abuse-reporter/tests/fixtures/`. The exporter's suite is offline: it uses
 mocked LAPI/QuestDB responses and a stub entrypoint to cover configuration,
 line protocol, fetch completeness, deduplication and scheduling; it needs no
 live services.

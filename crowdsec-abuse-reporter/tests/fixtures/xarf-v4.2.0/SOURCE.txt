@@ -1,0 +1,3 @@
+JSON schemas of XARF v4.2.0, copied unchanged from
+https://github.com/xarf/xarf-spec/tree/v4.2.0/schemas/v4 (core, master and types/).
+Used only by the schema-conformance tests; not part of the image.

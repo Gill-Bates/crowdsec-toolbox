@@ -1,9 +1,9 @@
 # Shared ruff baseline for every Python tree in this repository. Each tool and the CI
 # helper scripts extend it and add only their own per-file ignores.
 line-length = 120
-target-version = "py313"
-# Build and scan artefacts of the docs pipeline; they hold no source of ours.
-extend-exclude = ["site", ".docs-scan"]
+target-version = "py314"
+# Build output of the docs pipeline; it holds no source of ours.
+extend-exclude = ["site"]
 
 [lint]
 select = [
@@ -34,7 +34,7 @@ select = [
     "RET",   # return simplifications
     "RSE",   # raise cleanups
     "RUF",   # ruff-specific
-    "S",     # bandit - this app parses untrusted URLs and shells out to subprocesses
+    "S",     # bandit - security lint (subprocess use, weak crypto, hardcoded secrets)
     "SIM",   # simplifications
     "SLF",   # private member access across modules
     "T20",   # stray print()

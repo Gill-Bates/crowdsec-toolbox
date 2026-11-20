@@ -14,8 +14,8 @@ hide:
   <h1 id="home-title">Turn security decisions into actionable signals.</h1>
   <p>Report malicious activity, export security metrics, and gain better visibility into what CrowdSec is blocking.</p>
   <div class="cst-hero-actions">
-    <a href="getting-started/index.md" class="md-button md-button--primary cst-button-primary">Get Started</a>
-    <a href="#tools" class="md-button cst-button-secondary">Explore the Tools</a>
+    <a href="getting-started/index.md" class="md-button md-button--primary">Get Started</a>
+    <a href="#tools" class="md-button">Explore the Tools</a>
   </div>
 </div>
 </section>
@@ -27,17 +27,17 @@ to send abuse reports, the exporter to send time-series metrics, or run both.
 
 <h2 id="tools">Choose a workflow</h2>
 
-<div class="grid cards cst-product-grid" markdown>
+<div class="grid cards cst-card-grid" markdown>
 
 -   :material-email-alert:{ .cst-product-icon } **Abuse Reporter**
 
     ---
 
-    Turns CrowdSec bans into X-ARF v4 reports. It enriches source IPs with GeoIP,
+    Turns CrowdSec bans into X-ARF v4.2.0 reports. It enriches source IPs with GeoIP,
     resolves the responsible abuse contact through Abusix DNS, and records each
     `(AlertId, IPAddress)` pair in SQLite so it is reported at most once.
 
-    `X-ARF v4` · `GeoIP enrichment` · `At-most-once delivery`
+    `X-ARF v4.2.0` · `GeoIP enrichment` · `At-most-once delivery`
 
     [Explore Abuse Reporter](abuse-reporter/index.md){ .cst-card-link }
 
@@ -116,7 +116,7 @@ These ordered paths show which systems each tool reads from and writes to.
 |---|---|---|
 | **What it does** | Turns CrowdSec bans into abuse reports | Exports CrowdSec decisions as time series |
 | **Source** | CrowdSec Local API (LAPI), direct | CrowdSec Local API (LAPI), direct |
-| **Output** | X-ARF v4 email to the abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
+| **Output** | X-ARF v4.2.0 email to the abuse contact | InfluxDB 2.x or QuestDB 10.x (line protocol over HTTP) |
 | **Enrichment** | GeoIP (GeoLite2 City + ASN) | — |
 | **Contact lookup** | Abusix DNS abuse-contact database | — |
 | **Idempotency** | SQLite, at-most-once per `(AlertId, IPAddress)` | Backend-side deduplication, no local state |
@@ -126,8 +126,7 @@ These ordered paths show which systems each tool reads from and writes to.
 
 !!! info "Neither tool needs the Docker socket"
     Both reach CrowdSec over the Local API and authenticate with their own
-    watcher credentials. An earlier exporter version used `docker exec` and
-    required mounting `/var/run/docker.sock`; that path has been removed.
+    watcher credentials.
 
 ## Quick start
 
@@ -141,8 +140,8 @@ cp settings.env.example settings.env
 docker compose pull && docker compose up -d
 ```
 
-[:material-rocket-launch: Installation Guide](getting-started/installation.md){ .md-button .md-button--primary .cst-button-primary }
-[:material-docker: Docker Deployment](getting-started/docker.md){ .md-button .cst-button-secondary }
+[:material-rocket-launch: Installation Guide](getting-started/installation.md){ .md-button .md-button--primary }
+[:material-docker: Docker Deployment](getting-started/docker.md){ .md-button }
 
 ## Grafana dashboards
 

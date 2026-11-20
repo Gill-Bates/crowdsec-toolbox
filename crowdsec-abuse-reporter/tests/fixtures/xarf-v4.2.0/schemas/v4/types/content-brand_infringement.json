@@ -1,0 +1,164 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://xarf.org/schemas/v4/types/content-brand_infringement.json",
+	"title": "XARF v4 Content - Brand Infringement Type Schema",
+	"description": "Schema for brand impersonation and trademark violations",
+	"allOf": [
+		{
+			"$ref": "./content-base.json"
+		},
+		{
+			"type": "object",
+			"properties": {
+				"type": {
+					"const": "brand_infringement"
+				},
+				"infringement_type": {
+					"type": "string",
+					"enum": [
+						"counterfeit",
+						"typosquatting",
+						"lookalike",
+						"homograph",
+						"unauthorized_reseller",
+						"trademark_violation",
+						"brand_impersonation",
+						"logo_misuse",
+						"other"
+					],
+					"description": "REQUIRED: Specific type of brand infringement"
+				},
+				"legitimate_site": {
+					"type": "string",
+					"format": "uri",
+					"description": "REQUIRED: URL of the legitimate brand website"
+				},
+				"similarity_score": {
+					"type": "number",
+					"minimum": 0.0,
+					"maximum": 1.0,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Visual or textual similarity score (0.0 = no similarity, 1.0 = identical)"
+				},
+				"trademark_details": {
+					"type": "object",
+					"properties": {
+						"registration_number": {
+							"type": "string",
+							"description": "OPTIONAL: Trademark registration number"
+						},
+						"jurisdiction": {
+							"type": "string",
+							"description": "OPTIONAL: Trademark jurisdiction (country/region)"
+						},
+						"category": {
+							"type": "array",
+							"items": {
+								"type": "integer",
+								"minimum": 1,
+								"maximum": 45
+							},
+							"description": "OPTIONAL: Nice Classification classes"
+						}
+					},
+					"description": "OPTIONAL: Trademark registration details if applicable"
+				},
+				"infringing_elements": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"enum": [
+							"logo",
+							"brand_name",
+							"tagline",
+							"color_scheme",
+							"layout",
+							"product_images",
+							"domain_name",
+							"other"
+						]
+					},
+					"x-recommended": true,
+					"description": "RECOMMENDED: Specific brand elements being infringed"
+				},
+				"products_offered": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "OPTIONAL: Products or services offered on the infringing site"
+				},
+				"previous_enforcement": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"date": {
+								"type": "string",
+								"format": "date",
+								"description": "OPTIONAL: Date of enforcement action"
+							},
+							"action": {
+								"type": "string",
+								"enum": [
+									"cease_desist",
+									"takedown_notice",
+									"domain_dispute",
+									"legal_action",
+									"other"
+								],
+								"description": "OPTIONAL: Type of action taken"
+							},
+							"result": {
+								"type": "string",
+								"description": "OPTIONAL: Result of the action"
+							}
+						}
+					},
+					"description": "OPTIONAL: Previous enforcement actions taken"
+				}
+			},
+			"required": [
+				"infringement_type",
+				"legitimate_site"
+			]
+		}
+	],
+	"examples": [
+		{
+			"xarf_version": "4.2.0",
+			"report_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+			"timestamp": "2025-01-15T14:45:00Z",
+			"reporter": {
+				"org": "Brand Protection Services",
+				"contact": "enforcement@brandprotect.example",
+				"domain": "brandprotect.example"
+			},
+			"sender": {
+				"org": "Brand Protection Services",
+				"contact": "enforcement@brandprotect.example",
+				"domain": "brandprotect.example"
+			},
+			"source_identifier": "203.0.113.77",
+			"category": "content",
+			"type": "brand_infringement",
+			"url": "https://sh0p-deals.example.com",
+			"infringement_type": "typosquatting",
+			"legitimate_site": "https://www.shop.example",
+			"similarity_score": 0.87,
+			"infringing_elements": [
+				"logo",
+				"brand_name",
+				"color_scheme"
+			],
+			"target_brand": "Major Retailer",
+			"evidence": [
+				{
+					"content_type": "image/png",
+					"description": "Screenshot showing brand impersonation",
+					"payload": "base64_encoded_screenshot"
+				}
+			]
+		}
+	]
+}

@@ -4,64 +4,53 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""
-Banner Module.
-Displays the application header/logo.
-"""
+"""Print the startup banner. Only TITLE differs from the sibling tool's copy."""
 
-from __future__ import annotations
-
+import os
 import sys
 
 from .version import GIT_SHA as _DEFAULT_GIT_SHA
 from .version import VERSION as _DEFAULT_VERSION
 
+TITLE = ">>> crowdsec-abuse-reporter | Automated Abuse Reporting <<<"
+
 
 def print_banner(version: str | None = None, git_sha: str | None = None) -> None:
-    """
-    Print the ASCII banner to stdout and center the metadata below it.
-    """
+    """Print the centered logo and metadata, using color only for a terminal."""
     if version is None:
         version = _DEFAULT_VERSION
     if git_sha is None:
         git_sha = _DEFAULT_GIT_SHA
-    is_tty = sys.stdout.isatty()
-
-    if is_tty:
-        CYAN = "\033[96m"
-        WHITE = "\033[97m"
-        GRAY = "\033[90m"
-        RESET = "\033[0m"
-        BOLD = "\033[1m"
+    if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
+        cyan, white, gray, reset, bold = "\033[96m", "\033[97m", "\033[90m", "\033[0m", "\033[1m"
     else:
-        CYAN = WHITE = GRAY = RESET = BOLD = ""
+        cyan = white = gray = reset = bold = ""
 
     banner = r"""
-       _                                                    _
-  __ _| |__  _   _ ___  ___       _ __ ___ _ __   ___  _ __| |_ ___ _ __
- / _` | '_ \| | | / __|/ _ \_____| '__/ _ \ '_ \ / _ \| '__| __/ _ \ '__|
-| (_| | |_) | |_| \__ \  __/_____| | |  __/ |_) | (_) | |  | ||  __/ |
- \__,_|_.__/ \__,_|___/\___|     |_|  \___| .__/ \___/|_|   \__\___|_|
-                                          |_|
+    ______                       _______
+   / ____/________ _      ______/ / ___/___  _____
+  / /   / ___/ __ \ | /| / / __  /\__ \/ _ \/ ___/
+ / /___/ /  / /_/ / |/ |/ / /_/ /___/ /  __/ /__
+ \____/_/   \____/|__/|__/\__,_//____/\___/\___/
     """
-
     lines = [line.rstrip() for line in banner.splitlines() if line.strip()]
-    banner_width = max((len(line) for line in lines), default=40)
-    min_indent = min(
-        (len(line) - len(line.lstrip()) for line in lines),
-        default=0,
-    )
-    visual_width = max(banner_width - min_indent, 1)
-
-    title_text = ">>> crowdsec-abuse-reporter | Automated Abuse Reporting <<<"
     version_text = f"v{version} ({git_sha[:7]}) | by Gill-Bates"
-    disclaimer_text = "Independent project; not affiliated with CrowdSec"
-
-    def center_below_banner(text: str) -> str:
-        return (" " * min_indent) + text.center(visual_width)
-
-    print(f"{CYAN}{BOLD}" + "\n".join(lines) + f"{RESET}")
-    print(f"{WHITE}{center_below_banner(title_text)}{RESET}")
-    print(f"{GRAY}{center_below_banner(version_text)}{RESET}")
-    print(f"{GRAY}{center_below_banner(disclaimer_text)}{RESET}")
-    print()
+    disclaimer = "Independent project; not affiliated with CrowdSec"
+    canvas_width = max(
+        max((len(line) for line in lines), default=40),
+        len(TITLE),
+        len(version_text),
+        len(disclaimer),
+    )
+    # Center the logo as one block: centering each line separately would shift
+    # lines of different length by different amounts and distort the ASCII art.
+    logo_width = max((len(line) for line in lines), default=0)
+    offset = (canvas_width - logo_width) // 2
+    banner_text = "\n".join((" " * offset + line).ljust(canvas_width) for line in lines)
+    output = (
+        f"{cyan}{bold}{banner_text}{reset}\n"
+        f"{white}{TITLE.center(canvas_width)}{reset}\n"
+        f"{gray}{version_text.center(canvas_width)}{reset}\n"
+        f"{gray}{disclaimer.center(canvas_width)}{reset}\n\n"
+    )
+    sys.stdout.write(output)

@@ -29,6 +29,7 @@ DB_PATH = Path(
 NEGATIVE_CACHE = ""
 SQLITE_PARAM_LIMIT = 900
 NEGATIVE_CACHE_TTL_DAYS = 7
+_SCHEMA_VERSION = 1
 
 # Statuses that mean "do not re-process this report". 'unknown_send_state' is
 # a terminal state for rows where SMTP outcome is uncertain (crashed mid-send).
@@ -50,23 +51,29 @@ def get_connection() -> sqlite3.Connection:
 
     if not hasattr(_thread_local, "conn"):
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _thread_local.conn = sqlite3.connect(
+        conn = sqlite3.connect(
             DB_PATH,
             check_same_thread=False,
-            timeout=30.0,
+            timeout=5.0,
         )
-        _thread_local.conn.row_factory = sqlite3.Row
+        try:
+            conn.row_factory = sqlite3.Row
 
-        _thread_local.conn.execute("PRAGMA journal_mode=WAL")
-        _thread_local.conn.execute("PRAGMA synchronous=NORMAL")
-        _thread_local.conn.execute("PRAGMA foreign_keys=ON")
-        _thread_local.conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
 
-        if not _db_initialized:
-            with _init_lock:
-                if not _db_initialized:
-                    _initialize_database_schema(_thread_local.conn)
-                    _db_initialized = True
+            if not _db_initialized:
+                with _init_lock:
+                    if not _db_initialized:
+                        _initialize_database_schema(conn)
+                        _db_initialized = True
+        except BaseException:
+            # Do not cache a half-initialized connection: later calls would skip
+            # the schema setup and run against a missing or partial schema.
+            conn.close()
+            raise
+        _thread_local.conn = conn
 
     return _thread_local.conn
 
@@ -160,12 +167,10 @@ def _initialize_database_schema(conn: sqlite3.Connection) -> None:
             )
         """)
 
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_id ON abuse_alerts(AlertId)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ip_address ON abuse_alerts(IPAddress)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON abuse_alerts(CreatedAt)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sent_status ON abuse_alerts(Sent)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON abuse_alerts(Status)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cache_prefix ON abuse_contacts_cache(ip_prefix)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_cache_updated ON abuse_contacts_cache(updated_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_outbox_created ON metrics_outbox(created_at)")
 
@@ -184,6 +189,18 @@ def _initialize_database_schema(conn: sqlite3.Connection) -> None:
                 UPDATE abuse_contacts_cache SET updated_at = CURRENT_TIMESTAMP WHERE ip_prefix = NEW.ip_prefix;
             END
         """)
+
+        schema_version = cursor.execute("PRAGMA user_version").fetchone()[0]
+        if schema_version < 1:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor.execute("DROP INDEX IF EXISTS idx_alert_id")
+                cursor.execute("DROP INDEX IF EXISTS idx_cache_prefix")
+                cursor.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
         conn.commit()
         if schema_exists:
@@ -229,7 +246,7 @@ def init_db() -> None:
     state is set and before any report is claimed or sent.
     """
     get_connection()
-    print_config_info("Database initialization completed")
+    print_debug("Database initialization completed")
 
 
 def _chunks(values: list[Any], size: int = SQLITE_PARAM_LIMIT):
@@ -616,8 +633,7 @@ def prune_metric_outbox(max_rows: int, max_age_days: int) -> int:
                 )
                 dropped += cursor.rowcount or 0
             if max_rows > 0:
-                # Keep the newest max_rows rows; id is monotonic, so the cut-off
-                # is the id of the newest row to drop.
+                # Keep the newest max_rows rows; id is monotonic.
                 cursor = conn.execute(
                     "DELETE FROM metrics_outbox WHERE id NOT IN ("
                     "  SELECT id FROM metrics_outbox ORDER BY id DESC LIMIT ?"
@@ -663,7 +679,7 @@ def get_alert_stats() -> dict[str, Any]:
             cursor.execute("SELECT COUNT(*) FROM abuse_alerts WHERE Sent = 1")
             stats["successful"] = cursor.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) FROM abuse_alerts WHERE Sent = 0")
+            cursor.execute("SELECT COUNT(*) FROM abuse_alerts WHERE Status = 'failed'")
             stats["failed"] = cursor.fetchone()[0]
 
             return stats

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-18 | Updated: 2026-11-18 -->
+<!-- Generated: 2026-09-18 | Updated: 2026-11-19 -->
 
 # crowdsec-metrics-exporter (formerly crowdsec-influx)
 
@@ -8,8 +8,9 @@ Exports CrowdSec decisions as time series to InfluxDB 2.x or QuestDB
 (selectable via `METRICS_BACKEND`). It reads the decision list from a local
 CrowdSec instance through its **Local API over HTTP**, authenticating as a
 registered machine (`POST /v1/watchers/login`, then `GET /v1/alerts`), and
-writes the full current list on every run. It needs no Docker socket. It keeps **no local state**: both
-backends deduplicate, so a repeated row is discarded instead of appended.
+writes the full current list on every run. It needs no Docker socket. It keeps
+**no local state**: both backends deduplicate, so a repeated row is discarded
+instead of appended.
 
 This is the **less maintained tool** in this toolbox and deviates from the
 conventions of its sibling `crowdsec-abuse-reporter`; read the warnings below before
@@ -21,15 +22,15 @@ changing anything here.
 | `main.py` | Entry point and whole orchestration: warn on insecure transport, fetch, map, verify dedup, send, declare TTL/downsampling, log a one-line result |
 | `settings.env` | Runtime configuration — gitignored, never commit; `INFLUXDB_TOKEN` is stored in plaintext |
 | `docker/settings.env.example` | The only tracked configuration template; a direct host run copies it to `settings.env` in the project root |
-| `README.md` | Operator documentation (setup, configuration, known limitations) |
-
-Dependencies are the `default` group in this tool's own `pyproject.toml`.
+| `README.md` | Landing page: highlights, quick start, links to the full documentation (configuration and known limitations live in `docs/metrics-exporter/`) |
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
 | `app/` | All application logic, including `influxdb.py` and `questdb.py` write backends (see `app/AGENTS.md`) |
-| `docker/` | Container build for this tool, modeled on `../crowdsec-abuse-reporter/docker/`; both are LAPI-over-HTTP consumers and neither needs the Docker socket (see `docker/AGENTS.md`) |
+| `docker/` | Container build for this tool, modeled on `../crowdsec-abuse-reporter/docker/` (see `docker/AGENTS.md`) |
+| `tests/` | Offline pytest suite (see `tests/AGENTS.md`) |
+| `grafana/` | QuestDB dashboards for alerts (`dashboard_questdb.json`) and per-event export (`dashboard_questdb_events.json`); the InfluxDB dashboard is still a `.todo` placeholder |
 
 ## For AI Agents
 
@@ -42,8 +43,6 @@ Dependencies are the `default` group in this tool's own `pyproject.toml`.
   purpose. `app/influxdb.py` builds a hardened `TLS12Adapter` on top of a
   `urllib3` SSL context. Do not "modernize" it to httpx as a side effect of
   another change — that would drop the custom cipher/TLS-version handling.
-  `httpx` is declared in the `default` group solely for
-  `questdb.py`.
 - **`app/questdb.py`** sends the same InfluxDB Line Protocol payload
   (built by `app/influxdb.py`'s `format_influxdb_line_protocol()`) to
   QuestDB's ILP-over-HTTP `/write` endpoint, over an `httpx.Client` call —
@@ -59,8 +58,9 @@ Dependencies are the `default` group in this tool's own `pyproject.toml`.
   constants, including `INFLUXDB_TOKEN` in plaintext.
 - The production venv (root `setup.conf`) deviates from its sibling: it lives at
   `/opt/jobs/crowdsec_influx` and is activated via `bin/activate`, not
-  `.venv/bin/activate`, and no cron entry is documented. The deployment
-  schedule for this project is not captured in the repo.
+  `.venv/bin/activate`. `setup.conf` holds no cron entry; the schedule shown in
+  `docs/getting-started/installation.md` is an example, not the recorded
+  production schedule.
 - Comments, docstrings, and console messages are in English.
 
 ### Releasing
@@ -74,7 +74,7 @@ as `crowdsec-toolbox:metrics-exporter-<version>` plus the moving
 ruff check . && ruff format --check .   # from the repository root
 cd crowdsec-metrics-exporter && python -m pytest
 ```
-The suite in `tests/` (203 offline tests) covers config parsing and validation,
+The offline suite in `tests/` covers config parsing and validation,
 strict transport booleans, QuestDB table-name collisions, line-protocol
 escaping, the dedup-key-is-a-tag invariant, record-id and coordinate
 robustness, LAPI and event-detail completeness, QuestDB dedup and retention
@@ -98,7 +98,9 @@ local smoke test; do not add tests that need the network.
   the alert table's raw window short and the long-term history in a
   materialized rollup view. The rollup definitions sit next to the dedup keys
   (`main.ALERT_ROLLUP`, `app.events.ROLLUP`); the events table has none on
-  purpose (see `app/AGENTS.md`).
+  purpose (see `app/AGENTS.md`). `apply_questdb_retention()` verifies the rollup, sets
+  the raw TTL and only then publishes the state. The abuse reporter has identical copies
+  (`test_shared_code.py`).
 - QuestDB 10.x is the only supported release line; there is no fallback for
   older servers. `main()` calls `ensure_questdb_version()` (`SELECT build()` over
   `/exec`, major must be `10`) before the LAPI fetch and returns `1` with one
@@ -116,8 +118,8 @@ local smoke test; do not add tests that need the network.
 
 ### Known Deviation
 `app.crowdsec.get_abuse_contact()` is a **stub** that returns the constant
-`"abuse@example.com"` for every IP. Its value is written into every InfluxDB
-point as `abuse_email`, so that field carries no real information. Do not build
+`"abuse@example.com"` for every IP. Its value is written into every point
+(InfluxDB and QuestDB) as `abuse_email`, so that field carries no real information. Do not build
 anything on it; the real abuse-contact resolution lives in `crowdsec-abuse-reporter`.
 
 ## Dependencies

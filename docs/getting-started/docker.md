@@ -226,11 +226,8 @@ Both Compose files mount the host's `/etc/hostname` read-only at
 the supported way to keep the *reported* node identity stable regardless of the
 container's address.
 
-!!! tip "Prefer a fixed `HOSTNAME_OVERRIDE`"
-    For the abuse reporter this value is the public reporting identity in the
-    X-ARF mail. Left empty, the public WAN IP is detected via external services,
-    which also works inside a container while they are reachable; only if that
-    fails does a local address, possibly the private container IP, take over.
+For the reporting identity of the abuse reporter, see
+[Reporting identity](../abuse-reporter/configuration.md#reporting-identity).
 
 ## Next steps
 

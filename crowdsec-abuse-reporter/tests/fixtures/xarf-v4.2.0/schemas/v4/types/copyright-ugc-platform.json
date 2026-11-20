@@ -1,0 +1,287 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://xarf.org/schemas/v4/types/copyright-ugc-platform.json",
+	"title": "XARF v4 Copyright - UGC Platform Type Schema",
+	"description": "Schema for user-generated content platform copyright infringement reports",
+	"allOf": [
+		{
+			"$ref": "../xarf-core.json"
+		},
+		{
+			"type": "object",
+			"properties": {
+				"category": {
+					"const": "copyright"
+				},
+				"type": {
+					"const": "ugc_platform"
+				},
+				"evidence_source": {
+					"type": "string",
+					"enum": [
+						"automated_detection",
+						"user_report",
+						"rights_holder",
+						"content_id_match",
+						"fingerprint_match",
+						"manual_review"
+					],
+					"x-recommended": true,
+					"description": "RECOMMENDED: Source of UGC platform infringement evidence"
+				},
+				"infringing_url": {
+					"type": "string",
+					"format": "uri",
+					"description": "REQUIRED: URL to the infringing content on the platform"
+				},
+				"platform_name": {
+					"type": "string",
+					"maxLength": 200,
+					"description": "REQUIRED: Name of the UGC platform",
+					"examples": [
+						"YouTube",
+						"TikTok",
+						"Instagram",
+						"Twitter",
+						"Facebook",
+						"Vimeo",
+						"Twitch",
+						"SoundCloud"
+					]
+				},
+				"content_info": {
+					"type": "object",
+					"properties": {
+						"content_id": {
+							"type": "string",
+							"maxLength": 200,
+							"description": "OPTIONAL: Platform-specific content identifier"
+						},
+						"content_title": {
+							"type": "string",
+							"maxLength": 500,
+							"description": "OPTIONAL: Title of the infringing content"
+						},
+						"content_description": {
+							"type": "string",
+							"maxLength": 2000,
+							"description": "OPTIONAL: Description of the infringing content"
+						},
+						"upload_date": {
+							"type": "string",
+							"format": "date-time",
+							"description": "OPTIONAL: When content was uploaded to platform"
+						},
+						"content_duration": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "OPTIONAL: Duration in seconds for video/audio content"
+						},
+						"view_count": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "OPTIONAL: Number of views/plays"
+						},
+						"like_count": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "OPTIONAL: Number of likes/upvotes"
+						}
+					},
+					"additionalProperties": false,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Information about the infringing content"
+				},
+				"uploader_info": {
+					"type": "object",
+					"properties": {
+						"username": {
+							"type": "string",
+							"maxLength": 200,
+							"description": "OPTIONAL: Username of the content uploader"
+						},
+						"user_id": {
+							"type": "string",
+							"maxLength": 100,
+							"description": "OPTIONAL: Platform-specific user identifier"
+						},
+						"account_verified": {
+							"type": "boolean",
+							"description": "OPTIONAL: Whether uploader account is verified"
+						},
+						"subscriber_count": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "OPTIONAL: Number of subscribers/followers"
+						},
+						"account_creation_date": {
+							"type": "string",
+							"format": "date-time",
+							"description": "OPTIONAL: When uploader account was created"
+						}
+					},
+					"additionalProperties": false,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Information about the uploader"
+				},
+				"work_title": {
+					"type": "string",
+					"maxLength": 500,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Title of the copyrighted work"
+				},
+				"rights_holder": {
+					"type": "string",
+					"maxLength": 200,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Organization or person holding the copyright"
+				},
+				"work_category": {
+					"type": "string",
+					"enum": [
+						"movie",
+						"tv_show",
+						"music",
+						"music_video",
+						"audiobook",
+						"podcast",
+						"live_performance",
+						"sports_event",
+						"documentary",
+						"other"
+					],
+					"x-recommended": true,
+					"description": "RECOMMENDED: Category of copyrighted work"
+				},
+				"infringement_type": {
+					"type": "string",
+					"enum": [
+						"full_work",
+						"substantial_portion",
+						"compilation",
+						"remix_unauthorized",
+						"background_music",
+						"clip_mashup"
+					],
+					"x-recommended": true,
+					"description": "RECOMMENDED: Type of copyright infringement"
+				},
+				"match_details": {
+					"type": "object",
+					"properties": {
+						"match_confidence": {
+							"type": "number",
+							"minimum": 0.0,
+							"maximum": 1.0,
+							"description": "OPTIONAL: Confidence level of content match (0.0-1.0)"
+						},
+						"match_duration": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "OPTIONAL: Duration of matching content in seconds"
+						},
+						"match_percentage": {
+							"type": "number",
+							"minimum": 0.0,
+							"maximum": 100.0,
+							"description": "OPTIONAL: Percentage of original work that matches"
+						},
+						"reference_id": {
+							"type": "string",
+							"maxLength": 200,
+							"description": "OPTIONAL: Reference ID from content identification system"
+						}
+					},
+					"additionalProperties": false,
+					"x-recommended": true,
+					"description": "RECOMMENDED: Content match details"
+				},
+				"monetization_info": {
+					"type": "object",
+					"properties": {
+						"monetized": {
+							"type": "boolean",
+							"description": "OPTIONAL: Whether infringing content is monetized"
+						},
+						"ad_revenue": {
+							"type": "boolean",
+							"description": "OPTIONAL: Whether content generates ad revenue"
+						},
+						"premium_content": {
+							"type": "boolean",
+							"description": "OPTIONAL: Whether content is behind paywall"
+						}
+					},
+					"additionalProperties": false,
+					"description": "OPTIONAL: Monetization information"
+				}
+			},
+			"required": [
+				"infringing_url",
+				"platform_name"
+			]
+		}
+	],
+	"examples": [
+		{
+			"xarf_version": "4.2.0",
+			"report_id": "789c0123-d456-78e9-f012-345678901234",
+			"timestamp": "2024-01-15T13:45:15Z",
+			"reporter": {
+				"org": "Music Rights Management",
+				"contact": "copyright@music-rights.example",
+				"domain": "music-rights.example"
+			},
+			"sender": {
+				"org": "Music Rights Management",
+				"contact": "copyright@music-rights.example",
+				"domain": "music-rights.example"
+			},
+			"source_identifier": "video-platform.example",
+			"category": "copyright",
+			"type": "ugc_platform",
+			"infringing_url": "https://platform.example/watch?v=abc123def456",
+			"platform_name": "VideoShare",
+			"work_title": "Hit Song 2024",
+			"rights_holder": "Record Label Inc",
+			"work_category": "music",
+			"evidence_source": "content_id_match",
+			"infringement_type": "background_music",
+			"content_info": {
+				"content_id": "vid_abc123def456",
+				"content_title": "My Vacation Highlights",
+				"upload_date": "2024-01-14T16:20:00Z",
+				"content_duration": 180,
+				"view_count": 15000
+			},
+			"uploader_info": {
+				"username": "travelblogger2024",
+				"account_verified": false,
+				"subscriber_count": 1200
+			},
+			"match_details": {
+				"match_confidence": 0.95,
+				"match_duration": 45,
+				"match_percentage": 25.0,
+				"reference_id": "ref_hit_song_2024_001"
+			},
+			"monetization_info": {
+				"monetized": true,
+				"ad_revenue": true
+			},
+			"evidence": [
+				{
+					"content_type": "application/json",
+					"description": "Content ID match report with timestamps",
+					"payload": "eyJtYXRjaF9kZXRhaWxzIjogeyJzdGFydF90aW1lIjogNjAsICJlbmRfdGltZSI6IDEwNX19"
+				}
+			],
+			"tags": [
+				"copyright:ugc",
+				"platform:video",
+				"media:music",
+				"type:background"
+			]
+		}
+	]
+}

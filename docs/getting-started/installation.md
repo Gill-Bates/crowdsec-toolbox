@@ -22,10 +22,6 @@ installable packages; the manifest exists only to declare
 Each manifest also carries its own `[project].version` and its own
 `[tool.ruff]` section, which extends the shared root `ruff.toml` (deliberate `BLE001` ignore).
 
-!!! note "The runtime group is called `default` in both tools"
-    The group name is per-manifest, so both tools use `default` for their runtime
-    dependencies rather than a tool-specific name.
-
 !!! warning "pip 25.1 or newer is required"
     `pip install --group` is what reads these groups. Older pip versions fail
     with an unrecognised option.
@@ -33,11 +29,11 @@ Each manifest also carries its own `[project].version` and its own
 ## crowdsec-abuse-reporter
 
 ```bash
-apt install python3-pip python3.13-venv --no-install-recommends -y
+apt install python3-pip python3.14-venv --no-install-recommends -y
 
 mkdir -p /opt/python/crowdsec_abuse_reporter
 cd /opt/python/crowdsec_abuse_reporter
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 
 pip install --upgrade pip
@@ -72,7 +68,7 @@ existing environment variable wins over the file.
 
 ```bash
 cd /opt/crowdsec-toolbox/crowdsec-metrics-exporter
-python3 -m venv /opt/jobs/crowdsec_influx
+python3.14 -m venv /opt/jobs/crowdsec_influx
 source /opt/jobs/crowdsec_influx/bin/activate
 pip install --upgrade pip
 pip install --group pyproject.toml:default

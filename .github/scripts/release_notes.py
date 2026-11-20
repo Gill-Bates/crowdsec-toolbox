@@ -6,8 +6,6 @@
 
 """Compose one GitHub release note from both tool changelogs and cloc output."""
 
-from __future__ import annotations
-
 import argparse
 import sys
 from pathlib import Path
@@ -33,7 +31,12 @@ def extract_release_section(changelog: str, version: str, source: str) -> tuple[
         raise ReleaseNotesError(f"{source}: expected one dated heading for version {version}")
 
     start = starts[0]
-    end = next((index for index in range(start + 1, len(lines)) if lines[index].startswith("## [")), len(lines))
+    # The older versions sit in a <details> block; its opening tag ends the section too.
+    boundaries = ("## [", "<details", "</details")
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith(boundaries)),
+        len(lines),
+    )
     body = "\n".join(lines[start + 1 : end]).strip()
     if not body:
         raise ReleaseNotesError(f"{source}: version {version} has an empty changelog section")

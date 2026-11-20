@@ -89,20 +89,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 1
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
-      - name: Agent banner and job temp directory
-        run: python3 .github/scripts/ci_job_setup.py
-
+      # Before the banner: the helper scripts need the requires-python interpreter too.
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           # Same interpreter as ci.yml and requires-python in each tool's pyproject.toml.
-          python-version: '3.13'
+          python-version: '3.14'
           cache: pip
           cache-dependency-path: docs/pyproject.toml
+      # The helper lives in the repository, so the checkout has to come first. It prints
+      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
 
       - name: Install dependencies
         run: |
@@ -129,8 +128,8 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      # There is no CHANGELOG.md in this repository, so only the license is mirrored
-      # into the site. docs/license.md is generated, never committed.
+      # There is no root CHANGELOG.md, so only the license is mirrored into the site.
+      # docs/license.md is generated, never committed.
       - name: Copy root files into docs
         run: cp LICENSE docs/license.md
 
@@ -157,6 +156,8 @@ jobs:
       # reruns. x-arf.org (linked from abuse-reporter/index.md) has repeatedly timed out
       # the same way. The site's own Pages URL is excluded because it does not exist yet
       # on the very first deploy.
+      #
+      # --root-dir maps /crowdsec-toolbox/x to site/x through the temporary symlink.
       - name: Check links
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
@@ -189,23 +190,11 @@ jobs:
 
   # The docs group pins only direct dependencies, so the resolved transitive set is only
   # known after an install. The build job freezes it and this job scans that file.
-  # Because it needs build, a failed or skipped build also skips the scan; deploy and
-  # report-failure still see the failure through their own needs.
+  # Because it needs build, a failed or skipped build (including the workflow_run filter
+  # on build) also skips the scan; deploy and report-failure still see the failure.
   security-scan:
     name: Scan docs dependencies
     needs: [build]
-    # workflow_run fires on every conclusion of the release workflow, including manual
-    # dispatches. Only a successful tag push (v*) publishes, so only that rebuilds the
-    # docs; other triggers are unaffected.
-    if: >-
-      github.event_name != 'workflow_run' ||
-      (
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.repository.full_name == github.repository &&
-        github.event.workflow_run.head_repository.full_name == github.repository &&
-        startsWith(github.event.workflow_run.head_branch, 'v')
-      )
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -214,8 +203,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -294,14 +286,16 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      # Only the shared job helper is needed in this job.
       - name: Checkout job helper
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -325,8 +319,11 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 

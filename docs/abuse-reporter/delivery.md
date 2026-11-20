@@ -98,7 +98,10 @@ atomic compare-and-set.
 | Failure | Effect |
 |---|---|
 | Contact lookup (DNS) fails for one IP | That report is skipped; the run still exits `0` |
+| No usable abuse contact (none found, or no address passes the sender's e-mail check) | Counted as "No contact found" and skipped before the claim, so nothing is recorded and the next run looks it up again; the run still exits `0` |
+| Alert has no usable `start_at`/`created_at`, or its X-ARF evidence exceeds 5 MiB | Recorded as `failed` and not mailed (no invented incident time, no invalid attachment); the run still exits `0` |
 | SMTP send fails for one report | Recorded as failed (or `unknown_send_state` after a connection loss mid-transfer); the run still exits `0` |
+| Spooled metrics cannot be flushed at startup (gate, TTL or loss error) | Run exits `1`, also when there are no new alerts |
 | Metrics backend write fails | Points stay in the SQLite outbox and are re-sent next run; the run still exits `0`. Mails are **not** resent. |
 | QuestDB is not a 10.x release | Nothing is written and no mail is sent; the outbox is kept and the run exits `1`. Upgrade the server |
 | QuestDB dedup cannot be verified | Nothing is written and every point stays in the outbox; the run exits `1` at once and retries the gate next run |

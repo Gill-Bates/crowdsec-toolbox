@@ -61,6 +61,11 @@ jobs:
           # tagged commit back to main.
           fetch-depth: 0
           persist-credentials: false
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       # The helper lives in the repository, so the checkout has to come first. It prints
       # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
       - name: Agent banner and job temp directory
@@ -181,10 +186,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 1
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -242,7 +249,7 @@ jobs:
           docker run --rm --entrypoint printenv "$IMAGE" APP_VERSION GIT_SHA
 
       # Report-only on purpose. Most findings in these images come from the
-      # python:3.13-slim base and are not actionable at release time; failing here
+      # python:3.14-slim base and are not actionable at release time; failing here
       # would block a release for something the next base image rebuild fixes.
       # The counts land in the release notes instead. The docs pipeline scans
       # differently - there it does block, because those dependencies are pinned
@@ -262,9 +269,7 @@ jobs:
           # Lists every package, so a clean scan still proves which targets it covered.
           list-all-pkgs: true
           scanners: 'vuln'
-          # See .trivyignore: findings accepted here are pip's own vendored
-          # copies of msgpack/setuptools, not a dependency either tool
-          # declares or imports.
+          # See .trivyignore for findings accepted on purpose; each needs a reason.
           trivyignores: '.trivyignore'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
@@ -336,8 +341,11 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -372,8 +380,6 @@ jobs:
     environment: release
     permissions:
       contents: read
-    outputs:
-      is_newest: ${{ steps.promote.outputs.is_newest }}
     env:
       IMAGE_NAME: ${{ format('{0}/crowdsec-toolbox', secrets.DOCKERHUB_USERNAME) }}
     steps:
@@ -382,6 +388,11 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -393,7 +404,6 @@ jobs:
           merge-multiple: true
 
       - name: Promote verified manifests
-        id: promote
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -422,8 +432,11 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -434,7 +447,7 @@ jobs:
       - name: Delete architecture tags
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_DELETE_TOKEN }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           VERSION: ${{ needs.meta.outputs.version }}
           RUN_ID: ${{ github.run_id }}
           TOOL: ${{ matrix.tool }}
@@ -483,10 +496,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 1
           persist-credentials: false
-      # The helper lives in the repository, so the checkout has to come first. It prints
-      # the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 

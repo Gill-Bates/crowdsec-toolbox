@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # Always supplied via `docker buildx build --build-arg ...` (see the root setup.conf);
 # no defaults, this image is never built without them.
@@ -48,7 +48,6 @@ COPY --chmod=0755 crowdsec-metrics-exporter/docker/entrypoint.sh ./entrypoint.sh
 # COPY --chmod above normalises the application files to world-readable
 # (directories traversable) independent of the checkout's umask, so a 0600
 # source file cannot break imports for the unprivileged app user.
-# The container runs unprivileged from the start; no root phase exists.
 USER 10001:10001
 
 # The entrypoint atomically writes the validated schedule limit before the run.

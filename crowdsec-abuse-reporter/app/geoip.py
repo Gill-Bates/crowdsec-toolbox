@@ -11,8 +11,6 @@ Both DBs are needed: City → city name + country code; ASN → AS number + prov
 Thread-safe with LRU-cached lookups and a 12-hour freshness stamp.
 """
 
-from __future__ import annotations
-
 import fcntl
 import functools
 import http.client
@@ -397,7 +395,7 @@ def _download_once(spec: _Spec, *, force: bool = False) -> bool:
     # If-Modified-Since request below unreachable and freeze the database at
     # its first downloaded version forever. ensure_geoip_databases() already
     # decides via the stamp file whether a remote check is due at all.
-    _log.info("Checking GeoIP %s from %s …", spec.name, spec.url)
+    _log.debug("Checking GeoIP %s from %s …", spec.name, spec.url)
 
     fd, tmp_str = tempfile.mkstemp(suffix=".mmdb.tmp", dir=str(_geoip_dir()))
     tmp = Path(tmp_str)
@@ -414,7 +412,7 @@ def _download_once(spec: _Spec, *, force: bool = False) -> bool:
 
         with _open_resolved_url(
             spec.url,
-            headers=dict(headers),
+            headers=headers,
             nameservers=nameservers,
             timeout=60,
             allowed_hosts=_ALLOWED_HOSTS,
@@ -507,7 +505,7 @@ def ensure_geoip_databases(*, force: bool = False) -> dict[str, bool]:
 
     with _DOWNLOAD_LOCK:
         # Cross-process file lock so parallel container restarts don't race.
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
         lock_fd = os.open(str(lock_path), flags, 0o600)
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)

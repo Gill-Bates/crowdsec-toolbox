@@ -80,6 +80,12 @@ class SecretScanEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(trivy_report.ScanError, "secret scan input missing or empty"):
             trivy_report.run_status(args)
 
+    def test_unsupported_report_schema_is_rejected(self):
+        self.report.write_text(json.dumps({"SchemaVersion": 3, "Results": []}), encoding="utf-8")
+
+        with self.assertRaisesRegex(trivy_report.ScanError, "unsupported Trivy report SchemaVersion 3"):
+            trivy_report.run_status(self._args())
+
     def test_secret_report_requires_enabled_scanner_log_line(self):
         self.log_file.write_text("INFO scan completed\n", encoding="utf-8")
 

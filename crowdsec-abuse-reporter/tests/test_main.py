@@ -4,6 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
+import logging
 import os
 import sys
 import types
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["SMTP_PASSWORD"] = ""
 
+from app import abuse
 from app import main as crowdsec_main
 
 # main() records run state in SQLite after init_db(); tests patch init_db, so
@@ -43,6 +45,33 @@ class DummyInterruptHandler:
 
 
 class MainHelpersTest(unittest.TestCase):
+    def setUp(self):
+        # The print_* helpers honour the root level; capture every level in these tests.
+        root = logging.getLogger()
+        previous = root.level
+        root.setLevel(logging.DEBUG)
+        self.addCleanup(root.setLevel, previous)
+
+    def test_nonstandard_email_local_parts_are_no_contact_before_claim(self):
+        alert = {"id": 9, "source": {"ip": "203.0.113.5"}, "scenario": "test"}
+        for recipient in ("o'hara@example.com", "bang!tag@example.com"):
+            with self.subTest(recipient=recipient):
+                with (
+                    patch.object(crowdsec_main, "WHITELISTED_ASN", frozenset()),
+                    patch.object(crowdsec_main, "extract_abuse_contact", return_value=recipient),
+                    patch.object(crowdsec_main, "print_processing"),
+                    patch.object(crowdsec_main, "print_no_contact_found"),
+                    patch.object(crowdsec_main, "claim_alert_for_send") as claim,
+                    patch.object(crowdsec_main, "send_abuse_report") as send,
+                    patch("app.abuse.print_config_info"),
+                ):
+                    result = crowdsec_main.process_single_alert(alert, 1, 1, "host")
+
+                self.assertFalse(abuse.validate_email(recipient))
+                self.assertEqual(result.error_type, "no_contact")
+                claim.assert_not_called()
+                send.assert_not_called()
+
     def test_geoip_asn_whitelist_blocks_send_when_crowdsec_supplies_no_asn(self):
         alert = {"id": 9, "source": {"ip": "203.0.113.5"}, "scenario": "s"}
         with (
@@ -287,7 +316,7 @@ class MainHelpersTest(unittest.TestCase):
                     ("AS51167", "Contabo GmbH"),
                 ],
             ),
-            patch.object(crowdsec_main, "print_config_info") as mock_print,
+            patch.object(crowdsec_main, "print_debug") as mock_print,
         ):
             crowdsec_main.print_whitelisted_asn_table()
 
@@ -306,7 +335,7 @@ class MainHelpersTest(unittest.TestCase):
         )
 
     @patch.object(crowdsec_main, "send_abuse_mail", return_value=(True, None))
-    @patch.object(crowdsec_main, "build_xarf_report", return_value="xarf")
+    @patch.object(crowdsec_main, "build_xarf_report", return_value='{"type": "login_attack\\r\\nX-Evil: 1"}')
     @patch.object(crowdsec_main, "build_mail_body", return_value="body")
     def test_send_abuse_report_sanitizes_subject_headers(
         self,
@@ -332,7 +361,7 @@ class MainHelpersTest(unittest.TestCase):
         self.assertNotIn("\n", subject)
         self.assertNotIn("\r", subject)
         self.assertEqual(subject.splitlines(), [subject])
-        self.assertTrue(subject.startswith("Abuse Report - "))
+        self.assertTrue(subject.startswith("XARF Abuse Report - "))
 
     def test_sleep_between_mails_only_waits_between_successful_sends(self):
         handler = DummyInterruptHandler()
@@ -476,6 +505,8 @@ class MainHelpersTest(unittest.TestCase):
             patch.object(crowdsec_main, "print_banner"),
             patch.object(crowdsec_main, "print_summary_header"),
             patch.object(crowdsec_main, "print_config_info") as mock_print_config_info,
+            patch.object(crowdsec_main, "print_debug", mock_print_config_info),
+            patch.object(crowdsec_main, "print_error", mock_print_config_info),
             patch.object(crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler),
             patch.object(crowdsec_main, "init_db"),
             patch.object(crowdsec_main, "get_node_ip", return_value="127.0.0.1"),
@@ -495,7 +526,7 @@ class MainHelpersTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         printed_messages = [call.args[0] for call in mock_print_config_info.call_args_list]
         self.assertIn(
-            "ERROR: Could not fetch CrowdSec decisions: LAPI authentication failed with HTTP 403 (Forbidden).",
+            "Could not fetch CrowdSec decisions: LAPI authentication failed with HTTP 403 (Forbidden).",
             printed_messages,
         )
         self.assertIn(
@@ -515,6 +546,8 @@ class MainHelpersTest(unittest.TestCase):
             patch.object(crowdsec_main, "print_stat_item"),
             patch.object(crowdsec_main, "print_detailed_summary"),
             patch.object(crowdsec_main, "print_config_info") as mock_print_config_info,
+            patch.object(crowdsec_main, "print_debug", mock_print_config_info),
+            patch.object(crowdsec_main, "print_error", mock_print_config_info),
             patch.object(crowdsec_main, "GracefulInterruptHandler", DummyInterruptHandler),
             patch.object(crowdsec_main, "init_db"),
             patch.object(crowdsec_main, "get_node_ip", return_value="127.0.0.1"),

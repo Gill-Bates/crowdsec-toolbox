@@ -18,10 +18,12 @@ def _version_from_pyproject() -> str | None:
     try:
         with path.open("rb") as handle:
             value = tomllib.load(handle).get("project", {}).get("version")
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         return None
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+# Container builds inject both values. Direct repository runs obtain their
+# version from this tool's pyproject.toml and use "dev" as the commit marker.
 VERSION = os.environ.get("APP_VERSION") or _version_from_pyproject() or "dev"
 GIT_SHA = os.environ.get("GIT_SHA", "dev")

@@ -10,22 +10,34 @@ reports.
    databases are available.
 3. Resolves the responsible abuse contact through the Abusix DNS contact
    database.
-4. Emails an [X-ARF v4](https://www.x-arf.org/) report to that contact.
+4. Emails an [X-ARF v4.2.0](https://www.x-arf.org/) report to that contact.
 5. Records the `(AlertId, IPAddress)` pair in SQLite so the same ban is reported
    **at most once** per source IP.
 
 Because it talks to the LAPI directly, the container needs no access to
 `/var/run/docker.sock`.
 
+## Report format
+
+The mail is a `multipart/report` message (RFC 6522) laid out as the XARF e-mail
+transport guide describes: a plain-text description wrapped to 76 columns, a
+`message/feedback-report` part with `Feedback-Type: xarf`, and the report as
+base64 `application/json` attachment `xarf.json`. The JSON validates against the
+XARF v4.2.0 schemas; the CrowdSec alert data is carried as a base64 JSON
+evidence item.
+
+Only facts the alert supports are reported. A brute-force login is filed as
+`connection/login_attack` only when the alert states the source port, which the
+v4.2.0 schema requires; otherwise, and for scenarios without a connection
+mapping, the report is `reputation/threat_intelligence` with a `threat_type`.
+Scans and exploit attempts use `connection/vulnerability_scan`.
+
 ## The idempotency key is a pair
 
 The key is `(AlertId, IPAddress)`, not `AlertId` alone: one CrowdSec alert can
 bundle bans for several IP addresses, and each of those is a separate report to a
-potentially different contact.
-
-!!! danger "A `Range` decision is never collapsed"
-    A CrowdSec `Range` decision must not be reduced to its network address and
-    reported as the offender. That would accuse the wrong party.
+potentially different contact. A `Range` decision is never collapsed to its
+network address; see [Delivery Guarantees](delivery.md#the-key-is-a-pair).
 
 ## Run modes
 

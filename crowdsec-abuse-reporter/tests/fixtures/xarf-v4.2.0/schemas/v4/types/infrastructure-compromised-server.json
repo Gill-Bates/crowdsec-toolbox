@@ -1,0 +1,29 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://xarf.org/schemas/v4/types/infrastructure-compromised-server.json",
+	"title": "XARF v4 Infrastructure - Compromised Server Type Schema",
+	"description": "Schema for Compromised servers and infrastructure",
+	"allOf": [
+		{
+			"$ref": "../xarf-core.json"
+		},
+		{
+			"type": "object",
+			"properties": {
+				"category": {
+					"const": "infrastructure"
+				},
+				"type": {
+					"const": "compromised_server"
+				},
+				"compromise_method": {
+					"type": "string",
+					"description": "REQUIRED: Method used to compromise the server"
+				}
+			},
+			"required": [
+				"compromise_method"
+			]
+		}
+	]
+}

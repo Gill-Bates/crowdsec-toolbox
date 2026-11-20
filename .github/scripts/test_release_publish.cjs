@@ -8,7 +8,7 @@ const test = require("node:test");
 
 const { publishRelease } = require("./release_publish.cjs");
 
-async function withNotes(t) {
+function withNotes(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-publish-test-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const releaseNotesFile = path.join(directory, "release-notes.md");
@@ -33,7 +33,7 @@ async function withNotes(t) {
 }
 
 test("creates a release when the tag has no existing release", async (t) => {
-  const fixture = await withNotes(t);
+  const fixture = withNotes(t);
   await publishRelease({ ...fixture, version: "1.2.3" });
 
   assert.equal(fixture.calls.create.length, 1);
@@ -42,7 +42,7 @@ test("creates a release when the tag has no existing release", async (t) => {
 });
 
 test("updates an existing release", async (t) => {
-  const fixture = await withNotes(t);
+  const fixture = withNotes(t);
   fixture.github.rest.repos.getReleaseByTag = async () => ({ data: { id: 42 } });
   await publishRelease({ ...fixture, version: "1.2.3" });
 
@@ -52,7 +52,7 @@ test("updates an existing release", async (t) => {
 });
 
 test("propagates GitHub API errors other than a missing release", async (t) => {
-  const fixture = await withNotes(t);
+  const fixture = withNotes(t);
   fixture.github.rest.repos.getReleaseByTag = async () => {
     const error = new Error("rate limited");
     error.status = 403;

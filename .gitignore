@@ -41,6 +41,7 @@ docs/license.md
 
 # Local agent tooling state
 .omc/
+.agents/
 .claude/
 .github/skills/
 

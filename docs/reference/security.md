@@ -65,7 +65,7 @@ The abuse reporter's Compose service runs with:
 
 The exporter needs no writable data directory at all and keeps no state beyond
 its tmpfs heartbeat. Its Compose service runs with `read_only: true`,
-`cap_drop: [ALL]` and **no** `cap_add`, `no-new-privileges`, `pids_limit: 128` and
+`cap_drop: [ALL]` (no `cap_add`), `no-new-privileges`, `pids_limit: 128` and
 one tmpfs at `/tmp` (`noexec,nosuid,nodev,size=64m,mode=1777`); the entrypoint
 creates `/tmp/state` there as uid `10001`.
 
@@ -84,6 +84,8 @@ script:
 !crowdsec-abuse-reporter/docker/entrypoint.sh
 **/__pycache__/
 **/*.py[cod]
+**/AGENTS.md
+**/tests/
 ```
 
 Secrets, databases, tests, Grafana dashboards and the sibling tool never reach the
@@ -121,7 +123,7 @@ reach:
 
 | Destination | Tool | Notes |
 |---|---|---|
-| CrowdSec LAPI | both | `CROWDSEC_LAPI_VERIFY_TLS` controls certificate verification |
+| CrowdSec LAPI | both | `CROWDSEC_LAPI_VALIDATE_CERTIFICATE` controls certificate verification |
 | SMTP server | abuse reporter | Authentication requires TLS |
 | Abusix DNS zone | abuse reporter | System resolver only, no public fallback |
 | InfluxDB / QuestDB | both, when enabled | TLS verification per `*_VALIDATE_CERTIFICATE` |
@@ -134,10 +136,8 @@ Every outbound HTTP, DNS and SMTP call carries an explicit timeout.
     performs the handshake and fails the run when it is rejected.
 
 !!! note "The InfluxDB TLS hardening is load-bearing"
-    The exporter's `app/influxdb.py` builds a `TLS12Adapter` on a `urllib3` SSL
-    context with custom cipher and TLS-version handling. Do not port it to httpx
-    as a side effect of another change. `app/questdb.py` uses httpx precisely
-    because QuestDB's endpoint has no equivalent requirement.
+    Do not port the exporter's `TLS12Adapter` to httpx; see
+    [Transport](metrics-backends.md#transport).
 
 ## Data sensitivity
 

@@ -3,91 +3,42 @@
 # .github/scripts/ci_job_setup.py
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
+
 """Print the agent banner and point the temp variables at the job temp directory.
 
 First step of every job in every workflow of this repository.
 """
 
-from __future__ import annotations
-
 import ipaddress
 import os
 import platform
-import re
 import shutil
 import socket
 import subprocess
 import sys
 from pathlib import Path
 
+from ci_output import REPO_URL, format_line
+from ci_output import print_header as print_script_header
+
 __author__ = "Gill-Bates"
-HELP_URL = "https://github.com/Gill-Bates/crowdsec-toolbox/blob/main/.github/scripts/ci_job_setup.py"
 SCRIPT = Path(__file__).resolve()
-COMMIT_VARIABLES = ("GITHUB_SHA",)
+HELP_URL = f"{REPO_URL}/blob/main/.github/scripts/{SCRIPT.name}"
 RFC1918 = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
 MASKED = "masked (not an RFC 1918 address)"
 TEMP_VARIABLES = ("TMPDIR", "TMP", "TEMP")
 
 
-def neutralize(text: str) -> str:
-    """Keep untrusted text on one line and break workflow command tokens."""
-    text = " ".join(str(text).splitlines())
-    text = text.replace("##[", "## [")
-    return re.sub(r"^(\s*)::", r"\1: :", text)
-
-
 def log(level: str, message: str) -> None:
-    """Print one line that carries its level once; level is info, warning or error."""
-    text = neutralize(message)
-    if level == "info":
-        line = text
-    elif os.environ.get("GITHUB_ACTIONS") == "true":
-        line = f"::{level}::{text}"
-    else:
-        line = f"{level.upper()}: {text}"
-    print(line, flush=True)
-
-
-def git(*args: str) -> str | None:
-    """Return git's answer for the script's directory, or None without git or a checkout."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(SCRIPT.parent), *args],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
-
-
-def pipeline_commit() -> str:
-    """Commit of the checkout the script was read from, else the platform variable."""
-    commit = git("rev-parse", "HEAD")
-    if commit:
-        return commit
-    for name in COMMIT_VARIABLES:
-        if os.environ.get(name):
-            return f"{os.environ[name]} (from {name})"
-    return "unknown"
+    """Print one line to stdout, unlike ci_output.log; level is info, warning or error."""
+    github = os.environ.get("GITHUB_ACTIONS") == "true"
+    print(format_line(level, message, github=github), flush=True)
 
 
 def print_header() -> None:
-    """Print the script header before any environment value is read."""
+    """Print the script header; the output routine itself reads only GITHUB_ACTIONS."""
     summary = (__doc__ or "").strip().splitlines()
-    log("info", f"Script: {SCRIPT.name}")
-    log("info", f"Description: {summary[0] if summary else ''}")
-    log("info", f"Version: {pipeline_commit()}")
-    log(
-        "info",
-        f"Source: {git('ls-files', '--full-name', '--', SCRIPT.name) or 'unknown'}",
-    )
-    log("info", f"Author: {__author__}")
-    log("info", f"Help: {HELP_URL}")
+    print_script_header(SCRIPT, summary[0] if summary else "", __author__, HELP_URL, emit=log)
 
 
 def in_rfc1918(address: str) -> bool:
@@ -117,7 +68,7 @@ def powershell_version() -> str | None:
             timeout=30,
             check=True,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     return result.stdout.strip() or None
 

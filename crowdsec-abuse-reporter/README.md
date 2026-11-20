@@ -24,7 +24,7 @@
 Turns CrowdSec bans into abuse reports. It fetches decisions from the CrowdSec
 Local API, enriches each source IP with GeoIP data, resolves the responsible
 abuse contact via the Abusix DNS contact database, and emails an
-[X-ARF v4](https://www.x-arf.org/) report. Every `(AlertId, IPAddress)` pair is
+[X-ARF v4.2.0](https://www.x-arf.org/) report. Every `(AlertId, IPAddress)` pair is
 recorded in SQLite, so the same ban is reported **at most once**.
 
 The container needs no access to `/var/run/docker.sock` — it talks to the LAPI

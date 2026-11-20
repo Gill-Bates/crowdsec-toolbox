@@ -8,10 +8,17 @@ import re
 import smtplib
 import ssl
 import time
+import uuid
 from contextlib import contextmanager
-from email.mime.application import MIMEApplication
+from datetime import UTC, datetime
+from email import encoders, policy
+from email.charset import QP, Charset
+from email.headerregistry import Address
+from email.message import Message
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import format_datetime, make_msgid
 
 from .config import (
     SENDER_NAME,
@@ -21,9 +28,10 @@ from .config import (
     SMTP_SERVER,
     SMTP_USE_TLS,
     SMTP_USERNAME,
-    SMTP_VERIFY_SSL,
+    SMTP_VALIDATE_CERTIFICATE,
 )
-from .logger import print_config_info, print_mail_error
+from .logger import print_config_info, print_debug, print_mail_error, print_warning
+from .version import VERSION
 
 MAX_RETRIES = 3
 RETRY_DELAY = 5.0
@@ -66,18 +74,20 @@ def smtp_connection(timeout: int = SMTP_TIMEOUT):
     try:
         if SMTP_USE_TLS:
             context = ssl.create_default_context()
-            if not SMTP_VERIFY_SSL:
+            if not SMTP_VALIDATE_CERTIFICATE:
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
             server.ehlo()
             server.starttls(context=context)
             server.ehlo()
-            verify_note = "with" if SMTP_VERIFY_SSL else "without"
-            print_config_info(f"Started TLS session ({verify_note} certificate verification)")
+            if SMTP_VALIDATE_CERTIFICATE:
+                print_debug("Started TLS session (with certificate verification)")
+            else:
+                _warn_unverified_tls_once()
 
         if SMTP_USERNAME:
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            print_config_info(f"Authenticated as {SMTP_USERNAME}")
+            print_debug(f"Authenticated as {SMTP_USERNAME}")
 
         yield server
     finally:
@@ -85,6 +95,17 @@ def smtp_connection(timeout: int = SMTP_TIMEOUT):
             server.quit()
         except Exception:
             server.close()
+
+
+_TLS_UNVERIFIED_WARNED = False
+
+
+def _warn_unverified_tls_once() -> None:
+    """Warn once per process that SMTP TLS runs without certificate verification."""
+    global _TLS_UNVERIFIED_WARNED
+    if not _TLS_UNVERIFIED_WARNED:
+        _TLS_UNVERIFIED_WARNED = True
+        print_warning("SMTP TLS session without certificate verification (SMTP_VALIDATE_CERTIFICATE=false)")
 
 
 def validate_email(email: str) -> bool:
@@ -116,6 +137,18 @@ def split_recipients(recipients_str: str) -> list[str]:
 def _sanitize_header(value: object) -> str:
     """Normalize header values to a single safe line."""
     return " ".join(str(value).splitlines()).strip()
+
+
+def _from_header_value(sender_name: str, sender_address: str) -> str:
+    """Return a folded From value; only the display name is quoted or RFC 2047 encoded."""
+    name = _sanitize_header(sender_name)
+    if not name:
+        return _sanitize_header(sender_address)
+    address = Address(display_name=name, addr_spec=_sanitize_header(sender_address))
+    header = policy.SMTP.header_factory("From", str(address))
+    folded = header.fold(policy=policy.SMTP.clone(max_line_length=78))
+    # compat32 keeps the "\n " continuation lines as they are.
+    return folded.removeprefix("From:").strip().replace("\r\n", "\n")
 
 
 def _normalize_recipients(value: str | list[str] | None) -> list[str]:
@@ -188,7 +221,7 @@ def send_abuse_mail(
             recipient_preview = ", ".join(recipients[:2])
             if len(recipients) > 2:
                 recipient_preview += f"... (+{len(recipients) - 2} more)"
-            print_config_info(f"Sending to {len(recipients)} recipient(s): {recipient_preview}")
+            print_debug(f"Sending to {len(recipients)} recipient(s): {recipient_preview}")
 
             msg = _create_mime_message(recipients, subject, body, xarf_attachment)
 
@@ -235,7 +268,6 @@ def send_abuse_mail(
             error_msg = f"SMTP/connection error (attempt {attempt + 1}/{max_retries}): {e}"
             print_mail_error(recipient, error_msg)
 
-            # Retry for temporary failures with exponential backoff
             if attempt < max_retries - 1:
                 print_config_info(f"Retrying in {current_retry_delay:.1f} seconds...")
                 time.sleep(current_retry_delay)
@@ -252,54 +284,70 @@ def send_abuse_mail(
     return False, f"All {max_retries} attempts failed"
 
 
+# Quoted-printable keeps the mail text readable in raw form and lines under 78 characters.
+_TEXT_CHARSET = Charset("utf-8")
+_TEXT_CHARSET.body_encoding = QP
+
+
 def _create_mime_message(
     recipients: list[str],
     subject: str,
     body: str,
     xarf_attachment: str | bytes | None = None,
-) -> MIMEMultipart:
-    """Build the multipart message; header values are sanitized to a single line."""
-    msg = MIMEMultipart()
+) -> Message:
+    """Build the message; header values are sanitized to a single line.
 
-    from_header = f"{SENDER_NAME} <{SMTP_SENDER}>" if SENDER_NAME else SMTP_SENDER
-    msg["From"] = _sanitize_header(from_header)
+    With an X-ARF report the layout follows the XARF e-mail transport guide
+    (RFC 6522 multipart/report with feedback-report type): text, feedback
+    headers, JSON payload. Without one it is a plain text mail.
+    """
+    if xarf_attachment:
+        boundary = f"=_xarf_{uuid.uuid4().hex}"
+        msg: Message = MIMEMultipart("report", boundary=boundary, report_type="feedback-report")
+        # compat32 does not fold parameters; fold by hand to stay under 78 columns.
+        msg.replace_header(
+            "Content-Type",
+            f'multipart/report; report-type="feedback-report";\n boundary="{boundary}"',
+        )
+        msg.attach(MIMEText(body, "plain", _TEXT_CHARSET))
+        _attach_xarf_report(msg, xarf_attachment)
+    else:
+        msg = MIMEText(body, "plain", _TEXT_CHARSET)
+
+    msg["From"] = _from_header_value(SENDER_NAME, SMTP_SENDER)
 
     # Only the first recipient is shown; the rest stay in the SMTP envelope.
     msg["To"] = _sanitize_header(recipients[0])
 
     msg["Subject"] = _sanitize_header(subject)
-
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    if xarf_attachment:
-        _attach_xarf_report(msg, xarf_attachment)
+    msg["Date"] = format_datetime(datetime.now(UTC))
+    msg["Message-ID"] = make_msgid(domain=SMTP_SENDER.rsplit("@", maxsplit=1)[-1])
 
     return msg
 
 
 def _attach_xarf_report(msg: MIMEMultipart, xarf_attachment: str | bytes) -> None:
-    """Attach the X-ARF report as 'abuse-report.xarf'.
-
-    Raises:
-        ValueError: If the attachment data is empty.
-    """
-    if not xarf_attachment:
-        raise ValueError("X-ARF attachment data cannot be empty")
-
+    """Attach the feedback-report part and the base64 JSON payload 'xarf.json'."""
     if isinstance(xarf_attachment, str):
         attachment_data = xarf_attachment.encode("utf-8")
     else:
         attachment_data = xarf_attachment
 
-    attachment = MIMEApplication(attachment_data, _subtype="x-arf+json", Name="abuse-report.xarf")
-    attachment.add_header("Content-Disposition", 'attachment; filename="abuse-report.xarf"')
+    feedback = MIMEBase("message", "feedback-report")
+    feedback.set_payload(f"Feedback-Type: xarf\nUser-Agent: crowdsec-abuse-reporter/{VERSION}\nVersion: 1\n")
+    feedback.add_header("Content-Disposition", "inline")
+    msg.attach(feedback)
 
-    msg.attach(attachment)
-    print_config_info("X-ARF attachment added to email")
+    payload = MIMEBase("application", "json", name="xarf.json")
+    payload.set_payload(attachment_data)
+    encoders.encode_base64(payload)
+    payload.add_header("Content-Disposition", "attachment", filename="xarf.json")
+    msg.attach(payload)
+    print_debug("X-ARF attachment added to email")
 
 
 def _send_smtp_message(
-    msg: MIMEMultipart,
+    msg: Message,
     all_recipients: list[str],
     primary_recipients: list[str],
     timeout: int = SMTP_TIMEOUT,
@@ -322,7 +370,7 @@ def _send_smtp_message(
         # dict and would otherwise be silently treated as full success.
         try:
             refused = server.sendmail(from_addr=SMTP_SENDER, to_addrs=all_recipients, msg=msg.as_string())
-        except (smtplib.SMTPResponseException, smtplib.SMTPRecipientsRefused):
+        except smtplib.SMTPResponseException, smtplib.SMTPRecipientsRefused:
             # An explicit server reply: the message was not accepted.
             raise
         except (smtplib.SMTPException, OSError) as exc:

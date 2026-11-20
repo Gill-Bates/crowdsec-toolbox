@@ -82,7 +82,7 @@ and checks that `[project].version` is release-shaped
 
 | Trigger | Behaviour |
 |---|---|
-| Push to `main` touching `docs/**`, `LICENSE`, the CI scripts, `.trivyignore` or the workflow | Build, scan, deploy |
+| Push to `main` touching `docs/**`, `zensical.toml`, `LICENSE`, the CI scripts, `.trivyignore` or the workflow | Build, scan, deploy |
 | Pull request touching the same paths | Build and scan only, no deploy |
 | `workflow_dispatch` | Build, scan; deploy from `main`, or from another branch with the `deploy` input |
 | Successful `Release` run for a `v*` tag | Rebuild, scan, deploy, so the site follows what was published |
@@ -102,9 +102,10 @@ with lychee.
     It fails on broken internal links and on a page missing from the `nav`. Add
     every new page to `zensical.toml`.
 
-`img.shields.io` is excluded from the link check: the badges are generated on
-demand by a third party that throttles, and a badge answering 503 says nothing
-about the documentation while still blocking the deploy.
+The link check excludes `img.shields.io` (badges are generated on demand by a
+throttling third party, and a 503 says nothing about the documentation),
+`x-arf.org` (repeated timeouts), `fonts.gstatic.com` and the site's own Pages URL
+(absent on the very first deploy).
 
 **`security-scan`** scans the environment the `build` job froze (uploaded as an
 artifact) with Trivy at `CRITICAL,HIGH`, and `trivy_report.py` proves the report
@@ -231,14 +232,13 @@ promotion, `cleanup` removes architecture fragments and candidate tags.
 ### Secrets
 
 Release jobs reference the GitHub Environment `release`. Configure its tag
-restrictions, protection rules and release secrets in GitHub settings; those
-settings are not stored in this repository.
+restrictions and protection rules in GitHub settings. Make the following secrets
+available to release jobs as repository or environment secrets.
 
 | Secret | Used for |
 |---|---|
 | `DOCKERHUB_USERNAME` | Namespace and registry login |
-| `DOCKERHUB_TOKEN` | Docker Hub API tag listing and image pushes |
-| `DOCKERHUB_DELETE_TOKEN` | Deleting temporary architecture and candidate tags during cleanup |
+| `DOCKERHUB_TOKEN` | Docker Hub API tag listing, image pushes, and deletion of temporary architecture and candidate tags during cleanup |
 | `RELEASE_TOKEN` | Creating the GitHub Release |
 
 !!! note "Why `RELEASE_TOKEN` and not the default token"

@@ -6,8 +6,6 @@
 
 """Create, verify and promote Docker Hub candidate tags for releases."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import os
@@ -33,6 +31,7 @@ ARCHES = ("amd64", "arm64")
 VERSION_RE = re.compile(r"^([0-9]+\.[0-9]+(?:\.[0-9]+)?)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")
 NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{2,}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 DOCKERHUB_LOGIN_URL = "https://hub.docker.com/v2/users/login/"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 REQUEST_TIMEOUT_SECONDS = 15
@@ -40,6 +39,7 @@ REQUEST_ATTEMPTS = 5
 RETRY_DELAY_SECONDS = 2
 MAX_TAG_PAGES = 10_000
 INSPECT_FORMAT = "{{json .Manifest}}"
+VersionKey = tuple[tuple[int, int, int], tuple[int, tuple[tuple[int, int, str], ...]]]
 
 
 class _DockerHubRedirectHandler(HTTPRedirectHandler):
@@ -69,9 +69,7 @@ class ReleaseTagsError(Exception):
     """A release tag listing, candidate, or promotion could not be verified."""
 
 
-def version_key(
-    version: str,
-) -> tuple[tuple[int, int, int], tuple[int, tuple[tuple[int, int, str], ...]]] | None:
+def version_key(version: str) -> VersionKey | None:
     """Return the repository's sortable release key, or None for non-version tags."""
     match = VERSION_RE.fullmatch(version)
     if match is None:
@@ -86,9 +84,7 @@ def version_key(
     return release, (0, identifiers)
 
 
-def release_tag_key(
-    tag: str,
-) -> tuple[tuple[int, int, int], tuple[int, tuple[tuple[int, int, str], ...]]] | None:
+def release_tag_key(tag: str) -> VersionKey | None:
     """Ignore moving, candidate and architecture tags when parsing releases."""
     for tool in TOOLS:
         prefix = f"{tool}-"
@@ -102,21 +98,11 @@ def release_tag_key(
     return version_key(version)
 
 
-def _stable_release_tag_key(
-    tag: str,
-) -> tuple[tuple[int, int, int], tuple[int, tuple[tuple[int, int, str], ...]]] | None:
+def _stable_release_tag_key(tag: str) -> VersionKey | None:
     """Return a key only for stable releases, which are the candidates for `latest`."""
     if any(tag.startswith(f"{tool}-") and "-" in tag.removeprefix(f"{tool}-") for tool in TOOLS):
         return None
     return release_tag_key(tag)
-
-
-def newer_release_tags(version: str, published_tags: list[str] | tuple[str, ...]) -> list[str]:
-    """Return published release tags newer than version, excluding build artifacts."""
-    current = version_key(version)
-    if current is None:
-        raise ReleaseTagsError(f"unparseable release version: {version}")
-    return sorted(tag for tag in set(published_tags) if (key := release_tag_key(tag)) is not None and key > current)
 
 
 def newer_stable_release_tags(version: str, published_tags: list[str] | tuple[str, ...]) -> list[str]:
@@ -127,6 +113,13 @@ def newer_stable_release_tags(version: str, published_tags: list[str] | tuple[st
     return sorted(
         tag for tag in set(published_tags) if (key := _stable_release_tag_key(tag)) is not None and key > current
     )
+
+
+def _log_newest(version: str, newer: list[str]) -> None:
+    if newer:
+        log("info", f"Newer published release tags exist; {version} will not move -latest.")
+    else:
+        log("info", f"{version} is the newest published release.")
 
 
 def candidate_tag(tool: str, run_id: str) -> str:
@@ -238,9 +231,9 @@ def create_candidate(image: str, tool: str, version: str, run_id: str, digest_di
     if version_key(version) is None:
         raise ReleaseTagsError(f"unparseable release version: {version}")
     tag = candidate_tag(tool, run_id)
-    sources = [f"{image}@{expected[f'linux/{arch}']}" for arch in ARCHES]
-    docker_command(["buildx", "imagetools", "create", "--tag", f"{image}:{tag}", *sources])
     reference = f"{image}:{tag}"
+    sources = [f"{image}@{expected[f'linux/{arch}']}" for arch in ARCHES]
+    docker_command(["buildx", "imagetools", "create", "--tag", reference, *sources])
     index_digest, actual = inspect_manifest(reference)
     verify_manifest(expected, actual, reference)
     log("info", f"Created and verified candidate {tag} ({index_digest}).")
@@ -288,7 +281,7 @@ def _request_json(
     raise ReleaseTagsError("Docker Hub API request exhausted retries")
 
 
-def list_published_tags(username: str, password: str, *, allow_empty: bool) -> list[str]:
+def dockerhub_token(username: str, password: str) -> str:
     if NAMESPACE_RE.fullmatch(username) is None or not password:
         raise ReleaseTagsError("Docker Hub credentials are missing or malformed")
     status, login = _request_json(
@@ -300,6 +293,24 @@ def list_published_tags(username: str, password: str, *, allow_empty: bool) -> l
     token = login.get("token") or login.get("access_token") if login else None
     if status != 200 or not isinstance(token, str) or not token:
         raise ReleaseTagsError(f"Docker Hub login failed (HTTP {status})")
+    return token
+
+
+def tag_exists(username: str, token: str, tag: str) -> bool:
+    """Direct tag lookup; 404 means the tag is free, any other failure raises (fail closed)."""
+    if NAMESPACE_RE.fullmatch(username) is None or TAG_RE.fullmatch(tag) is None:
+        raise ReleaseTagsError("Docker Hub tag lookup got a malformed namespace or tag")
+    url = f"https://hub.docker.com/v2/namespaces/{username}/repositories/crowdsec-toolbox/tags/{tag}"
+    status, payload = _request_json(url, headers={"Authorization": f"Bearer {token}"})
+    if status == 404:
+        return False
+    if status != 200 or payload is None:
+        raise ReleaseTagsError(f"Docker Hub tag lookup for {tag} failed (HTTP {status})")
+    return True
+
+
+def list_published_tags(username: str, password: str, *, allow_empty: bool) -> list[str]:
+    token = dockerhub_token(username, password)
 
     base = f"https://hub.docker.com/v2/namespaces/{username}/repositories/crowdsec-toolbox/tags"
     next_url = f"{base}?page_size=100"
@@ -345,6 +356,7 @@ def publish_verified_version_tag(
     expected: dict[str, str],
     *,
     already_published: bool,
+    exists: Callable[[str], bool],
     inspect: Callable[[str], tuple[str, dict[str, str]]],
     tag: Callable[[str, str, str], None],
 ) -> None:
@@ -353,14 +365,15 @@ def publish_verified_version_tag(
 
     version_tag = f"{tool}-{version}"
     reference = f"{image}:{version_tag}"
-    if already_published:
+    # The tag list may be stale; a direct lookup right before the write decides.
+    if already_published or exists(version_tag):
         verify_existing_version_tag(image, version_tag, candidate_digest, expected, inspect)
         log("info", f"Version tag {version_tag} already references the verified candidate digest.")
         return
 
     tag(image, version_tag, candidate_digest)
     published_digest, published_entries = inspect(reference)
-    verify_manifest(expected, published_entries, f"{image}:{version_tag}")
+    verify_manifest(expected, published_entries, reference)
     if published_digest != candidate_digest:
         raise ReleaseTagsError(f"version tag {version_tag} does not reference the verified candidate digest")
     log("info", f"Promoted verified candidate to {version_tag}.")
@@ -422,6 +435,7 @@ def promote_release(
     list_tags: Callable[[], list[str]],
     inspect: Callable[[str], tuple[str, dict[str, str]]],
     tag: Callable[[str, str, str], None],
+    exists: Callable[[str], bool],
 ) -> bool:
     """Verify every candidate, refresh registry state, then publish public tags."""
     if version_key(version) is None:
@@ -435,10 +449,7 @@ def promote_release(
     candidate_digests = verify_candidates(image, run_id, expected_by_tool, inspect)
     if candidate_digests != initial_candidate_digests:
         raise ReleaseTagsError("candidate indexes changed while re-reading the Docker Hub release list")
-    if newer:
-        log("info", f"Newer published release tags exist; {version} will not move -latest.")
-    else:
-        log("info", f"{version} is the newest published release.")
+    _log_newest(version, newer)
 
     existing_version_tags = {tool: f"{tool}-{version}" in published_tags for tool in TOOLS}
     for tool in TOOLS:
@@ -459,6 +470,7 @@ def promote_release(
             candidate_digests[tool],
             expected_by_tool[tool],
             already_published=existing_version_tags[tool],
+            exists=exists,
             inspect=inspect,
             tag=tag,
         )
@@ -493,10 +505,7 @@ def run_newest() -> int:
     published = list_published_tags(username, password, allow_empty=True)
     newer = newer_stable_release_tags(version, published)
     is_newest = not newer
-    if newer:
-        log("info", f"Newer published release tags exist; {version} will not move -latest.")
-    else:
-        log("info", f"{version} is the newest published release.")
+    _log_newest(version, newer)
     write_outputs({"is_newest": str(is_newest).lower()})
     return 0
 
@@ -542,6 +551,7 @@ def run_promote() -> int:
         raise ReleaseTagsError(f"Docker Hub login failed with exit code {login.returncode}")
 
     try:
+        token = dockerhub_token(username, password)
         is_newest = promote_release(
             image,
             version,
@@ -550,10 +560,10 @@ def run_promote() -> int:
             lambda: list_published_tags(username, password, allow_empty=False),
             inspect_manifest,
             tag_manifest,
+            lambda name: tag_exists(username, token, name),
         )
         if current_hint in {"true", "false"} and (current_hint == "true") != is_newest:
             log("warning", "Docker Hub release state changed since the metadata preflight; using this fresh listing.")
-        write_outputs({"is_newest": str(is_newest).lower()})
         return 0
     finally:
         try:
@@ -564,7 +574,7 @@ def run_promote() -> int:
                 timeout=30,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             log("warning", "Docker Hub logout could not complete.")
         else:
             if logout.returncode != 0:
@@ -573,8 +583,9 @@ def run_promote() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(line_buffering=True)
-    print_header(SCRIPT, (__doc__ or "").strip().splitlines()[0], __author__, HELP_URL)
-    parser = argparse.ArgumentParser(description=(__doc__ or "").strip().splitlines()[0])
+    description = (__doc__ or "").strip().splitlines()[0]
+    print_header(SCRIPT, description, __author__, HELP_URL)
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("command", choices=("newest", "create-candidate", "promote", "record-pushed-digest"))
     args = parser.parse_args(argv)
     try:

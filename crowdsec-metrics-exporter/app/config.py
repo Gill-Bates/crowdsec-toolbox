@@ -6,7 +6,7 @@
 
 """
 Configuration for the CrowdSec metrics exporter.
-Loads settings from environment variables with fallback defaults.
+Reads settings.env and the process environment into module-level constants, with defaults.
 """
 
 import math
@@ -38,6 +38,21 @@ def _env_bool(name: str, default: bool) -> bool:
     raise _exit(f"Config Error: {name} must be 'true' or 'false', got {raw!r}")
 
 
+def _env_int(name: str, default: int, *, minimum: int, maximum: int | None = None) -> int:
+    """Read an integer setting; a set but unusable value aborts startup instead of falling back."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = None
+    if value is None or value < minimum or (maximum is not None and value > maximum):
+        bound = f"between {minimum} and {maximum}" if maximum is not None else f"at least {minimum}"
+        raise _exit(f"Config Error: {name} must be an integer {bound}, got {raw!r}")
+    return value
+
+
 def _parse_env_line(line: str) -> tuple[str, str] | None:
     """Parse a single KEY=VALUE line, dotenv-style.
 
@@ -58,7 +73,7 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
 
     key, _, value = stripped.partition("=")
     key = key.strip()
-    if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
         return None
 
     value = value.strip()
@@ -121,7 +136,7 @@ def _positive_timeout[N: (int, float)](name: str, cast: type[N], default: N) -> 
 HOSTNAME_OVERRIDE = os.getenv("HOSTNAME_OVERRIDE", "")
 
 # Console log level: DEBUG, INFO (default), WARNING or ERROR. DEBUG additionally
-# surfaces the line-protocol sample lines that are otherwise only logged at INFO.
+# surfaces the line-protocol sample lines.
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 if LOG_LEVEL not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
     raise _exit(f"Config Error: LOG_LEVEL must be DEBUG, INFO, WARNING or ERROR, got {LOG_LEVEL!r}")
@@ -146,36 +161,18 @@ if any(ch in CROWDSEC_LAPI_PASSWORD for ch in "\r\n\x00"):
 # Fallback for direct host runs: CrowdSec's own watcher credentials file, used
 # when the URL, machine ID or password is not supplied via the environment.
 CROWDSEC_LAPI_CREDENTIALS_PATH = os.getenv("CROWDSEC_LAPI_CREDENTIALS_PATH", "/etc/crowdsec/local_api_credentials.yaml")
-CROWDSEC_LAPI_VERIFY_TLS = _env_bool("CROWDSEC_LAPI_VERIFY_TLS", True)
+CROWDSEC_LAPI_VALIDATE_CERTIFICATE = _env_bool("CROWDSEC_LAPI_VALIDATE_CERTIFICATE", True)
 CROWDSEC_LAPI_TIMEOUT = max(_positive_timeout("CROWDSEC_LAPI_TIMEOUT", float, 30.0), 1.0)
 
-# Upper bound on alerts requested per LAPI call.
-try:
-    CROWDSEC_ALERT_LIMIT = int(os.getenv("CROWDSEC_ALERT_LIMIT", "10000"))
-except ValueError:
-    CROWDSEC_ALERT_LIMIT = 10000
-
-# InfluxDB configuration
-INFLUXDB_URL = os.getenv("INFLUXDB_URL", "iflx.cirrio.de")
-INFLUXDB_PORT = int(os.getenv("INFLUXDB_PORT", "443"))
-INFLUXDB_USE_HTTPS = _env_bool("INFLUXDB_USE_HTTPS", True)
-INFLUXDB_VALIDATE_CERTIFICATE = _env_bool("INFLUXDB_VALIDATE_CERTIFICATE", True)
-INFLUXDB_ORGANIZATION = os.getenv("INFLUXDB_ORGANIZATION", "myOrg")
-INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "crowdsec")
-
-# InfluxDB Security Settings. The TLS version bounds live in
-# `influxdb.TLS12Adapter` (ssl.TLSVersion.TLSv1_2 … TLSv1_3); only the cipher
-# list is configured here.
-INFLUXDB_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS"
-
-INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")
+# Initial alert limit per LAPI call; a full response escalates it up to crowdsec.MAX_ALERT_FETCH_LIMIT.
+CROWDSEC_ALERT_LIMIT = _env_int("CROWDSEC_ALERT_LIMIT", 10000, minimum=1)
 
 
 def _require_bare_host(name: str, raw: str) -> str:
     """Return raw as a bare host name, aborting on scheme, port or path.
 
-    `questdb.py` assembles the endpoint itself
-    (`{protocol}://{host}:{port}/write`), so a value like
+    `influxdb.py` and `questdb.py` assemble the endpoint
+    themselves (`{protocol}://{host}:{port}/...`), so a value like
     "https://host" would produce "https://https://host:443/write" and fail as
     an opaque DNS error. Reject it at startup with a message that names the
     fix instead.
@@ -200,12 +197,25 @@ def _require_bare_host(name: str, raw: str) -> str:
     return host
 
 
+# InfluxDB configuration
+INFLUXDB_URL = _require_bare_host("INFLUXDB_URL", os.getenv("INFLUXDB_URL", "localhost"))
+INFLUXDB_PORT = _env_int("INFLUXDB_PORT", 443, minimum=1, maximum=65535)
+INFLUXDB_USE_HTTPS = _env_bool("INFLUXDB_USE_HTTPS", True)
+INFLUXDB_VALIDATE_CERTIFICATE = _env_bool("INFLUXDB_VALIDATE_CERTIFICATE", True)
+INFLUXDB_ORGANIZATION = os.getenv("INFLUXDB_ORGANIZATION", "myOrg")
+INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "crowdsec")
+
+# InfluxDB Security Settings. The TLS version bounds live in
+# `influxdb.TLS12Adapter` (ssl.TLSVersion.TLSv1_2 … TLSv1_3); only the cipher
+# list is configured here.
+INFLUXDB_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS"
+
+INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")
+
+
 # QuestDB configuration (used when METRICS_BACKEND=questdb)
 QUESTDB_URL = _require_bare_host("QUESTDB_URL", os.getenv("QUESTDB_URL", "localhost"))
-try:
-    QUESTDB_PORT = int(os.getenv("QUESTDB_PORT", "9000"))
-except ValueError:
-    QUESTDB_PORT = 9000
+QUESTDB_PORT = _env_int("QUESTDB_PORT", 9000, minimum=1, maximum=65535)
 QUESTDB_USE_HTTPS = _env_bool("QUESTDB_USE_HTTPS", False)
 QUESTDB_VALIDATE_CERTIFICATE = _env_bool("QUESTDB_VALIDATE_CERTIFICATE", True)
 QUESTDB_TABLE = os.getenv("QUESTDB_TABLE", "crowdsec")
@@ -299,7 +309,7 @@ if QUESTDB_DOWNSAMPLING and QUESTDB_DOWNSAMPLING not in QUESTDB_DOWNSAMPLING_PRO
 # The decision export above writes one point per alert. This second, optional
 # export writes one point per *event* inside an alert, which is what carries
 # the request details (http_path, http_verb, target_fqdn, target_user).
-EVENTS_ENABLED = os.getenv("EVENTS_ENABLED", "false").lower() == "true"
+EVENTS_ENABLED = _env_bool("EVENTS_ENABLED", False)
 EVENTS_TABLE = os.getenv("EVENTS_TABLE", f"{QUESTDB_TABLE}_events")
 
 
@@ -328,7 +338,7 @@ __all__ = [
     "CROWDSEC_LAPI_PASSWORD",
     "CROWDSEC_LAPI_TIMEOUT",
     "CROWDSEC_LAPI_URL",
-    "CROWDSEC_LAPI_VERIFY_TLS",
+    "CROWDSEC_LAPI_VALIDATE_CERTIFICATE",
     "EVENTS_ENABLED",
     "EVENTS_SINCE",
     "EVENTS_TABLE",
