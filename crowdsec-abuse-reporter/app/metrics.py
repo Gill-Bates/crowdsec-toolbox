@@ -677,11 +677,18 @@ def ensure_questdb_version() -> bool:
     if ok:
         print_debug(f"QuestDB version {'.'.join(map(str, version))} accepted")
     else:
-        found = ".".join(map(str, version)) if version else "unknown"
-        print_error(
-            f"Unsupported QuestDB version at {_questdb_url('').rstrip('/')}: found {found}, "
-            f"required {REQUIRED_QUESTDB_MAJOR}.x; nothing was written"
-        )
+        url = _questdb_url("").rstrip("/")
+        if version:
+            print_error(
+                f"Unsupported QuestDB version at {url}: found {'.'.join(map(str, version))}, "
+                f"required {REQUIRED_QUESTDB_MAJOR}.x; nothing was written"
+            )
+        else:
+            print_error(
+                f"QuestDB version could not be determined at {url} (check host, port, "
+                f"HTTPS setting and credentials); required {REQUIRED_QUESTDB_MAJOR}.x; "
+                "nothing was written"
+            )
     _VERSION_RESULT["ok"] = ok
     return ok
 

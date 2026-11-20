@@ -361,7 +361,8 @@ def test_other_versions_exit_1_before_any_fetch_or_write(db, monkeypatch, info, 
     assert main.main() == 1
     assert db.log == ["SELECT build()"]
     assert db.writes == []
-    assert any(f"found {found}, required 10.x; nothing was written" in line for line in db.logs if "error" in line)
+    expected = "QuestDB version could not be determined" if found == "unknown" else f"found {found}, required 10.x"
+    assert any(expected in line and "required 10.x; nothing was written" in line for line in db.logs if "error" in line)
 
 
 def test_unreachable_server_is_rejected_after_the_retry_budget(db, monkeypatch):

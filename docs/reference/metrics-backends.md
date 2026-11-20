@@ -73,9 +73,11 @@ row.
 older releases and no migration: data an older server stored is out of scope,
 and a server upgrade is the operator's task. With `METRICS_BACKEND=questdb`,
 both tools read `SELECT build()` over `/exec` before any DDL or write and
-accept only a `10.x` major version. A different major version, an
-unreachable server or an answer that does not contain a version stops the run
-with exit code `1` and writes nothing:
+accept only a `10.x` major version. A different major version stops the run
+with exit code `1` and writes nothing; an unreachable server or an answer that
+does not contain a version does the same, but is reported as
+`QuestDB version could not be determined` (see
+[Troubleshooting](../troubleshooting.md)):
 
 ```text
 2026-11-19 12:24:36 UTC | ERROR    | crowdsec_metrics | Unsupported QuestDB version at http://localhost:9000: found 9.3.4, required 10.x; nothing was written

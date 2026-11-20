@@ -1,10 +1,10 @@
 services:
   crowdsec-metrics-exporter:
-    image: docker.cirrio.de/crowdsec-metrics-exporter:latest
+    image: giiibates/crowdsec-toolbox:metrics-exporter-latest
     container_name: crowdsec-metrics-exporter
     env_file:
       - ./settings.env
-    restart: unless-stopped
+    restart: always
     stop_grace_period: 2m
     logging:
       driver: json-file

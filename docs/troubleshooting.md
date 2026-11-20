@@ -203,11 +203,23 @@ fails the write and the run exits `1`.
 
 Both tools support **QuestDB 10.x only** and check the server with
 `SELECT build()` before the first DDL or write. The run exits `1` and nothing is
-written, also when the version cannot be read (server unreachable, error
-response, unexpected answer; `found unknown`). Upgrade the server to 10.x; the
-next run passes. The reporter keeps every point in its SQLite outbox meanwhile.
+written. Upgrade the server to 10.x; the next run passes. The reporter keeps every point in its SQLite outbox meanwhile.
 Nothing is migrated: data stored by an older server stays with that server. The
 check is skipped for `METRICS_BACKEND=influxdb2` and `none`.
+
+### QuestDB version could not be determined
+
+```text
+2026-11-20 17:45:00 UTC | ERROR    | crowdsec_metrics | QuestDB version could not be determined at http://metrics.example.com:443 (check host, port, HTTPS setting and credentials); required 10.x; nothing was written
+```
+
+The server did not answer `SELECT build()` with a usable version: it is
+unreachable, rejected the credentials (HTTP 401/403), answered with an error or
+is not a QuestDB `/exec` endpoint. This is a connection problem, not a version
+problem. A WARNING `QuestDB version not readable: …` just before names the
+cause. A common one is `QUESTDB_USE_HTTPS=false` against a TLS port such as
+443; set it to `true`. Nothing is written and the run exits `1` as for an
+unsupported version.
 
 ### QuestDB startup abort
 

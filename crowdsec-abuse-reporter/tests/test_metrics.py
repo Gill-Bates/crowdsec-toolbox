@@ -958,7 +958,15 @@ class QuestDbVersionGateTest(_QuestDbStubMixin, _TempDbMixin, unittest.TestCase)
                 self.start_questdb(_FakeQuestDb(build_info=info))
                 self.assertFalse(metrics.ensure_questdb_version())
                 message = self.log.call_args_list[-1].args[1]
-                self.assertIn(f"found {found}, required 10.x; nothing was written", message)
+                expected = (
+                    "QuestDB version could not be determined"
+                    if found == "unknown"
+                    else "Unsupported QuestDB version at"
+                )
+                self.assertIn(expected, message)
+                if found != "unknown":
+                    self.assertIn(f"found {found}, ", message)
+                self.assertIn("required 10.x; nothing was written", message)
 
     def test_unreachable_server_is_rejected_after_retries(self):
         fake = _FakeQuestDb()

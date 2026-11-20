@@ -1,14 +1,10 @@
 services:
   crowdsec-abuse-reporter:
-    image: docker.cirrio.de/crowdsec-abuse-reporter:latest
+    image: giiibates/crowdsec-toolbox:abuse-reporter-latest
     container_name: crowdsec-abuse-reporter
     env_file:
       - ./settings.env
-    # tini is PID 1 inside the image (see Dockerfile ENTRYPOINT), so Compose adds no init of its own.
-    # Continuous operation; a one-shot run must use
-    # `docker compose run --rm -e RUN_ONCE=true crowdsec-abuse-reporter` (run creates the
-    # container with restart "no"); RUN_ONCE=true under `up` would restart after every exit 0.
-    restart: unless-stopped
+    restart: always
     stop_grace_period: 180s
     logging:
       driver: json-file
