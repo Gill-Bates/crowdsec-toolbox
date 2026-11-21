@@ -9,6 +9,8 @@ import re
 
 import httpx
 import pytest
+from gillbates_questdb_client.client import RETRY_BACKOFF_SECONDS, VERIFY_INTERVAL_SECONDS, VERIFY_POLLS
+from gillbates_questdb_client.retention import PENDING_WARN_AFTER
 
 import main
 from app import questdb
@@ -103,15 +105,14 @@ class FakeQuestDB:
 @pytest.fixture
 def db(monkeypatch, isolated_main):
     fake = FakeQuestDB()
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        questdb.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(fake.handler), **kw)
-    )
-    monkeypatch.setattr(questdb.time, "sleep", fake.sleeps.append)
-    monkeypatch.setattr(questdb, "_GATE_RESULTS", {})
-    monkeypatch.setattr(questdb, "_VERSION_RESULT", {})
+
+    def configure(**settings):
+        client = questdb.build_client(transport=httpx.MockTransport(fake.handler), sleep=fake.sleeps.append, **settings)
+        monkeypatch.setattr(questdb, "_CLIENT", client)
+
+    fake.configure = configure
+    configure()
     monkeypatch.setattr(isolated_main, "METRICS_BACKEND", "questdb")
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "")
     # The logger writes to its own stream, so capture the calls instead.
     for module in (questdb, main):
         for level in ("info", "warning", "error"):
@@ -152,7 +153,7 @@ def test_foreign_key_set_blocks_the_write_and_exits_1(db, monkeypatch, owned_key
     db.ignore_alter.add(ALERT_TABLE)
     assert _run_main(monkeypatch) == 1
     assert db.writes == []
-    assert db.count("upsertKey = true") == questdb._VERIFY_POLLS
+    assert db.count("upsertKey = true") == VERIFY_POLLS
 
 
 @pytest.mark.parametrize("flag", [{"mode": "SKIP"}, {"wal": False}], ids=["skip-mode", "not-wal"])
@@ -188,13 +189,13 @@ def test_transient_statuses_are_retried_with_bounded_backoff(db, status):
     db.fail[create] = [status, status, 200]
     assert _send_alerts() is main.SendStatus.OK
     assert db.count(create) == 3
-    assert db.sleeps[:2] == list(questdb._RETRY_BACKOFF_SECONDS[:2])
+    assert db.sleeps[:2] == list(RETRY_BACKOFF_SECONDS[:2])
 
 
 def test_persistent_5xx_stops_after_the_retry_budget(db):
     db.fail["DEDUP ENABLE"] = [503] * 20
     assert _send_alerts() is main.SendStatus.NOT_WRITTEN
-    assert db.count("DEDUP ENABLE") == len(questdb._RETRY_BACKOFF_SECONDS) + 1
+    assert db.count("DEDUP ENABLE") == len(RETRY_BACKOFF_SECONDS) + 1
     assert db.writes == []
 
 
@@ -202,7 +203,7 @@ def test_alter_that_becomes_visible_late_is_polled(db):
     db.alter_lag = 2
     db.add_table(ALERT_TABLE, dedup=False, keys=())
     assert _send_alerts() is main.SendStatus.OK
-    assert db.sleeps.count(questdb._VERIFY_INTERVAL_SECONDS) == 2
+    assert db.sleeps.count(VERIFY_INTERVAL_SECONDS) == 2
 
 
 def test_failed_ttl_keeps_the_data_exits_1_and_does_not_resend(db, monkeypatch):
@@ -220,8 +221,8 @@ def test_failed_write_is_reported_as_not_stored(db, monkeypatch):
     assert "nothing was stored" in "\n".join(db.logs)
 
 
-def test_unready_rollup_keeps_the_full_raw_ttl_and_a_current_one_shortens_it(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+def test_unready_rollup_keeps_the_full_raw_ttl_and_a_current_one_shortens_it(db):
+    db.configure(downsampling="medium")
     view = "crowdsec_rollup_1h_v1"
     db.views = [[view, ALERT_TABLE, "valid", 5, 9]]
     assert _send_alerts() is main.SendStatus.OK
@@ -229,14 +230,14 @@ def test_unready_rollup_keeps_the_full_raw_ttl_and_a_current_one_shortens_it(db,
     assert raw_ttl == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 365 DAYS']
 
     db.log.clear()
-    questdb._GATE_RESULTS.clear()
+    questdb._CLIENT._gate_results.clear()
     db.views = [[view, ALERT_TABLE, "valid", 9, 9]]
     assert _send_alerts() is main.SendStatus.OK
     assert f'ALTER TABLE "{ALERT_TABLE}" SET TTL 30 DAYS' in db.log
 
 
 def test_failed_rollup_ddl_keeps_full_raw_ttl_and_exits_1(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.configure(downsampling="medium")
     db.fail["CREATE MATERIALIZED VIEW"] = [400]
     assert _run_main(monkeypatch) == 1
     assert len(db.writes) == 1
@@ -244,7 +245,7 @@ def test_failed_rollup_ddl_keeps_full_raw_ttl_and_exits_1(db, monkeypatch):
 
 
 def test_failed_rollup_ttl_keeps_full_raw_ttl_and_exits_1(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+    db.configure(downsampling="medium")
     db.views = [["crowdsec_rollup_1h_v1", ALERT_TABLE, "valid", 9, 9]]
     db.fail["ALTER MATERIALIZED VIEW"] = [400]
     assert _run_main(monkeypatch) == 1
@@ -256,14 +257,14 @@ def _state_inserts(db):
     return [sql for sql in db.log if sql.startswith('INSERT INTO "_crowdsec_downsampling"')]
 
 
-def test_state_is_published_only_after_the_raw_ttl_is_in_force(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+def test_state_is_published_only_after_the_raw_ttl_is_in_force(db):
+    db.configure(downsampling="medium")
     db.views = [["crowdsec_rollup_1h_v1", ALERT_TABLE, "valid", 9, 9]]
     db.fail[f'ALTER TABLE "{ALERT_TABLE}" SET TTL'] = [400]
     assert _send_alerts() is main.SendStatus.WRITTEN_UNCONFIGURED
     assert _state_inserts(db) == []
 
-    questdb._GATE_RESULTS.clear()
+    questdb._CLIENT._gate_results.clear()
     assert _send_alerts() is main.SendStatus.OK
     (insert,) = _state_inserts(db)
     assert "true, 30," in insert
@@ -271,18 +272,16 @@ def test_state_is_published_only_after_the_raw_ttl_is_in_force(db, monkeypatch):
     assert ttl_index < db.log.index(insert)
 
 
-def test_a_refreshing_rollup_publishes_the_full_raw_window_not_an_active_profile(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+def test_a_refreshing_rollup_publishes_the_full_raw_window_not_an_active_profile(db):
+    db.configure(downsampling="medium")
     db.views = [["crowdsec_rollup_1h_v1", ALERT_TABLE, "valid", 5, 9]]
     assert _send_alerts() is main.SendStatus.OK
     (insert,) = _state_inserts(db)
     assert "'disabled'" in insert and "false, 365," in insert
 
 
-def test_disabled_total_ttl_removes_an_existing_rollup_view_ttl(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
-    monkeypatch.setattr(questdb, "QUESTDB_TTL", None)
-    monkeypatch.setattr(questdb, "QUESTDB_TTL_DAYS", None)
+def test_disabled_total_ttl_removes_an_existing_rollup_view_ttl(db):
+    db.configure(downsampling="medium", ttl=None, ttl_days=None)
     db.views = [["crowdsec_rollup_1h_v1", ALERT_TABLE, "valid", 9, 9]]
     assert _send_alerts() is main.SendStatus.OK
     assert 'ALTER MATERIALIZED VIEW "crowdsec_rollup_1h_v1" SET TTL 0 HOURS' in db.log
@@ -369,7 +368,7 @@ def test_unreachable_server_is_rejected_after_the_retry_budget(db, monkeypatch):
     db.fail["build()"] = [503] * 10
     monkeypatch.setattr(main, "get_crowdsec_decisions", lambda: pytest.fail("LAPI must not be fetched"))
     assert main.main() == 1
-    assert db.count("build()") == len(questdb._RETRY_BACKOFF_SECONDS) + 1
+    assert db.count("build()") == len(RETRY_BACKOFF_SECONDS) + 1
     assert db.writes == []
 
 
@@ -398,8 +397,8 @@ def _raw_ttl(db):
     return [sql for sql in db.log if sql.startswith(f'ALTER TABLE "{ALERT_TABLE}" SET TTL')]
 
 
-def test_a_refresh_that_lags_only_this_runs_own_write_still_shortens_the_raw_ttl(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+def test_a_refresh_that_lags_only_this_runs_own_write_still_shortens_the_raw_ttl(db):
+    db.configure(downsampling="medium")
     db.views = [[VIEW, ALERT_TABLE, "valid", 9, 9]]
     # The write commits txn 10; the async refresh has not started when the check runs.
     db.on_write = lambda: db.views.__setitem__(0, [VIEW, ALERT_TABLE, "refreshing", 9, 10])
@@ -408,8 +407,8 @@ def test_a_refresh_that_lags_only_this_runs_own_write_still_shortens_the_raw_ttl
     assert not any(line.startswith("warning:") for line in db.logs)
 
 
-def test_a_view_behind_the_state_before_the_write_keeps_the_raw_ttl_and_only_informs(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+def test_a_view_behind_the_state_before_the_write_keeps_the_raw_ttl_and_only_informs(db):
+    db.configure(downsampling="medium")
     db.views = [[VIEW, ALERT_TABLE, "refreshing", 5, 9]]
     db.on_write = lambda: db.views.__setitem__(0, [VIEW, ALERT_TABLE, "refreshing", 5, 10])
     assert _send_alerts() is main.SendStatus.OK
@@ -418,37 +417,34 @@ def test_a_view_behind_the_state_before_the_write_keeps_the_raw_ttl_and_only_inf
     assert not any(line.startswith("warning:") for line in db.logs)
 
 
-def test_a_view_created_in_this_run_is_pending_at_info_level(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+def test_a_view_created_in_this_run_is_pending_at_info_level(db):
+    db.configure(downsampling="medium")
     db.on_write = lambda: setattr(db, "views", [[VIEW, ALERT_TABLE, "refreshing", 0, 1]])
     assert _send_alerts() is main.SendStatus.OK
     assert _raw_ttl(db) == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 365 DAYS']
     assert not any(line.startswith("warning:") for line in db.logs)
 
 
-def test_an_invalid_view_still_warns_and_fails_the_run(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+def test_an_invalid_view_still_warns_and_fails_the_run(db):
+    db.configure(downsampling="medium")
     db.views = [[VIEW, ALERT_TABLE, "invalid", 9, 9]]
     assert _send_alerts() is main.SendStatus.WRITTEN_UNCONFIGURED
     assert _raw_ttl(db) == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 365 DAYS']
     assert any(line.startswith("warning:") and "invalid" in line for line in db.logs)
 
 
-def test_a_lag_that_persists_over_several_runs_escalates_to_a_warning(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
-    monkeypatch.setattr(questdb, "_PENDING_RUNS", {})
+def test_a_lag_that_persists_over_several_runs_escalates_to_a_warning(db):
+    db.configure(downsampling="medium")
     db.views = [[VIEW, ALERT_TABLE, "refreshing", 5, 9]]
-    for _ in range(questdb._PENDING_WARN_AFTER):
+    for _ in range(PENDING_WARN_AFTER):
         db.logs.clear()
         assert _send_alerts() is main.SendStatus.OK
     assert any(line.startswith("warning:") and "consecutive runs" in line for line in db.logs)
 
 
-def test_the_state_row_is_not_reinserted_when_quest_db_returns_null_for_empty_symbols(db, monkeypatch):
-    monkeypatch.setattr(questdb, "QUESTDB_DOWNSAMPLING", "medium")
+def test_the_state_row_is_not_reinserted_when_quest_db_returns_null_for_empty_symbols(db):
+    db.configure(downsampling="medium", ttl=None, ttl_days=None)
     db.views = [[VIEW, ALERT_TABLE, "valid", 5, 9]]  # unready: published as disabled with empty strings
     db.state_rows = [["disabled", 1, False, 0, None, None, None]]
-    monkeypatch.setattr(questdb, "QUESTDB_TTL", None)
-    monkeypatch.setattr(questdb, "QUESTDB_TTL_DAYS", None)
     assert _send_alerts() is main.SendStatus.OK
     assert _state_inserts(db) == []
