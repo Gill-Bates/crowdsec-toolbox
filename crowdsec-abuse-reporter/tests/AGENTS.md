@@ -12,7 +12,7 @@ coverage.
 ## Key Files
 | File | Description |
 |------|-------------|
-| `test_hardening.py` | 124 tests, the main suite; one class per app module it covers directly, plus `ReviewFindingsTest` and entrypoint/Dockerfile checks |
+| `test_hardening.py` | 122 tests, the main suite; one class per app module it covers directly, plus `ReviewFindingsTest` and entrypoint/Dockerfile checks |
 | `test_main.py` | 25 tests for `app.main` helpers: IP/ID/confidence extraction, dedup, stats, plus `WhitelistAsnTableOrderTest` (startup call order) |
 | `test_metrics.py` | 77 tests for `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB version and dedup gates and TTL against a fake `/exec`, the metrics outbox, and the control-data-only property of SQLite in metrics mode |
 | `test_banner.py` | 3 tests: the version/metadata line is centred within the visual width of the banner; the release notice after the banner and its silent cases (offline, `gillbates_logging.version_check.fetch_latest_version` patched) |
@@ -77,7 +77,7 @@ coverage.
 cd crowdsec-abuse-reporter && python -m pytest          # full suite
 python -m pytest tests/test_hardening.py -k Database -q   # one area
 ```
-The suite currently collects 229 tests in total across the four files listed
+The suite currently collects 227 tests in total across the four files listed
 above.
 
 Known gap: `reap_stale_pending()` is covered only inside the retention tests,

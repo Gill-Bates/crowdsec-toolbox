@@ -16,7 +16,6 @@ import shutil
 import signal
 import smtplib
 import sqlite3
-import ssl
 import subprocess
 import sys
 import tempfile
