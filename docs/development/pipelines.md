@@ -257,7 +257,7 @@ available to release jobs as repository or environment secrets.
     addition to its release permissions (add that repository to its repository access); a
     classic PAT with `repo` scope already covers it. Pull requests from forks have no
     access to the secret, so the install step fails there with a "Missing RELEASE_TOKEN
-    secret" message. The tags `gillbates-logging-v0.2.0` and `gillbates-questdb-client-v0.1.0` (the QuestDB client, same mechanism) must exist in `python-libraries`.
+    secret" message. The tags `gillbates-logging-v0.1.0` and `gillbates-questdb-client-v0.1.0` (the QuestDB client, same mechanism) must exist in `python-libraries`.
 
 ### Cutting a release
 
