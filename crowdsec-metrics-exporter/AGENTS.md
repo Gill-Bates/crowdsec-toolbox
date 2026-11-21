@@ -138,6 +138,7 @@ anything on it; the real abuse-contact resolution lives in `crowdsec-abuse-repor
 - `httpx` — declared in the `default` group, used only by
   `app/questdb.py`
 - `gillbates-logging` — logging core, git URL pinned by tag in `[project].dependencies` (private repository)
+- `gillbates-questdb-client` — QuestDB client (writes, `/exec`, dedup gate, TTL, rollup retention), pinned the same way
 - `settings.env` loading (`config.py`) uses only the stdlib; coloured console output (`logger.py`) comes from the external `gillbates-logging` package — no `python-dotenv` or `colorama` dependency
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

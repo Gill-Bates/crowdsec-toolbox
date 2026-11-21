@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
+from gillbates_questdb_client.client import RETRY_BACKOFF_SECONDS
+from gillbates_questdb_client.retention import PENDING_WARN_AFTER
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["SMTP_PASSWORD"] = ""
@@ -152,7 +154,7 @@ class _QuestDbStubMixin:
             patch.object(
                 metrics.httpx,
                 "Client",
-                side_effect=lambda **kw: _RealClient(transport=httpx.MockTransport(fake.handler), **kw),
+                side_effect=lambda **kw: _RealClient(**{"transport": httpx.MockTransport(fake.handler), **kw}),
             )
         )
         self.fake = fake
@@ -266,7 +268,7 @@ class BackendWriteTest(unittest.TestCase):
     def test_questdb_uses_bearer_token_and_write_endpoint(self):
         with (
             patch.object(metrics, "METRICS_BACKEND", "questdb"),
-            patch.object(metrics, "QUESTDB_TOKEN", "tok"),
+            patch.object(metrics, "_CLIENT", metrics.QuestDBClient(metrics.QuestDBConfig(token="tok"))),  # noqa: S106
             patch.object(metrics, "ensure_questdb_version", return_value=True),
             patch.object(metrics, "ensure_questdb_table", return_value=True),
             patch.object(metrics, "_post", return_value=self._response(204)) as post,
@@ -722,9 +724,10 @@ class QuestDbDownsamplingTest(_QuestDbStubMixin, unittest.TestCase):
     def test_persistent_lag_escalates_to_a_warning(self):
         fake = _FakeQuestDb()
         fake.views = [[self.VIEW, self.TABLE, "refreshing", 1, 4]]
-        for _ in range(PENDING_WARN_AFTER - 1):
-            self._write(fake)
         self._write(fake)
+        # The client counts consecutive runs, so the same instance must serve all of them.
+        for _ in range(PENDING_WARN_AFTER - 1):
+            metrics.write_points(["a"])
         self.assertIn("consecutive runs", "\n".join(self._warnings()))
 
     def test_null_symbols_in_the_state_row_do_not_trigger_a_new_insert(self):

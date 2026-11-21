@@ -13,13 +13,11 @@ the sibling tool, both backends go through httpx (this project has no
 requests/urllib3 dependency); httpx negotiates TLS 1.2+ by default.
 """
 
-import re
 import socket
 import ssl
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import Enum, IntEnum
+from enum import IntEnum
 from pathlib import Path
 
 import httpx
