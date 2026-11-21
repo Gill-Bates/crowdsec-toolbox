@@ -7,15 +7,17 @@
 import io
 import sys
 import unittest
-import unittest.mock
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from gillbates_logging import version_check
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import version_check
 from app.banner import print_banner
+
+RELEASES_URL = "https://github.com/Gill-Bates/crowdsec-toolbox/releases/latest"
 
 
 class BannerTest(unittest.TestCase):
@@ -47,9 +49,7 @@ class BannerTest(unittest.TestCase):
 
     def test_notice_follows_the_banner_and_compares_semantically(self):
         out = self._banner_output("1.9.0", "v1.10.0")
-        self.assertTrue(
-            out.endswith(f"A new version is available: v1.10.0 (running: v1.9.0) - {version_check.RELEASES_URL}\n\n")
-        )
+        self.assertTrue(out.endswith(f"A new version is available: v1.10.0 (running: v1.9.0) - {RELEASES_URL}\n\n"))
         self.assertIn("Independent project", out.split("A new version")[0])
         self.assertTrue(self._banner_output("1.0.4", "v1.0.4").endswith("Your version is up to date.\n\n"))
         self.assertTrue(self._banner_output("1.2.0-rc1", "v1.2.0").count("A new version is available: v1.2.0") == 1)
@@ -59,28 +59,6 @@ class BannerTest(unittest.TestCase):
         with patch.object(version_check, "fetch_latest_version") as fetch:
             self.assertTrue(self._banner_output("dev", "v9.0.0").rstrip(" \n").endswith("not affiliated with CrowdSec"))
             fetch.assert_not_called()
-
-    def test_fetch_failures_return_none_and_send_a_timeout(self):
-        seen = {}
-
-        def fake_get(url, **kwargs):
-            seen.update(kwargs, url=url)
-            return unittest.mock.Mock(json=lambda: {"tag_name": "v2.0.0"})
-
-        with patch.object(version_check.httpx, "get", fake_get):
-            self.assertEqual(version_check.fetch_latest_version(), "v2.0.0")
-        self.assertLessEqual(seen["timeout"], 5)
-        self.assertTrue(seen["url"].endswith("/repos/Gill-Bates/crowdsec-toolbox/releases/latest"))
-        for error in (version_check.httpx.ConnectError("offline"), ValueError("bad json")):
-            with patch.object(version_check.httpx, "get", side_effect=error):
-                self.assertIsNone(version_check.fetch_latest_version())
-
-    def test_prerelease_precedence(self):
-        parse = version_check.parse_version
-        self.assertLess(parse("1.2.0-rc2"), parse("1.2.0-rc10"))
-        self.assertLess(parse("1.2.0-rc1"), parse("1.2.0"))
-        self.assertEqual(parse("1.2.0+b5"), parse("1.2.0"))
-        self.assertIsNone(parse("nightly"))
 
 
 if __name__ == "__main__":

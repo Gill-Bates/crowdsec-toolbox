@@ -6,13 +6,13 @@
 
 # LAPI fetch completeness (limit escalation, ceiling) and incomplete event details, over mocked HTTP.
 import io
-from unittest import mock
 
 import httpx
 import pytest
+from gillbates_logging import version_check
 
 import main
-from app import banner, crowdsec, version_check
+from app import banner, crowdsec
 from app.version import GIT_SHA, VERSION
 
 BASE = "http://lapi.test/v1"
@@ -178,12 +178,13 @@ def test_banner_uses_colors_only_for_tty_and_prints_build_metadata(monkeypatch):
 
 
 def test_banner_prints_release_notice_after_the_banner(monkeypatch, capsys):
-    monkeypatch.setattr(version_check, "fetch_latest_version", lambda: "v1.10.0")
+    monkeypatch.setattr(version_check, "fetch_latest_version", lambda _repo: "v1.10.0")
     banner.print_banner("1.9.0", "abcdef012345")
     out = capsys.readouterr().out
-    assert out.endswith(f"A new version is available: v1.10.0 (running: v1.9.0) - {version_check.RELEASES_URL}\n\n")
+    url = "https://github.com/Gill-Bates/crowdsec-toolbox/releases/latest"
+    assert out.endswith(f"A new version is available: v1.10.0 (running: v1.9.0) - {url}\n\n")
     assert "Independent project" in out.split("A new version")[0]
-    monkeypatch.setattr(version_check, "fetch_latest_version", lambda: "v1.9.0")
+    monkeypatch.setattr(version_check, "fetch_latest_version", lambda _repo: "v1.9.0")
     banner.print_banner("1.9.0", "abcdef012345")
     assert capsys.readouterr().out.endswith("Your version is up to date.\n\n")
 
@@ -191,29 +192,9 @@ def test_banner_prints_release_notice_after_the_banner(monkeypatch, capsys):
 def test_release_lookup_is_silent_when_unavailable_or_dev(monkeypatch, capsys):
     banner.print_banner("1.9.0", "abcdef012345")
     assert capsys.readouterr().out.rstrip(" \n").endswith("not affiliated with CrowdSec")
-    monkeypatch.setattr(version_check, "fetch_latest_version", lambda: pytest.fail("dev build must not fetch"))
+    monkeypatch.setattr(version_check, "fetch_latest_version", lambda _repo: pytest.fail("dev build must not fetch"))
     banner.print_banner("dev", "dev")
     assert capsys.readouterr().out.rstrip(" \n").endswith("not affiliated with CrowdSec")
-
-
-def test_fetch_latest_version_survives_errors_and_bounds_the_wait(monkeypatch):
-    seen = {}
-
-    class Resp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"tag_name": "v2.0.0"}
-
-    monkeypatch.undo()
-    monkeypatch.setattr(version_check.httpx, "get", lambda url, **kw: seen.update(kw, url=url) or Resp())
-    assert version_check.fetch_latest_version() == "v2.0.0"
-    assert seen["timeout"] <= 5
-    assert seen["url"].endswith("/repos/Gill-Bates/crowdsec-toolbox/releases/latest")
-    for error in (httpx.ConnectError("offline"), ValueError("bad json")):
-        monkeypatch.setattr(version_check.httpx, "get", mock.Mock(side_effect=error))
-        assert version_check.fetch_latest_version() is None
 
 
 def test_event_ceiling_exports_partial_events_and_main_exits_1(monkeypatch, main_env):

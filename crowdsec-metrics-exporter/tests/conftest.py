@@ -40,6 +40,6 @@ def sent_payloads(monkeypatch):
 @pytest.fixture(autouse=True)
 def no_release_lookup(monkeypatch):
     """Keep the startup banner offline; tests of the lookup itself patch it again."""
-    from app import version_check
+    from gillbates_logging import version_check
 
-    monkeypatch.setattr(version_check, "fetch_latest_version", lambda: None)
+    monkeypatch.setattr(version_check, "fetch_latest_version", lambda _repo: None)
