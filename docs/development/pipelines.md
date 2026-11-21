@@ -17,20 +17,34 @@ run is not, because a release reads its result.
 
 ## CI
 
-Six jobs run in parallel; `release.yml` calls the same workflow as its gate.
+`discover` runs first; the other six jobs run in parallel after it. `release.yml` calls the same workflow as its gate.
+
+### `discover` — the tool list
+
+Finds the tools in the file system: every top-level directory with its own
+`pyproject.toml`, except `docs/` (the Zensical toolchain). The result is a JSON list
+(`["crowdsec-abuse-reporter", "crowdsec-metrics-exporter"]`) that the `manifest`,
+`container` and `check` jobs read, so a new tool joins the gate without a workflow
+edit. The detection does not depend on a pytest configuration. The job fails when
+the list is empty or when a tool lacks `docker/Dockerfile` or `docker/entrypoint.sh`.
+
+!!! note "Not derived from this list"
+    `release.yml` (build matrix, version check, smoke-test imports, changelogs) and the
+    root `setup.conf` still name the tools themselves.
 
 ### `check` — Ruff + pytest
 
-Two parallel legs. Both install the `default` and `dev` groups of both tools (plus `gillbates-logging` from the private `python-libraries` repository, authenticated with `RELEASE_TOKEN`) so ruff
+Two parallel legs. Both install the `default` and `dev` groups of every discovered tool (plus `gillbates-logging` from the private `python-libraries` repository, authenticated with `RELEASE_TOKEN`) so ruff
 can resolve imports across the whole repository; one runs
 `ruff check --output-format=github` followed by `ruff format --check --diff`, the
-other runs each tool's full pytest suite from its own directory. The abuse
+other runs each tool's full pytest suite from its own directory, one after another in a
+single step. Every tool runs even after a failure, and any failed tool fails the step. The abuse
 reporter's entrypoint tests use temporary paths and stub commands; see
 [Testing](testing.md#entrypoint-validation-tests).
 
 ### `container` — Dockerfiles + entrypoints
 
-Matrixed over both tools:
+Matrixed over the tools from `discover`:
 
 - `bash -n <tool>/docker/entrypoint.sh` parses the script without executing it,
   and `shellcheck` lints it. The entrypoints are bash (per their shebang).

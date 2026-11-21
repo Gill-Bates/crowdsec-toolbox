@@ -34,10 +34,53 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The one list of tools: a top-level directory with its own pyproject.toml, except docs/
+  # (the Zensical toolchain, not a tool). A new tool joins the gate without a workflow edit.
+  discover:
+    name: Discover tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tools: ${{ steps.list.outputs.tools }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
+      # Every tool ships as an image, so a tool without its Dockerfile or entrypoint fails
+      # here instead of silently dropping out of the container matrix.
+      - name: List tools
+        id: list
+        run: |
+          set -euo pipefail
+          tools=()
+          while IFS= read -r dir; do
+            tools+=("${dir#./}")
+          done < <(find . -mindepth 2 -maxdepth 2 -name pyproject.toml -not -path './.*' -not -path './docs/*' -printf '%h\n' | sort)
+          [ "${#tools[@]}" -gt 0 ] || { echo "::error::no tool (top-level directory with a pyproject.toml) found"; exit 1; }
+          for tool in "${tools[@]}"; do
+            for required in docker/Dockerfile docker/entrypoint.sh; do
+              [ -f "${tool}/${required}" ] || { echo "::error::${tool}/${required} is missing"; exit 1; }
+            done
+          done
+          json="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "${tools[@]}")"
+          echo "tools: ${json}"
+          echo "tools=${json}" >> "$GITHUB_OUTPUT"
+
   # Seconds-cheap checks that need no dependency install run beside the test job
   # and fail the run early; parallel on purpose, a PR gate has no irreversible step.
   manifest:
     name: each tool's pyproject.toml is its only manifest
+    needs: discover
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
@@ -81,9 +124,12 @@ jobs:
       # A bad version has to fail here, before the tag is pushed: a pushed tag is not
       # retractable like a commit. release.yml additionally requires both to equal the tag.
       - name: Version is release-shaped
+        env:
+          TOOLS: ${{ join(fromJSON(needs.discover.outputs.tools), ' ') }}
         run: |
           set -euo pipefail
-          for project in crowdsec-abuse-reporter crowdsec-metrics-exporter; do
+          read -ra projects <<< "$TOOLS"
+          for project in "${projects[@]}"; do
             VERSION="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "${project}/pyproject.toml")"
             echo "${project}/pyproject.toml version: ${VERSION}"
             echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
@@ -183,14 +229,13 @@ jobs:
 
   container:
     name: Dockerfile + entrypoint (${{ matrix.project }})
+    needs: discover
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        project:
-          - crowdsec-abuse-reporter
-          - crowdsec-metrics-exporter
+        project: ${{ fromJSON(needs.discover.outputs.tools) }}
 
     steps:
       - name: Checkout repository
@@ -230,6 +275,7 @@ jobs:
   # sequential job. Each leg installs the same environment.
   check:
     name: Check (${{ matrix.check }})
+    needs: discover
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -249,9 +295,8 @@ jobs:
           # Matches requires-python in each tool's pyproject.toml.
           python-version: '3.14'
           cache: pip
-          cache-dependency-path: |
-            crowdsec-abuse-reporter/pyproject.toml
-            crowdsec-metrics-exporter/pyproject.toml
+          # Glob instead of the tool list: setup-python cannot loop. It also hashes docs/.
+          cache-dependency-path: '*/pyproject.toml'
       - name: Agent banner and job temp directory
         run: python3 .github/scripts/ci_job_setup.py
 
@@ -265,14 +310,18 @@ jobs:
       - name: Install dependencies
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TOOLS: ${{ join(fromJSON(needs.discover.outputs.tools), ' ') }}
         run: |
           set -euo pipefail
           : "${RELEASE_TOKEN:?Missing RELEASE_TOKEN secret (not available to pull requests from forks)}"
           python -m pip install --upgrade "pip>=25.1"
+          read -ra projects <<< "$TOOLS"
           requirements="$RUNNER_TEMP/runtime-requirements.txt"
           : > "$requirements"
-          for project in crowdsec-abuse-reporter crowdsec-metrics-exporter; do
+          groups=()
+          for project in "${projects[@]}"; do
             python -c 'import sys, tomllib; deps = tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"]; deps or sys.exit("no [project].dependencies in " + sys.argv[1]); print(*deps, sep="\n")' "${project}/pyproject.toml" >> "$requirements"
+            groups+=(--group "${project}/pyproject.toml:default" --group "${project}/pyproject.toml:dev")
           done
           test -s "$requirements"
           # The empty first helper resets any helper configured on the runner, so only ours answers.
@@ -280,11 +329,7 @@ jobs:
           export GIT_CONFIG_KEY_1=credential.helper
           # shellcheck disable=SC2016 # expanded by git's helper shell at call time, not here
           export GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=${RELEASE_TOKEN}"; }; f'
-          pip install -r "$requirements" \
-                      --group crowdsec-abuse-reporter/pyproject.toml:default \
-                      --group crowdsec-abuse-reporter/pyproject.toml:dev \
-                      --group crowdsec-metrics-exporter/pyproject.toml:default \
-                      --group crowdsec-metrics-exporter/pyproject.toml:dev
+          pip install -r "$requirements" "${groups[@]}"
           python -c "import gillbates_logging, gillbates_questdb_client, gillbates_smtp_client, gillbates_shutdown_handler, gillbates_geoip"
 
       - name: Run ruff
@@ -296,15 +341,22 @@ jobs:
         if: matrix.check == 'ruff'
         run: ruff format --check --diff .
 
-      - name: Run tests (crowdsec-abuse-reporter)
+      # Serial on purpose (two tools gain nothing from a matrix). Every tool runs even after
+      # a failure, and any failed tool fails the step.
+      - name: Run tests (all tools)
         if: matrix.check == 'pytest'
-        working-directory: crowdsec-abuse-reporter
-        run: python -m pytest
-
-      - name: Run tests (crowdsec-metrics-exporter)
-        if: matrix.check == 'pytest'
-        working-directory: crowdsec-metrics-exporter
-        run: python -m pytest
+        env:
+          TOOLS: ${{ join(fromJSON(needs.discover.outputs.tools), ' ') }}
+        run: |
+          set -euo pipefail
+          read -ra projects <<< "$TOOLS"
+          failed=()
+          for project in "${projects[@]}"; do
+            echo "::group::pytest ${project}"
+            (cd "$project" && python -m pytest) || failed+=("$project")
+            echo "::endgroup::"
+          done
+          [ "${#failed[@]}" -eq 0 ] || { echo "::error::pytest failed for: ${failed[*]}"; exit 1; }
 
   source-scan:
     name: Source secrets
