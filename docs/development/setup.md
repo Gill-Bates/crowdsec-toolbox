@@ -53,7 +53,7 @@ lets ruff resolve imports across the whole repository in one pass.
 
 !!! warning "pip 25.1 or newer"
     `pip install --group` is what reads the PEP 735 groups. The runtime dependency
-    `gillbates-logging`, `gillbates-questdb-client` and (abuse reporter only) `gillbates-smtp-client` sit in `[project].dependencies`, which `--group` does not read, hence the
+    `gillbates-logging`, `gillbates-questdb-client`, `gillbates-shutdown-handler` and (abuse reporter only) `gillbates-smtp-client` sit in `[project].dependencies`, which `--group` does not read, hence the
     separate editable install above. CI and the Docker builds install it from the pinned git
     tag of the private `python-libraries` repository with a token (`RELEASE_TOKEN`, see
     [Pipelines](pipelines.md#secrets)).

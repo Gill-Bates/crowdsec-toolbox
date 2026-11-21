@@ -18,11 +18,12 @@ import atexit
 import ipaddress
 import json
 import math
-import signal
 import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
+
+from gillbates_shutdown_handler import SignalFlag
 
 from app.abuse import UncertainSendError, send_abuse_mail
 from app.abuse import split_recipients as _split_abuse_contacts
@@ -164,25 +165,15 @@ class ProcessingStats:
         return time.monotonic() - self.start_time
 
 
-class GracefulInterruptHandler:
+class GracefulInterruptHandler(SignalFlag):
     """Context manager that records SIGINT/SIGTERM so the current step can finish."""
 
-    def __init__(self):
-        self.interrupted = False
-        self.original_handlers = {}
-
-    def __enter__(self):
-        self.original_handlers[signal.SIGINT] = signal.signal(signal.SIGINT, self.handler)
-        self.original_handlers[signal.SIGTERM] = signal.signal(signal.SIGTERM, self.handler)
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        for sig, handler in self.original_handlers.items():
-            signal.signal(sig, handler)
-
-    def handler(self, signum, _frame):
-        self.interrupted = True
-        print_config_info(f"Received interrupt signal {signum}, finishing current operation")
+    def __init__(self) -> None:
+        super().__init__(
+            on_signal=lambda signum: print_config_info(
+                f"Received interrupt signal {signum}, finishing current operation"
+            )
+        )
 
 
 def get_alert_id(alert: dict) -> int | None:

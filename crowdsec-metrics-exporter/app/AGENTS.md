@@ -13,7 +13,7 @@ the write. For QuestDB, `ensure_questdb_version()` first requires a 10.x server,
 `ensure_questdb_table()` verifies UPSERT deduplication before the first write; TTL and optional downsampling are configured after the
 write. With `EVENTS_ENABLED`, a second pass fetches `GET /v1/alerts?since`,
 checks event-detail completeness and `events.build_event_lines()` writes one
-point per event to `EVENTS_TABLE`. `logger`, `kbinterrupt`, `version` and the
+point per event to `EVENTS_TABLE`. `logger`, `version` and the
 banner are support modules.
 
 ## Key Files
@@ -28,7 +28,6 @@ banner are support modules.
 | `questdb.py` | `httpx.Client` POST of the same line protocol to QuestDB's ILP-over-HTTP `/write` endpoint; bearer token or basic auth, no TLS hardening |
 | `logger.py` | Binds the external `gillbates-logging` package to the `crowdsec_metrics` source: console helpers (`print_info`/`success`/`warning`/`error`), root logging configured on import from `config.LOG_LEVEL` |
 | `version.py` | Reads `APP_VERSION` / `GIT_SHA` (build args) for the startup banner |
-| `kbinterrupt.py` | SIGINT/SIGTERM handlers for a clean shutdown |
 
 ## Subdirectories
 None.

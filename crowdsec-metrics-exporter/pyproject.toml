@@ -12,6 +12,7 @@ requires-python = ">=3.14"
 dependencies = [
     "gillbates-logging @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-logging-v0.1.0#subdirectory=packages/logging",
     "gillbates-questdb-client @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-questdb-client-v0.1.0#subdirectory=packages/questdb-client",
+    "gillbates-shutdown-handler @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-shutdown-handler-v0.1.0#subdirectory=packages/shutdown-handler",
 ]
 
 [dependency-groups]

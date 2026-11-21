@@ -15,7 +15,7 @@ With metrics enabled, `metrics` exports the finalized report outcome.
 | File | Description |
 |------|-------------|
 | `__init__.py` | Package marker only |
-| `main.py` | Orchestrator: fetch, filter, subnet-dedup, claim, send, finalize, summary, exit code |
+| `main.py` | Orchestrator: fetch, filter, subnet-dedup, claim, send, finalize, summary, exit code; `GracefulInterruptHandler` binds the SIGINT/SIGTERM flag of `gillbates-shutdown-handler` to the log line |
 | `crowdsec.py` | LAPI auth/fetch with bounded retry, decision derivation, context extraction, node-IP detection |
 | `abusix.py` | Abuse-contact lookup via the Abusix DNS contact DB, backed by the SQLite contact cache |
 | `abuse.py` | Thin adapter over the external `gillbates-smtp-client` package (connection, TLS/AUTH, retry and error classification, recipient validation, MIME skeleton): binds it to the SMTP settings and log helpers and adds the XARF parts (multipart/report with feedback-report and `xarf.json` per the XARF e-mail transport guide) |

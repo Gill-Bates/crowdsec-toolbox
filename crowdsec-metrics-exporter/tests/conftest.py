@@ -21,7 +21,7 @@ def isolated_main(monkeypatch):
     """Return `main` with its process wiring stubbed; the test supplies the data sources."""
     import main
 
-    monkeypatch.setattr(main, "register_handlers", lambda: None)
+    monkeypatch.setattr(main, "exit_on_signal", lambda *_args, **_kwargs: lambda: None)
     monkeypatch.setattr(main, "get_hostname", lambda: "host")
     monkeypatch.setattr(main, "EVENTS_ENABLED", False)
     return main

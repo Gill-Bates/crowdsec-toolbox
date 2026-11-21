@@ -14,9 +14,12 @@ watermark: every run sends the full current data set, and the backend collapses
 rows it has already stored. See `ALERT_DEDUP_KEYS` and `app.events.DEDUP_KEYS`.
 """
 
+import signal
 import sys
 from enum import Enum
 from typing import Any
+
+from gillbates_shutdown_handler import exit_on_signal
 
 from app.banner import print_banner
 from app.config import (
@@ -44,7 +47,6 @@ from app.influxdb import (
     format_influxdb_line_protocol,
     send_to_influxdb,
 )
-from app.kbinterrupt import register_handlers
 from app.logger import (
     print_debug,
     print_error,
@@ -200,6 +202,10 @@ def export_events(hostname: str) -> bool:
     return complete
 
 
+def _log_interrupt(signum: int) -> None:
+    print_warning(f"Interrupted by {signal.Signals(signum).name}. Exiting cleanly")
+
+
 def main() -> int:
     """Fetch alerts from CrowdSec and export them to the configured backend.
 
@@ -215,7 +221,7 @@ def main() -> int:
     print_banner()
     print_info(f"Starting CrowdSec → {METRICS_BACKEND} export")
 
-    register_handlers()
+    exit_on_signal(_log_interrupt)
 
     if METRICS_BACKEND == "influxdb2":
         warn_insecure_transport()
