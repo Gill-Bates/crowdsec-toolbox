@@ -19,6 +19,10 @@ on:
       - main
   workflow_dispatch:
   workflow_call:
+    secrets:
+      # Read access to the private Gill-Bates/python-libraries repository (see pipelines.md).
+      RELEASE_TOKEN:
+        required: true
 
 permissions:
   contents: read
@@ -253,18 +257,35 @@ jobs:
 
       # pip >= 25.1 is required for PEP 735 `--group` installs. ruff needs both tools
       # installed to resolve imports across the repository; pytest runs both suites.
+      # [project].dependencies (gillbates-logging, a private git dependency) is not part of a
+      # group, so it is collected into a requirements file. The token reaches git only through
+      # a credential helper that reads it from this step's environment; it is never part of a
+      # URL or written to disk. Every failure (missing token, empty list, install, import) fails
+      # the step.
       - name: Install dependencies
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
+          : "${RELEASE_TOKEN:?Missing RELEASE_TOKEN secret (not available to pull requests from forks)}"
           python -m pip install --upgrade "pip>=25.1"
-          # [project].dependencies (gillbates-logging) is not part of a group, so install it explicitly.
+          requirements="$RUNNER_TEMP/runtime-requirements.txt"
+          : > "$requirements"
           for project in crowdsec-abuse-reporter crowdsec-metrics-exporter; do
-            python -c 'import sys, tomllib; print(*tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"], sep="\n")' "${project}/pyproject.toml"
-          done | pip install -r /dev/stdin \
+            python -c 'import sys, tomllib; deps = tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"]; deps or sys.exit("no [project].dependencies in " + sys.argv[1]); print(*deps, sep="\n")' "${project}/pyproject.toml" >> "$requirements"
+          done
+          test -s "$requirements"
+          # The empty first helper resets any helper configured on the runner, so only ours answers.
+          export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=
+          export GIT_CONFIG_KEY_1=credential.helper
+          # shellcheck disable=SC2016 # expanded by git's helper shell at call time, not here
+          export GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=${RELEASE_TOKEN}"; }; f'
+          pip install -r "$requirements" \
                       --group crowdsec-abuse-reporter/pyproject.toml:default \
                       --group crowdsec-abuse-reporter/pyproject.toml:dev \
                       --group crowdsec-metrics-exporter/pyproject.toml:default \
                       --group crowdsec-metrics-exporter/pyproject.toml:dev
+          python -c "import gillbates_logging"
 
       - name: Run ruff
         if: matrix.check == 'ruff'

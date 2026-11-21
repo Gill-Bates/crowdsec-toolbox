@@ -148,6 +148,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+    secrets:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
   build:
     name: Build ${{ matrix.tool }} (${{ matrix.arch }})
@@ -204,6 +206,11 @@ jobs:
           TOOL: ${{ matrix.tool }}
         run: echo "name=crowdsec-${TOOL}" >> "$GITHUB_OUTPUT"
 
+      - name: Require the private-repository token
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: ': "${RELEASE_TOKEN:?Missing RELEASE_TOKEN secret}"'
+
       # Build context is the repository root: each Dockerfile bind-mounts its own
       # tool's pyproject.toml and COPYs repo-relative paths, and the neighbouring
       # Dockerfile.dockerignore allowlist keeps everything else out.
@@ -218,6 +225,9 @@ jobs:
           push: false
           provenance: false
           tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          # BuildKit secret for the private python-libraries install; not an ARG or ENV.
+          secrets: |
+            python_libraries_token=${{ secrets.RELEASE_TOKEN }}
           build-args: |
             APP_VERSION=${{ needs.meta.outputs.version }}
             GIT_SHA=${{ github.sha }}

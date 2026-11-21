@@ -41,10 +41,8 @@ git clone https://github.com/Gill-Bates/crowdsec-toolbox.git
 cd crowdsec-toolbox
 python3.14 -m venv .venv && source .venv/bin/activate
 pip install --upgrade "pip>=25.1"
-for p in crowdsec-abuse-reporter crowdsec-metrics-exporter; do
-  python -c 'import sys, tomllib; print(*tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"], sep="\n")' "$p/pyproject.toml"
-done | pip install -r /dev/stdin \
-            --group crowdsec-abuse-reporter/pyproject.toml:default \
+pip install -e /opt/python-libraries/packages/logging   # private repo, local checkout
+pip install --group crowdsec-abuse-reporter/pyproject.toml:default \
             --group crowdsec-abuse-reporter/pyproject.toml:dev \
             --group crowdsec-metrics-exporter/pyproject.toml:default \
             --group crowdsec-metrics-exporter/pyproject.toml:dev
@@ -56,7 +54,9 @@ lets ruff resolve imports across the whole repository in one pass.
 !!! warning "pip 25.1 or newer"
     `pip install --group` is what reads the PEP 735 groups. The runtime dependency
     `gillbates-logging` sits in `[project].dependencies`, which `--group` does not read, hence the
-    `-r /dev/stdin` list above.
+    separate editable install above. CI and the Docker builds install it from the pinned git
+    tag of the private `python-libraries` repository with a token (`RELEASE_TOKEN`, see
+    [Pipelines](pipelines.md#secrets)).
 
 ## Conventions
 
@@ -73,7 +73,7 @@ lets ruff resolve imports across the whole repository in one pass.
     The one exception is the logging core: both tools install the external `gillbates-logging`
     package (`Gill-Bates/python-libraries`, pinned by tag) and keep only a thin
     `app/logger.py`. For local development run
-    `pip install -e /opt/python-libraries/packages/logging` after the install above.
+    `pip install -e /opt/python-libraries/packages/logging`.
 
 ## Adding a dependency
 

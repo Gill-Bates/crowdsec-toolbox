@@ -75,9 +75,15 @@ docker buildx build \
   --build-arg APP_VERSION="$VERSION" \
   --build-arg GIT_SHA="$GIT_SHA" \
   --build-arg BUILD_DATE="$BUILD_DATE" \
+  --secret id=python_libraries_token,env=PYTHON_LIBRARIES_TOKEN \
   -t "docker.cirrio.de/${PROJECT}:latest" \
   --push .
 ```
+
+`PYTHON_LIBRARIES_TOKEN` is a GitHub token with read access to the private
+`Gill-Bates/python-libraries` repository (fine-grained PAT: `Contents: read`). It reaches the
+build only as a BuildKit secret mounted on the one `RUN` that installs `gillbates-logging`;
+it never lands in an `ARG`, `ENV`, layer or the final image, and `git` is purged in the same step.
 
 Substitute `crowdsec-metrics-exporter` for `PROJECT` to build the other image;
 the command is otherwise identical.

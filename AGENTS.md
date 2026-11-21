@@ -39,8 +39,9 @@ path, and shares no application code with its siblings. Each tool has its own
   logging core, which lives in the external `gillbates-logging` package (`Gill-Bates/python-libraries`,
   `packages/logging/`) and is pinned by tag in each tool's `default` group; `logger.py` stays as the
   tool's thin binding. For local dev, install it editable from a checkout
-  (`pip install -e /opt/python-libraries/packages/logging`); the image installs it from the tag archive,
-  so the tag must be pushed before a build.
+  (`pip install -e /opt/python-libraries/packages/logging`); the image and CI install it from the pinned git tag of the
+  private repository (git plus a token: `RELEASE_TOKEN` in CI, the BuildKit secret
+  `python_libraries_token` in `docker build`), so the tag must be pushed before a build.
 - Each tool's runtime group is called `default`, its tooling group `dev`. Each
   manifest also carries that component's `[project].version`, its `[tool.pytest.ini_options]`
   and a `[tool.ruff]` that only sets `extend = "../ruff.toml"` plus tool-specific

@@ -123,6 +123,7 @@ Build and deploy commands live in the root `setup.conf` and are the source of tr
 cd <repo root>
 docker buildx build --platform linux/amd64 --pull -f crowdsec-abuse-reporter/docker/Dockerfile \
   --build-arg APP_VERSION=... --build-arg GIT_SHA=... --build-arg BUILD_DATE=... \
+  --secret id=python_libraries_token,env=PYTHON_LIBRARIES_TOKEN \
   -t docker.cirrio.de/crowdsec-abuse-reporter:<version> -t docker.cirrio.de/crowdsec-abuse-reporter:latest --push .
 ```
 The root `setup.conf` reads `APP_VERSION` from this tool's own `pyproject.toml`, resolves

@@ -21,7 +21,7 @@ Six jobs run in parallel; `release.yml` calls the same workflow as its gate.
 
 ### `check` — Ruff + pytest
 
-Two parallel legs. Both install the `default` and `dev` groups of both tools so ruff
+Two parallel legs. Both install the `default` and `dev` groups of both tools (plus `gillbates-logging` from the private `python-libraries` repository, authenticated with `RELEASE_TOKEN`) so ruff
 can resolve imports across the whole repository; one runs
 `ruff check --output-format=github` followed by `ruff format --check --diff`, the
 other runs each tool's full pytest suite from its own directory. The abuse
@@ -240,12 +240,24 @@ available to release jobs as repository or environment secrets.
 |---|---|
 | `DOCKERHUB_USERNAME` | Namespace and registry login |
 | `DOCKERHUB_TOKEN` | Docker Hub API tag listing, image pushes, and deletion of temporary architecture and candidate tags during cleanup |
-| `RELEASE_TOKEN` | Creating the GitHub Release |
+| `RELEASE_TOKEN` | Creating the GitHub Release, and read access to the private `Gill-Bates/python-libraries` repository for the `gillbates-logging` install in the `check` job and in the image builds |
 
 !!! note "Why `RELEASE_TOKEN` and not the default token"
     A release created with `GITHUB_TOKEN` does not emit a `release` event, so no
     other workflow could ever react to a publish. Everything else uses the
     default token.
+
+!!! note "`RELEASE_TOKEN` also reads `python-libraries`"
+    Both tools depend on `gillbates-logging`, a git dependency on the private
+    `Gill-Bates/python-libraries` repository. `ci.yml` (the `check` job, also when called
+    from `release.yml`, which passes the secret explicitly) and the release image builds
+    use `RELEASE_TOKEN` for it: in the CI step through the step environment and a git
+    credential helper, in `docker build` as the BuildKit secret `python_libraries_token`.
+    A fine-grained PAT therefore needs `Contents: read` on `Gill-Bates/python-libraries` in
+    addition to its release permissions (add that repository to its repository access); a
+    classic PAT with `repo` scope already covers it. Pull requests from forks have no
+    access to the secret, so the install step fails there with a "Missing RELEASE_TOKEN
+    secret" message. The tag `gillbates-logging-v0.1.0` must exist in `python-libraries`.
 
 ### Cutting a release
 

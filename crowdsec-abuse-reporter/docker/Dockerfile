@@ -54,8 +54,9 @@ RUN --mount=type=bind,source=crowdsec-abuse-reporter/pyproject.toml,target=/tmp/
     apt-get install -y --no-install-recommends git; \
     python -c 'import sys, tomllib; deps = tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"]; deps or sys.exit("no [project].dependencies"); print(*deps, sep="\n")' /tmp/pyproject.toml > /tmp/runtime-requirements.txt; \
     test -s /tmp/runtime-requirements.txt; \
-    GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper \
-    GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/python_libraries_token)"; }; f' \
+    GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \
+    GIT_CONFIG_KEY_1=credential.helper \
+    GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/python_libraries_token)"; }; f' \
     pip install --no-cache-dir --root-user-action=ignore -r /tmp/runtime-requirements.txt --group /tmp/pyproject.toml:default; \
     python -c "import gillbates_logging"; \
     apt-get purge -y --auto-remove git; \
