@@ -127,14 +127,21 @@ class _FakeQuestDb:
 class _QuestDbStubMixin:
     """Route every QuestDB request of `metrics` to a `_FakeQuestDb`; one gate per test."""
 
+    ttl_days: int | None = 365
+    downsampling = ""
+
     def start_questdb(self, fake: _FakeQuestDb, *, ttl="365 DAYS") -> None:
         stack = ExitStack()
         self.addCleanup(stack.close)
         stack.enter_context(patch.object(metrics, "METRICS_BACKEND", "questdb"))
-        stack.enter_context(patch.object(metrics, "QUESTDB_TTL", ttl))
-        stack.enter_context(patch.dict(metrics._GATE_RESULTS, clear=True))
-        stack.enter_context(patch.dict(metrics._VERSION_RESULT, clear=True))
-        stack.enter_context(patch.object(metrics.time, "sleep"))
+        client = metrics.build_client(
+            ttl=ttl,
+            ttl_days=self.ttl_days,
+            downsampling=self.downsampling,
+            transport=httpx.MockTransport(fake.handler),
+            sleep=lambda _seconds: None,
+        )
+        stack.enter_context(patch.object(metrics, "_CLIENT", client))
         stack.enter_context(patch.object(metrics, "print_config_info"))
         self.log = MagicMock()
         for level in ("info", "warning", "error"):
@@ -662,14 +669,9 @@ class QuestDbDownsamplingTest(_QuestDbStubMixin, unittest.TestCase):
     VIEW = f"{metrics.QUESTDB_TABLE}_rollup_1h_v1"
 
     def _write(self, fake, *, ttl="365 DAYS", profile="medium"):
+        self.ttl_days = {"365 DAYS": 365, None: None}[ttl]
+        self.downsampling = profile
         self.start_questdb(fake, ttl=ttl)
-        patcher = patch.object(metrics, "QUESTDB_DOWNSAMPLING", profile)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        days = {"365 DAYS": 365, None: None}[ttl]
-        days_patch = patch.object(metrics, "QUESTDB_TTL_DAYS", days)
-        days_patch.start()
-        self.addCleanup(days_patch.stop)
         return metrics.write_points(["a"])
 
     @staticmethod
@@ -720,10 +722,7 @@ class QuestDbDownsamplingTest(_QuestDbStubMixin, unittest.TestCase):
     def test_persistent_lag_escalates_to_a_warning(self):
         fake = _FakeQuestDb()
         fake.views = [[self.VIEW, self.TABLE, "refreshing", 1, 4]]
-        patcher = patch.object(metrics, "_PENDING_RUNS", {})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        for _ in range(metrics._PENDING_WARN_AFTER - 1):
+        for _ in range(PENDING_WARN_AFTER - 1):
             self._write(fake)
         self._write(fake)
         self.assertIn("consecutive runs", "\n".join(self._warnings()))
@@ -973,7 +972,7 @@ class QuestDbVersionGateTest(_QuestDbStubMixin, _TempDbMixin, unittest.TestCase)
         fake.exec_fail = lambda query: 503 if query == "SELECT build()" else None
         self.start_questdb(fake)
         self.assertFalse(metrics.ensure_questdb_version())
-        self.assertEqual(fake.count("SELECT build()"), len(metrics._RETRY_BACKOFF_SECONDS) + 1)
+        self.assertEqual(fake.count("SELECT build()"), len(RETRY_BACKOFF_SECONDS) + 1)
 
     def test_flush_keeps_the_outbox_and_writes_nothing_on_a_wrong_version(self):
         self.start_questdb(_FakeQuestDb(build_info="QuestDB 9.0.0"))
