@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from gillbates_questdb_client import parse_ttl, ttl_days
+from gillbates_smtp_client import EMAIL_REGEX
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", str(BASE_DIR / "settings.env")))
@@ -241,9 +242,9 @@ SMTP_PORT = _get_port_env("SMTP_PORT", 587)
 SMTP_VALIDATE_CERTIFICATE = _get_bool_env("SMTP_VALIDATE_CERTIFICATE", True)
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_SENDER = os.getenv("SMTP_SENDER", "abuse-reporter@example.com").strip()
-# Same shape as app.abuse.EMAIL_REGEX (not importable here: abuse imports config). It is the
+# The address rule of the SMTP client (``EMAIL_REGEX``). SMTP_SENDER is the
 # envelope sender and feeds the X-ARF reporter contact/domain, so "Name <addr>" is not valid.
-if not re.fullmatch(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", SMTP_SENDER):
+if not EMAIL_REGEX.fullmatch(SMTP_SENDER):
     _fail_clean(f"SMTP_SENDER must be a plain e-mail address (user@domain.tld), got {SMTP_SENDER!r}")
 
 SLEEP_BETWEEN_MAILS = _get_int_env("SLEEP_BETWEEN_MAILS", 0)

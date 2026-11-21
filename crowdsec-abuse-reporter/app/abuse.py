@@ -4,14 +4,11 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-import smtplib
-from contextlib import contextmanager
 from email.message import Message
 from email.mime.base import MIMEBase
 
 from gillbates_smtp_client import (
     BACKOFF_FACTOR,
-    EMAIL_REGEX,
     MAX_RETRIES,
     RETRY_DELAY,
     DeliveryReport,
@@ -19,15 +16,9 @@ from gillbates_smtp_client import (
     SmtpConfig,
     UncertainSendError,
     build_message,
-    format_recipient_errors,
     make_attachment,
-    normalize_recipients,
-    send_message,
     send_with_retry,
     validate_email,
-)
-from gillbates_smtp_client import (
-    smtp_connection as _smtp_connection,
 )
 from gillbates_smtp_client import (
     split_recipients as _split_recipients,
@@ -49,13 +40,11 @@ SMTP_TIMEOUT = 30
 
 __all__ = [
     "BACKOFF_FACTOR",
-    "EMAIL_REGEX",
     "MAX_RETRIES",
     "RETRY_DELAY",
     "SMTP_TIMEOUT",
     "UncertainSendError",
     "send_abuse_mail",
-    "smtp_connection",
     "split_recipients",
     "validate_email",
 ]
@@ -94,31 +83,12 @@ def _check_smtp_settings() -> None:
         raise RuntimeError("SMTP_USERNAME and SMTP_PASSWORD must either both be set or both be empty.")
 
 
-@contextmanager
-def smtp_connection(timeout: int = SMTP_TIMEOUT):
-    """Open one SMTP connection (STARTTLS and AUTH as configured) and close it on exit.
-
-    Connections are not reused across sends.
-
-    Raises:
-        RuntimeError: Half-configured credentials, or TLS switched off.
-    """
-    _check_smtp_settings()
-    with _smtp_connection(_smtp_config(timeout), log=_log_sink()) as server:
-        yield server
-
-
 def split_recipients(recipients_str: str) -> list[str]:
     """Split a comma- or semicolon-separated string into valid addresses.
 
     Invalid entries are dropped and their count is reported.
     """
     return _split_recipients(recipients_str, _log_sink())
-
-
-def _normalize_recipients(value: str | list[str] | None) -> list[str]:
-    """Normalize recipient input through the same validation path."""
-    return normalize_recipients(value, _log_sink())
 
 
 def send_abuse_mail(
@@ -218,24 +188,3 @@ def _xarf_parts(xarf_attachment: str | bytes) -> list[Message]:
     payload = make_attachment(xarf_attachment, "application/json", "xarf.json")
     print_debug("X-ARF attachment added to email")
     return [feedback, payload]
-
-
-def _send_smtp_message(
-    msg: Message,
-    all_recipients: list[str],
-    primary_recipients: list[str],
-    timeout: int = SMTP_TIMEOUT,
-) -> None:
-    """Send the message over a freshly opened SMTP connection.
-
-    Raises:
-        smtplib.SMTPRecipientsRefused: Every primary recipient was refused.
-        gillbates_smtp_client.SendOutcomeUncertainError: The connection failed mid-transaction.
-    """
-    report = send_message(_smtp_config(timeout), msg, SMTP_SENDER, all_recipients, primary_recipients, log=_log_sink())
-    _log_refusals(report)
-
-
-def _format_recipient_errors(smtp_error: smtplib.SMTPRecipientsRefused) -> str:
-    """Format per-recipient refusals as 'addr: code message' joined by '; '."""
-    return format_recipient_errors(smtp_error)

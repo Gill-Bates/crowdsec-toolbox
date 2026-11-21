@@ -75,7 +75,7 @@ None.
   by pruning are lost: `flush_points()` raises `MetricsPrunedError` (a
   `MetricsLostError`) after flushing the rest, and `main` counts one metrics error.
 - QuestDB 10.x is the only supported release line, with no fallback for older
-  servers. `ensure_questdb_version()` (copied from the exporter, never imported)
+  servers. `ensure_questdb_version()` (from `gillbates-questdb-client`)
   reads `SELECT build()` and caches the verdict per process. `main._run()` calls
   it right after the banner when `METRICS_BACKEND=questdb`, so a mismatch, an
   unreachable server or an unparsable answer exits `1` before mail, SQLite or the
@@ -83,7 +83,7 @@ None.
   before writing. `flush_points()` keeps pending rows in its outbox. It never runs
   for `influxdb2` or `none`.
 - QuestDB dedup is a hard precondition: `write_points()` runs
-  `ensure_questdb_table()` (copied from the exporter, never imported) before the
+  `ensure_questdb_table()` (from `gillbates-questdb-client`) before the
   first write of the table per process and raises `MetricsGateError` without
   writing when it fails. `flush_points()` then keeps every outbox row and the run
   exits `1` at once through `stats.metrics_errors`; this is deliberately not an

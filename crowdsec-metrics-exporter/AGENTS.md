@@ -99,8 +99,8 @@ local smoke test; do not add tests that need the network.
   materialized rollup view. The rollup definitions sit next to the dedup keys
   (`main.ALERT_ROLLUP`, `app.events.ROLLUP`); the events table has none on
   purpose (see `app/AGENTS.md`). `apply_questdb_retention()` verifies the rollup, sets
-  the raw TTL and only then publishes the state. The abuse reporter has identical copies
-  (`test_shared_code.py`).
+  the raw TTL and only then publishes the state. Both tools take these gates from the
+  external `gillbates-questdb-client` package.
 - QuestDB 10.x is the only supported release line; there is no fallback for
   older servers. `main()` calls `ensure_questdb_version()` (`SELECT build()` over
   `/exec`, major must be `10`) before the LAPI fetch and returns `1` with one

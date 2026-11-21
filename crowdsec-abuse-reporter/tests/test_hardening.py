@@ -62,7 +62,7 @@ class AbuseHardeningTest(unittest.TestCase):
         server = MagicMock()
         server.starttls.side_effect = smtplib.SMTPException("TLS failed")
         with (
-            patch.object(abuse.smtplib, "SMTP", return_value=server),
+            patch.object(smtplib, "SMTP", return_value=server),
             patch.object(abuse, "SMTP_USERNAME", ""),
             patch.object(abuse, "SMTP_PASSWORD", ""),
             patch.object(abuse, "print_mail_error") as mail_error,
@@ -113,16 +113,20 @@ class AbuseHardeningTest(unittest.TestCase):
         self.assertNotIsInstance(err, abuse.UncertainSendError)
 
     def test_partially_refused_primary_recipients_count_as_delivered(self):
-        refused = {"b@example.com": (550, b"no")}
-        with patch("gillbates_smtp_client.transport.smtp_connection") as conn:
+        (ok, err), _server = self._send_with_sendmail(return_value={"b@example.com": (550, b"no")})
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        refused = {"a@example.com": (550, b"no"), "b@example.com": (550, b"no")}
+        with (
+            patch("gillbates_smtp_client.transport.smtp_connection") as conn,
+            patch.object(abuse, "print_mail_error"),
+            patch("time.sleep"),
+        ):
             server = MagicMock()
-            server.sendmail.return_value = refused
+            server.sendmail.side_effect = smtplib.SMTPRecipientsRefused(refused)
             conn.return_value.__enter__.return_value = server
-            msg = abuse._create_mime_message(["a@example.com", "b@example.com"], "s", "b")
-            abuse._send_smtp_message(msg, ["a@example.com", "b@example.com"], ["a@example.com", "b@example.com"])
-            server.sendmail.return_value = {"a@example.com": (550, b"no"), "b@example.com": (550, b"no")}
-            with self.assertRaises(smtplib.SMTPRecipientsRefused):
-                abuse._send_smtp_message(msg, ["a@example.com", "b@example.com"], ["a@example.com", "b@example.com"])
+            ok, _err = abuse.send_abuse_mail("a@example.com, b@example.com", "s", "b", max_retries=1)
+        self.assertFalse(ok)
 
     def test_xarf_attachment_failure_is_logged_once(self):
         with (
@@ -171,13 +175,6 @@ class AbuseHardeningTest(unittest.TestCase):
     def test_mail_without_xarf_report_is_plain_text(self):
         msg = abuse._create_mime_message(["a@example.com"], "s", "body")
         self.assertEqual(msg.get_content_type(), "text/plain")
-
-    def test_normalize_recipients_validates_list_entries(self):
-        recipients = abuse._normalize_recipients(
-            ["valid@example.com", "bad\r\nbcc:evil@example.com", "two@example.net"]
-        )
-
-        self.assertEqual(recipients, ["valid@example.com", "two@example.net"])
 
 
 class AbusixHardeningTest(unittest.TestCase):
@@ -1180,31 +1177,15 @@ class ReviewFindingsTest(unittest.TestCase):
         self.assertEqual(client.request.call_count, 1)
         sleep.assert_not_called()
 
-    def test_smtp_connection_rejects_half_configured_credentials(self):
+    def test_send_rejects_half_configured_credentials(self):
         with (
             patch.object(abuse, "SMTP_USERNAME", "user"),
             patch.object(abuse, "SMTP_PASSWORD", ""),
-            self.assertRaises(RuntimeError) as ctx,
-            abuse.smtp_connection(),
+            patch.object(abuse, "print_mail_error"),
         ):
-            pass
-        self.assertIn("both be set", str(ctx.exception))
-
-    def test_smtp_connection_does_not_relabel_send_errors(self):
-        server = MagicMock()
-        server.sock = MagicMock(spec=ssl.SSLSocket)
-        server.sock.getpeercert.return_value = b"der-cert"
-        with (
-            patch.object(abuse.smtplib, "SMTP", return_value=server),
-            patch.object(abuse, "SMTP_USERNAME", ""),
-            patch.object(abuse, "SMTP_PASSWORD", ""),
-            patch.object(abuse, "print_mail_error") as mail_error,
-            contextlib.suppress(smtplib.SMTPRecipientsRefused),
-            abuse.smtp_connection(),
-        ):
-            raise smtplib.SMTPRecipientsRefused({"a@example.com": (550, b"no")})
-
-        mail_error.assert_not_called()
+            ok, err = abuse.send_abuse_mail("a@example.com", "s", "b", max_retries=1)
+        self.assertFalse(ok)
+        self.assertIn("both be set", str(err))
 
     def test_query_abuse_contact_dns_rejects_unusable_txt_record(self):
         rdata = MagicMock()

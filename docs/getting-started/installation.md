@@ -13,7 +13,7 @@ installable packages; the manifest exists only to declare
 
 | Manifest | Group | Contents |
 |---|---|---|
-| `crowdsec-abuse-reporter/pyproject.toml` | `default` | `dnspython`, `geoip2`, `httpx` |
+| `crowdsec-abuse-reporter/pyproject.toml` | `default` | `dnspython`, `httpx` |
 | | `dev` | `pytest`, `ruff` |
 | `crowdsec-metrics-exporter/pyproject.toml` | `default` | `httpx`, `requests`, `urllib3` |
 | | `dev` | `pytest`, `ruff` |

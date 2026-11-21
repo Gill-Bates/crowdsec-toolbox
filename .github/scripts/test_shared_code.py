@@ -6,7 +6,7 @@
 
 """Fail when the deliberately duplicated code of the two tools drifts apart.
 
-The tools share no package, so these blocks are copies. Comparing the AST
+These blocks are deliberate copies, not code from a shared package. Comparing the AST
 ignores comments, formatting and docstrings, not behavior.
 """
 

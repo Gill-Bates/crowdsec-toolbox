@@ -5,7 +5,7 @@ description = "CrowdSec decisions to InfluxDB 2.x or QuestDB time series"
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.14"
-# Not a group: the shared logging and QuestDB client packages are real runtime dependencies of the distribution
+# Not a group: the shared gillbates-* packages are real runtime dependencies of the distribution
 # metadata. They come from tags of the private python-libraries repository, so installing it
 # needs git and read access (no credentials belong in this file; see docs/development/setup.md).
 # Installers that only read the `default` group must also install this list.
