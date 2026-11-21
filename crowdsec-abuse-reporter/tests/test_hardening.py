@@ -57,24 +57,6 @@ _DOCKERFILE = _REPO_ROOT / "docker" / "Dockerfile"
 _STUB_ID = "#!/bin/sh\necho 1000\n"  # non-root uid: skips the chown/gosu branch
 
 
-class _FakeDownloadResponse:
-    """Empty, non-HTML GeoIP download response usable as a context manager."""
-
-    url = geoip.CITY_URL
-
-    def __init__(self):
-        self.headers = {"Content-Type": "application/octet-stream"}
-
-    def read(self, _size):
-        return b""
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        return False
-
-
 class AbuseHardeningTest(unittest.TestCase):
     def test_smtp_setup_failure_is_logged_once(self):
         server = MagicMock()
@@ -844,20 +826,6 @@ class CrowdsecAlertFetchLimitTest(unittest.TestCase):
 
 
 class DnsUtilsHardeningTest(unittest.TestCase):
-    def test_invalid_geoip_stamp_is_reported_before_refresh(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            (Path(tmp_dir) / geoip._STAMP_FILE).write_text("invalid", encoding="utf-8")
-            with (
-                patch.object(geoip, "_geoip_dir", return_value=Path(tmp_dir)),
-                patch.object(geoip, "_verify", return_value=True),
-                patch.object(geoip, "_download", return_value=False),
-                self.assertLogs(geoip._log, level="DEBUG") as logs,
-            ):
-                result = geoip.ensure_geoip_databases()
-
-        self.assertEqual(result, {"city": True, "asn": True})
-        self.assertTrue(any("check stamp could not be read" in line for line in logs.output))
-
     def test_get_effective_nameservers_uses_system_resolver_only(self):
         with patch.object(dns_utils, "_system_nameservers", return_value=["10.30.0.2"]):
             nameservers = dns_utils.get_effective_nameservers()
@@ -882,77 +850,6 @@ class DnsUtilsHardeningTest(unittest.TestCase):
         self.assertEqual(resolved, ["93.184.216.34", "93.184.216.34"])
         self.assertEqual(fake_resolver.nameservers, ["1.1.1.1"])
 
-    def test_geoip_download_uses_selected_nameservers_for_http_request(self):
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.object(
-                geoip,
-                "_geoip_dir",
-                return_value=Path(tmpdir),
-            ),
-            patch.object(
-                geoip,
-                "get_effective_nameservers",
-                return_value=["10.30.0.2"],
-            ),
-            patch.object(
-                geoip,
-                "_open_resolved_url",
-                return_value=_FakeDownloadResponse(),
-            ) as mock_open_resolved_url,
-            patch.object(geoip, "_verify", return_value=True),
-        ):
-            updated = geoip._download(geoip._SPECS["city"], force=True)
-
-        self.assertTrue(updated)
-        mock_open_resolved_url.assert_called_once()
-        self.assertEqual(
-            mock_open_resolved_url.call_args.kwargs["nameservers"],
-            ["10.30.0.2"],
-        )
-
-    def test_lookup_asn_providers_reads_local_mmdb_records(self):
-        class FakeReader:
-            def __iter__(self):
-                yield (
-                    "1.0.0.0/24",
-                    {
-                        "autonomous_system_number": 8881,
-                        "autonomous_system_organization": "1&1 Versatel GmbH",
-                    },
-                )
-                yield (
-                    "2.0.0.0/24",
-                    {
-                        "autonomous_system_number": 3209,
-                        "autonomous_system_organization": "Vodafone GmbH",
-                    },
-                )
-                yield (
-                    "3.0.0.0/24",
-                    {
-                        "autonomous_system_number": 51167,
-                        "autonomous_system_organization": "Contabo GmbH",
-                    },
-                )
-
-            def close(self):
-                return None
-
-        geoip._cached_asn_providers.cache_clear()
-        self.addCleanup(geoip._cached_asn_providers.cache_clear)  # do not leak the fake records
-        with (
-            patch.object(geoip, "_HAS_MAXMINDDB", True),
-            patch.object(geoip, "_geoip_dir", return_value=Path("/tmp")),
-            patch.object(geoip.maxminddb, "open_database", return_value=FakeReader()),
-            patch.object(Path, "exists", return_value=True),
-        ):
-            providers = geoip.lookup_asn_providers(frozenset({"8881", "51167"}))
-
-        self.assertEqual(
-            providers,
-            {"8881": "1&1 Versatel GmbH", "51167": "Contabo GmbH"},
-        )
 
 
 def _import_config_with_env(name: str, value: str) -> subprocess.CompletedProcess:
@@ -1411,46 +1308,21 @@ class ReviewFindingsTest(unittest.TestCase):
             [{"decisions": ["junk"], "value": "1.2.3.4"}],
         )
 
-    def test_geoip_download_retries_transient_then_gives_up(self):
+    def test_geoip_adapter_binds_app_settings_and_delegates(self):
+        cfg = geoip._geo._config
+        self.assertEqual(cfg.directory, config.GEOIP_DIR)
+        self.assertEqual(cfg.user_agent, "crowdsec-abuse-reporter/1.0")
         with (
-            patch.object(
-                geoip,
-                "_download_once",
-                side_effect=geoip._TransientDownloadError("dns"),
-            ) as once,
-            patch.object(geoip.time, "sleep") as sleep,
+            patch.object(geoip._geo, "ensure", return_value={"city": True, "asn": True}) as ensure,
+            patch.object(geoip._geo, "lookup", return_value={"asn": 1}) as lookup,
+            patch.object(geoip._geo, "lookup_asn_providers", return_value={"1": "X"}) as providers,
         ):
-            self.assertFalse(geoip._download(geoip._SPECS["asn"]))
-
-        self.assertEqual(once.call_count, geoip._DOWNLOAD_MAX_ATTEMPTS)
-        self.assertEqual(sleep.call_count, geoip._DOWNLOAD_MAX_ATTEMPTS - 1)
-
-    def test_geoip_download_does_not_retry_deterministic_failures(self):
-        with (
-            patch.object(geoip, "_download_once", return_value=False) as once,
-            patch.object(geoip.time, "sleep") as sleep,
-        ):
-            self.assertFalse(geoip._download(geoip._SPECS["asn"]))
-
-        self.assertEqual(once.call_count, 1)
-        sleep.assert_not_called()
-
-    def test_geoip_download_still_checks_remote_for_existing_db(self):
-        # The conditional request must stay reachable for an existing DB,
-        # otherwise it freezes at its first downloaded version forever.
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            patch.object(geoip, "_geoip_dir", return_value=Path(tmpdir)),
-            patch.object(geoip, "get_effective_nameservers", return_value=["10.30.0.2"]),
-            patch.object(geoip, "_if_modified_since", return_value="Wed, 01 Jan 2025 00:00:00 GMT"),
-            patch.object(geoip, "_verify", return_value=True),
-            patch.object(geoip, "_open_resolved_url", return_value=_FakeDownloadResponse()) as opened,
-        ):
-            (Path(tmpdir) / geoip._SPECS["city"].filename).write_bytes(b"existing")
-            geoip._download_once(geoip._SPECS["city"])
-
-        opened.assert_called_once()
-        self.assertEqual(opened.call_args.kwargs["headers"]["If-Modified-Since"], "Wed, 01 Jan 2025 00:00:00 GMT")
+            self.assertEqual(geoip.ensure_geoip_databases(force=True), {"city": True, "asn": True})
+            self.assertEqual(geoip.lookup("8.8.8.8"), {"asn": 1})
+            self.assertEqual(geoip.lookup_asn_providers({"1"}), {"1": "X"})
+        ensure.assert_called_once_with(force=True)
+        lookup.assert_called_once_with("8.8.8.8")
+        providers.assert_called_once_with({"1"})
 
     def test_entrypoint_hardcodes_data_dir(self):
         content = _ENTRYPOINT.read_text(encoding="utf-8")

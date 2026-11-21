@@ -37,7 +37,7 @@ RUN apt-get update && apt-get upgrade -y \
 
 # Build context is the repository root; dependencies come from the tool's local
 # pyproject.toml (`--group` needs pip >= 25.1).
-# [project].dependencies (the shared gillbates-logging, gillbates-questdb-client, gillbates-smtp-client and gillbates-shutdown-handler packages) is not read by `--group`,
+# [project].dependencies (the shared gillbates-logging, gillbates-questdb-client, gillbates-smtp-client, gillbates-shutdown-handler and gillbates-geoip packages) is not read by `--group`,
 # so it is extracted into a requirements file and installed in the same pip call. The
 # package lives in the private Gill-Bates/python-libraries repository: the token is a
 # BuildKit secret (never ARG/ENV, so it stays out of layers and image history) handed to
@@ -58,7 +58,7 @@ RUN --mount=type=bind,source=crowdsec-abuse-reporter/pyproject.toml,target=/tmp/
     GIT_CONFIG_KEY_1=credential.helper \
     GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/python_libraries_token)"; }; f' \
     pip install --no-cache-dir --root-user-action=ignore -r /tmp/runtime-requirements.txt --group /tmp/pyproject.toml:default; \
-    python -c "import gillbates_logging, gillbates_questdb_client, gillbates_smtp_client, gillbates_shutdown_handler"; \
+    python -c "import gillbates_logging, gillbates_questdb_client, gillbates_smtp_client, gillbates_shutdown_handler, gillbates_geoip"; \
     apt-get purge -y --auto-remove git; \
     rm -rf /var/lib/apt/lists/* /tmp/runtime-requirements.txt
 
@@ -73,7 +73,7 @@ COPY --chmod=0755 crowdsec-abuse-reporter/docker/entrypoint.sh ./entrypoint.sh
 # GeoLite2 baseline, fetched at build time so a fresh container always has a
 # usable database even before the first update check — and so the databases
 # never need a persistent volume. The entrypoint copies these into $GEOIP_DIR
-# (a tmpfs) at start; the updater in app/geoip.py overwrites that copy in place
+# (a tmpfs) at start; the gillbates-geoip updater (bound in app/geoip.py) overwrites that copy in place
 # when the mirror has a newer release.
 # Follow P3TERX's moving paths so each image rebuild picks up the latest files;
 # identical source commits may therefore contain different GeoIP data.

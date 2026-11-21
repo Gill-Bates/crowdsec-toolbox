@@ -248,7 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$TOOL" in
-            abuse-reporter)   imports="httpx, dns.resolver, geoip2.database" ;;
+            abuse-reporter)   imports="httpx, dns.resolver, geoip2.database, gillbates_geoip" ;;
             metrics-exporter) imports="httpx, requests, urllib3" ;;
             *) echo "ERROR: no smoke-test imports defined for $TOOL"; exit 1 ;;
           esac
