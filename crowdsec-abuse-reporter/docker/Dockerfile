@@ -37,16 +37,29 @@ RUN apt-get update && apt-get upgrade -y \
 
 # Build context is the repository root; dependencies come from the tool's local
 # pyproject.toml (`--group` needs pip >= 25.1).
-# [project].dependencies (the shared gillbates-logging package, fetched from a tagged GitHub archive)
-# is not read by `--group`, so it is piped in as a requirements list.
+# [project].dependencies (the shared gillbates-logging package) is not read by `--group`,
+# so it is extracted into a requirements file and installed in the same pip call. The
+# package lives in the private Gill-Bates/python-libraries repository: the token is a
+# BuildKit secret (never ARG/ENV, so it stays out of layers and image history) handed to
+# git through a credential helper that exists only for this command. git is installed and
+# purged within this RUN, so the final image carries neither git nor the token.
+# `set -eu` plus the explicit checks abort the build when the extraction, the install or
+# the import fails; there is deliberately no pipe whose failure could be swallowed.
 # Bind-mounted instead of copied so the manifest leaves no layer behind.
-# pipefail: a failing manifest read must fail the build, not install an image without the package.
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN --mount=type=bind,source=crowdsec-abuse-reporter/pyproject.toml,target=/tmp/pyproject.toml \
-    python -c 'import sys, tomllib; print(*tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"], sep="\n")' /tmp/pyproject.toml \
-    | pip install --no-cache-dir --root-user-action=ignore -r /dev/stdin --group /tmp/pyproject.toml:default
-# Back to the default shell so shell-form HEALTHCHECK/ENTRYPOINT lines run unchanged.
-SHELL ["/bin/sh", "-c"]
+    --mount=type=secret,id=python_libraries_token,required=true \
+    set -eu; \
+    apt-get update; \
+    apt-get upgrade -y; \
+    apt-get install -y --no-install-recommends git; \
+    python -c 'import sys, tomllib; deps = tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"]; deps or sys.exit("no [project].dependencies"); print(*deps, sep="\n")' /tmp/pyproject.toml > /tmp/runtime-requirements.txt; \
+    test -s /tmp/runtime-requirements.txt; \
+    GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper \
+    GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/python_libraries_token)"; }; f' \
+    pip install --no-cache-dir --root-user-action=ignore -r /tmp/runtime-requirements.txt --group /tmp/pyproject.toml:default; \
+    python -c "import gillbates_logging"; \
+    apt-get purge -y --auto-remove git; \
+    rm -rf /var/lib/apt/lists/* /tmp/runtime-requirements.txt
 
 # Copy only the runtime files required by the application. Secrets and mutable
 # state stay outside the image in the mounted data volume.
