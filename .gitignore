@@ -28,6 +28,7 @@ coverage.xml
 *.sqlite
 *.sqlite3
 *.log
+*-workspace
 
 # App-specific local state
 settings.env
