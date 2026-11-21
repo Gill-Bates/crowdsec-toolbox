@@ -1365,7 +1365,7 @@ class ReviewFindingsTest(unittest.TestCase):
         self.assertEqual(crowdsec_main.get_alert_confidence({}), 1.0)
 
     def test_app_log_formatter_keeps_exception_traceback(self):
-        formatter = logger._AppLogFormatter()
+        formatter = logger.LOG.formatter()
         try:
             raise ValueError("boom")
         except ValueError:

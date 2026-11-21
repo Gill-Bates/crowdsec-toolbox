@@ -20,20 +20,6 @@ METRICS = ROOT / "crowdsec-metrics-exporter" / "app"
 
 # (abuse-reporter file, exporter file, names that must be identical)
 SHARED = (
-    (
-        "logger.py",
-        "logger.py",
-        (
-            "format_timestamp",
-            "_STDERR_LEVELS",
-            "_sanitize_log_message",
-            "_format_line",
-            "_write_line",
-            "_AppLogFormatter",
-            "_SplitStreamHandler",
-            "setup_logging",
-        ),
-    ),
     ("banner.py", "banner.py", ("print_banner",)),
     (
         "version_check.py",

@@ -47,7 +47,8 @@ access to the Docker socket and keeps no local state.
 ```bash
 cd crowdsec-metrics-exporter
 python3.14 -m venv /opt/jobs/crowdsec_influx && source /opt/jobs/crowdsec_influx/bin/activate
-pip install --group pyproject.toml:default    # needs pip >= 25.1
+python -c 'import sys, tomllib; print(*tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"], sep="\n")' pyproject.toml \
+  | pip install -r /dev/stdin --group pyproject.toml:default    # needs pip >= 25.1
 cp docker/settings.env.example settings.env
 # edit settings.env: CrowdSec LAPI credentials, InfluxDB or QuestDB connection
 python main.py

@@ -37,9 +37,16 @@ RUN apt-get update && apt-get upgrade -y \
 
 # Build context is the repository root; dependencies come from the tool's local
 # pyproject.toml (`--group` needs pip >= 25.1).
+# [project].dependencies (the shared gillbates-logging package, fetched from a tagged GitHub archive)
+# is not read by `--group`, so it is piped in as a requirements list.
 # Bind-mounted instead of copied so the manifest leaves no layer behind.
+# pipefail: a failing manifest read must fail the build, not install an image without the package.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN --mount=type=bind,source=crowdsec-abuse-reporter/pyproject.toml,target=/tmp/pyproject.toml \
-    pip install --no-cache-dir --root-user-action=ignore --group /tmp/pyproject.toml:default
+    python -c 'import sys, tomllib; print(*tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"], sep="\n")' /tmp/pyproject.toml \
+    | pip install --no-cache-dir --root-user-action=ignore -r /dev/stdin --group /tmp/pyproject.toml:default
+# Back to the default shell so shell-form HEALTHCHECK/ENTRYPOINT lines run unchanged.
+SHELL ["/bin/sh", "-c"]
 
 # Copy only the runtime files required by the application. Secrets and mutable
 # state stay outside the image in the mounted data volume.

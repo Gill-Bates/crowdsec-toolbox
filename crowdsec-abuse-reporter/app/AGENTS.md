@@ -25,7 +25,7 @@ With metrics enabled, `metrics` exports the finalized report outcome.
 | `geoip.py` | GeoLite2 City/ASN download (pinned hosts, atomic write, verify), readers, LRU lookups |
 | `dns_utils.py` | Resolver selection and bounded hostname resolution shared by geoip/abusix |
 | `config.py` | Loads `settings.env`, validates and coerces every env var, fails clean at startup |
-| `logger.py` | Tagged timestamped console output plus `setup_logging()` for stdlib `logger.*` records |
+| `logger.py` | Binds the external `gillbates-logging` package to the `crowdsec_abuse` source: tagged console output (`print_*`) plus `setup_logging()` for stdlib `logger.*` records |
 | `heartbeat.py` | `python -m app.heartbeat` — LAPI liveness probe that refreshes `/data/api_heartbeat` |
 | `banner.py` | ASCII startup banner, followed by the release notice from `version_check.py` |
 | `version_check.py` | Startup lookup of the latest GitHub release of `Gill-Bates/crowdsec-toolbox` (httpx, 3 s timeout, every failure silent); shared copy |
@@ -141,4 +141,4 @@ there.
 - **Log layout.** `logger.py` renders `<UTC time> | LEVEL | <source> | message` on a single line (see `docs/reference/log-format.md`); WARNING and above go to stderr, colour only on a TTY with `NO_COLOR` unset. Do not add emoji or multi-line output.
 
 ### Code shared with the exporter
-`logger.py` (formatting core and `setup_logging`), `banner.py` (`print_banner`), `version.py`, `version_check.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.
+`banner.py` (`print_banner`), `version.py`, `version_check.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.

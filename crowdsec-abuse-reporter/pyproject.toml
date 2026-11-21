@@ -5,6 +5,12 @@ description = "CrowdSec bans to X-ARF abuse reports; at-most-once delivery with 
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.14"
+# Not a group: the shared logging core is a real runtime dependency of the distribution
+# metadata. It comes from a tagged archive (no git binary needed). Installers that only
+# read the `default` group must also install this list (see the Dockerfile and setup docs).
+dependencies = [
+    "gillbates-logging @ https://github.com/Gill-Bates/python-libraries/archive/refs/tags/gillbates-logging-v0.1.0.tar.gz#subdirectory=packages/logging",
+]
 
 [dependency-groups]
 # Runtime dependencies for abuse reporter

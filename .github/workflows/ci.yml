@@ -257,7 +257,11 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade "pip>=25.1"
-          pip install --group crowdsec-abuse-reporter/pyproject.toml:default \
+          # [project].dependencies (gillbates-logging) is not part of a group, so install it explicitly.
+          for project in crowdsec-abuse-reporter crowdsec-metrics-exporter; do
+            python -c 'import sys, tomllib; print(*tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"], sep="\n")' "${project}/pyproject.toml"
+          done | pip install -r /dev/stdin \
+                      --group crowdsec-abuse-reporter/pyproject.toml:default \
                       --group crowdsec-abuse-reporter/pyproject.toml:dev \
                       --group crowdsec-metrics-exporter/pyproject.toml:default \
                       --group crowdsec-metrics-exporter/pyproject.toml:dev

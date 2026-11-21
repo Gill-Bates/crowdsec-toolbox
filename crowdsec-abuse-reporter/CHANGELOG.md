@@ -1,5 +1,6 @@
 ## [1.0.4] - 2026-xx-xx
 - `New` The start banner is followed by a release check: it compares the running version with the latest GitHub release of crowdsec-toolbox and prints either a new-version notice with a link or "Your version is up to date.". The lookup times out after 3 seconds and stays silent when offline, rate-limited or on a `dev` build; it never blocks or fails the start.
+- `Changed` The logging core moved into the external `gillbates-logging` package (`Gill-Bates/python-libraries`, pinned by tag in the `default` group); log output is unchanged. Local dev installs it with `pip install -e <checkout>/packages/logging`.
 
 <details markdown="1">
 <summary>Previous versions...</summary>

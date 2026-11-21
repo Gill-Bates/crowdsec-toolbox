@@ -26,7 +26,7 @@ banner are support modules.
 | `events.py` | Per-event export: flattens each alert's `events[].meta` list and builds line protocol for `EVENTS_TABLE`; reuses the escaping helpers from `influxdb.py` |
 | `influxdb.py` | `TLS12Adapter`, hardened `requests` session, line-protocol escaping/formatting (shared with QuestDB) and send |
 | `questdb.py` | `httpx.Client` POST of the same line protocol to QuestDB's ILP-over-HTTP `/write` endpoint; bearer token or basic auth, no TLS hardening |
-| `logger.py` | Console helpers (`print_info`/`success`/`warning`/`error`) and `setup_logging()`, gated by `config.LOG_LEVEL` |
+| `logger.py` | Binds the external `gillbates-logging` package to the `crowdsec_metrics` source: console helpers (`print_info`/`success`/`warning`/`error`), root logging configured on import from `config.LOG_LEVEL` |
 | `version_check.py` | Startup lookup of the latest GitHub release of `Gill-Bates/crowdsec-toolbox` (httpx, 3 s timeout, every failure silent); shared copy |
 | `version.py` | Reads `APP_VERSION` / `GIT_SHA` (build args) for the startup banner |
 | `kbinterrupt.py` | SIGINT/SIGTERM handlers for a clean shutdown |
@@ -123,8 +123,8 @@ gate; a real run needs CrowdSec and the configured metrics backend reachable.
 ### External
 - `requests` + `urllib3` (`influxdb.py`), `httpx` (`questdb.py`) — declared in the
   `default` group of `../pyproject.toml`; stdlib
-  `socket` / `re`. `config.py` and `logger.py` use only the
-  stdlib (no `python-dotenv` or `colorama`).
+  `socket` / `re`. `config.py` uses only the
+  stdlib; `logger.py` needs only the external `gillbates-logging` package (stdlib-only itself) (no `python-dotenv` or `colorama`).
 - A reachable CrowdSec Local API and valid watcher credentials
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
@@ -132,4 +132,4 @@ gate; a real run needs CrowdSec and the configured metrics backend reachable.
 - **Log layout.** `logger.py` renders `<UTC time> | LEVEL | <source> | message` on a single line (see `docs/reference/log-format.md`); WARNING and above go to stderr, colour only on a TTY with `NO_COLOR` unset. The two no-data messages use `💤`; do not add multi-line output or summary tables.
 
 ### Code shared with the abuse reporter
-`logger.py` (formatting core and `setup_logging`), `banner.py` (`print_banner`), `version.py`, `version_check.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.
+`banner.py` (`print_banner`), `version.py`, `version_check.py`, the LAPI login block of `crowdsec.py` and the QuestDB block (`_questdb_*`, `_query_exec`, dedup gate, version check) are deliberate copies of the sibling tool's code, never imports. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.
