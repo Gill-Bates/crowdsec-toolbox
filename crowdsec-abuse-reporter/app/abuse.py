@@ -39,7 +39,6 @@ from .config import (
     SMTP_PORT,
     SMTP_SENDER,
     SMTP_SERVER,
-    SMTP_USE_TLS,
     SMTP_USERNAME,
     SMTP_VALIDATE_CERTIFICATE,
 )
@@ -77,7 +76,7 @@ def _smtp_config(timeout: float = SMTP_TIMEOUT) -> SmtpConfig:
     return SmtpConfig(
         host=SMTP_SERVER,
         port=SMTP_PORT,
-        starttls=SMTP_USE_TLS,
+        starttls=True,  # TLS is mandatory; there is no plaintext mode.
         validate_certificate=SMTP_VALIDATE_CERTIFICATE,
         username=SMTP_USERNAME,
         password=SMTP_PASSWORD,
@@ -93,8 +92,6 @@ def _check_smtp_settings() -> None:
     """
     if bool(SMTP_USERNAME) != bool(SMTP_PASSWORD):
         raise RuntimeError("SMTP_USERNAME and SMTP_PASSWORD must either both be set or both be empty.")
-    if not SMTP_USE_TLS:
-        raise RuntimeError("SMTP requires TLS. Set SMTP_USE_TLS=true; plaintext SMTP is not supported.")
 
 
 @contextmanager

@@ -81,7 +81,6 @@ class AbuseHardeningTest(unittest.TestCase):
         server.starttls.side_effect = smtplib.SMTPException("TLS failed")
         with (
             patch.object(abuse.smtplib, "SMTP", return_value=server),
-            patch.object(abuse, "SMTP_USE_TLS", True),
             patch.object(abuse, "SMTP_USERNAME", ""),
             patch.object(abuse, "SMTP_PASSWORD", ""),
             patch.object(abuse, "print_mail_error") as mail_error,
@@ -1295,24 +1294,12 @@ class ReviewFindingsTest(unittest.TestCase):
             pass
         self.assertIn("both be set", str(ctx.exception))
 
-    def test_smtp_connection_rejects_plaintext(self):
-        with (
-            patch.object(abuse, "SMTP_USE_TLS", False),
-            patch.object(abuse.smtplib, "SMTP") as smtp,
-            self.assertRaises(RuntimeError) as ctx,
-            abuse.smtp_connection(),
-        ):
-            pass
-        self.assertIn("requires TLS", str(ctx.exception))
-        smtp.assert_not_called()
-
     def test_smtp_connection_does_not_relabel_send_errors(self):
         server = MagicMock()
         server.sock = MagicMock(spec=ssl.SSLSocket)
         server.sock.getpeercert.return_value = b"der-cert"
         with (
             patch.object(abuse.smtplib, "SMTP", return_value=server),
-            patch.object(abuse, "SMTP_USE_TLS", True),
             patch.object(abuse, "SMTP_USERNAME", ""),
             patch.object(abuse, "SMTP_PASSWORD", ""),
             patch.object(abuse, "print_mail_error") as mail_error,

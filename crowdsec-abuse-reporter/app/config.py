@@ -238,9 +238,6 @@ def _get_port_env(name: str, default: int) -> int:
 
 
 SMTP_PORT = _get_port_env("SMTP_PORT", 587)
-SMTP_USE_TLS = _get_bool_env("SMTP_USE_TLS", True)
-if not SMTP_USE_TLS:
-    _fail_clean("SMTP_USE_TLS=false is not supported: TLS (STARTTLS) is mandatory, plaintext SMTP is never used")
 SMTP_VALIDATE_CERTIFICATE = _get_bool_env("SMTP_VALIDATE_CERTIFICATE", True)
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_SENDER = os.getenv("SMTP_SENDER", "abuse-reporter@example.com").strip()

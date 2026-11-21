@@ -144,8 +144,7 @@ the next run.
 
 ### SMTP authentication fails
 
-Authentication requires TLS, which is always on (`SMTP_USE_TLS=false` is rejected at
-startup). Set both `SMTP_USERNAME` and `SMTP_PASSWORD`.
+TLS (STARTTLS) is always used. Set both `SMTP_USERNAME` and `SMTP_PASSWORD`.
 
 ### Mails arrive from the wrong identity
 

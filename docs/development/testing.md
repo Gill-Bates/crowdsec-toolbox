@@ -24,7 +24,7 @@ silently regress. They are not broad functional coverage.
 
 | File | Tests | Covers |
 |---|---|---|
-| `test_hardening.py` | 108 | The main suite; one class per app module, plus `ReviewFindingsTest` and the entrypoint/Dockerfile checks |
+| `test_hardening.py` | 129 | The main suite; one class per app module, plus `ReviewFindingsTest` and the entrypoint/Dockerfile checks |
 | `test_main.py` | 24 | `app.main` helpers: IP/ID/confidence extraction, dedup, stats |
 | `test_metrics.py` | 67 | `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB dedup gate and TTL, the outbox, SQLite control-data-only property |
 | `test_banner.py` | 1 | Smoke test that the banner renders |
