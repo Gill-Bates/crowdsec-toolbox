@@ -117,11 +117,19 @@ class _FakeQuestDb:
             rows = self.views
         elif "LATEST ON timestamp PARTITION BY table_name" in query:
             rows = self.state_rows
-        elif "table_columns(" in query:
+        elif "table_columns(" in query and "_rollup_" in query:
+            rollup = metrics.ROLLUP
+            rows = [[key] for key in ("timestamp", *rollup.dimensions, *(a for a, _fn, _col in rollup.aggregates))]
+        elif "table_columns(" in query and "upsertKey" in query:
             rows = [[key] for key in self.keys]
+        elif "table_columns(" in query:
+            # Key columns plus the aggregate inputs, which ILP adds with the first row.
+            rows = [[key] for key in (*self.keys, *(c for _a, _fn, c in metrics.ROLLUP.aggregates if c))]
         elif query.startswith("SHOW CREATE TABLE"):
             rows = [[self.show_create]]
         elif "SET TTL" in query:
+            if self.ttl_status == 200:
+                return httpx.Response(200, json={"ddl": "OK"})
             return httpx.Response(self.ttl_status, text="ttl")
         return httpx.Response(200, json={"dataset": rows})
 

@@ -89,7 +89,14 @@ class FakeQuestDB:
         elif "upsertKey" in sql:
             return [[key] for key in self.tables[re.search(r"table_columns\('([^']+)'\)", sql).group(1)]["keys"]]
         elif "FROM table_columns" in sql:
-            return [[key] for key in ("timestamp", "host", "country", "scenario", "events_count")]
+            # The rollup is only created when the base table carries every column of its spec;
+            # the view itself exposes the dimensions and the aggregate aliases.
+            rollup = main.ALERT_ROLLUP
+            if "_rollup_" in sql:
+                columns = ("timestamp", *rollup.dimensions, *(alias for alias, _fn, _col in rollup.aggregates))
+            else:
+                columns = ("timestamp", *rollup.dimensions, *(col for _a, _fn, col in rollup.aggregates if col))
+            return [[key] for key in columns]
         elif sql.startswith("SHOW CREATE TABLE"):
             if self.empty_show_create:
                 return []
