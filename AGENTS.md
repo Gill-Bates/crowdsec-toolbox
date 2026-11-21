@@ -34,15 +34,22 @@ path, and shares no application code with its siblings. Each tool has its own
   `crowdsec-abuse-reporter/pyproject.toml`,
   `crowdsec-metrics-exporter/pyproject.toml` and `docs/pyproject.toml` (the Zensical
   toolchain). Do not add a root `pyproject.toml` or per-tool `requirements.txt`;
-  CI rejects both. Do not extract further shared packages — `config.py` etc.
-  are duplicated on purpose so each tool deploys independently. The exceptions are the
-  QuestDB client (`gillbates-questdb-client`, `packages/questdb-client/`, pinned the same way and installed editable for local dev), the SMTP client of the abuse reporter (`gillbates-smtp-client`, `packages/smtp-client/`, same mechanism) and the
-  logging core, which lives in the external `gillbates-logging` package (`Gill-Bates/python-libraries`,
-  `packages/logging/`) and is pinned by tag in each tool's `default` group; `logger.py` stays as the
-  tool's thin binding. For local dev, install it editable from a checkout
-  (`pip install -e /opt/python-libraries/packages/logging`); the image and CI install it from the pinned git tag of the
-  private repository (git plus a token: `RELEASE_TOKEN` in CI, the BuildKit secret
-  `python_libraries_token` in `docker build`), so the tag must be pushed before a build.
+  CI rejects both. Code shared between the tools is never imported across tool
+  directories: either it is duplicated on purpose (`config.py` etc., kept in sync by
+  `.github/scripts/test_shared_code.py`), or it lives in a package of the private
+  `Gill-Bates/python-libraries` repository:
+
+  | Package | Path in `python-libraries` | Used by |
+  |---------|----------------------------|---------|
+  | `gillbates-logging` | `packages/logging/` | both tools (`logger.py`, `banner.py` are thin bindings) |
+  | `gillbates-questdb-client` | `packages/questdb-client/` | both tools |
+  | `gillbates-smtp-client` | `packages/smtp-client/` | abuse reporter |
+
+  Each package is pinned by git tag in the tool's `[project].dependencies`. For local dev,
+  install it editable from a checkout (`pip install -e /opt/python-libraries/packages/<name>`);
+  the image and CI install it from the pinned tag (git plus a token: `RELEASE_TOKEN` in CI,
+  the BuildKit secret `python_libraries_token` in `docker build`), so the tag must exist
+  before a build. The python-libraries CI creates `<name>-vX.Y.Z` once per new version.
 - Each tool's runtime group is called `default`, its tooling group `dev`. Each
   manifest also carries that component's `[project].version`, its `[tool.pytest.ini_options]`
   and a `[tool.ruff]` that only sets `extend = "../ruff.toml"` plus tool-specific
