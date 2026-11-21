@@ -45,6 +45,7 @@ path, and shares no application code with its siblings. Each tool has its own
   | `gillbates-questdb-client` | `packages/questdb-client/` | both tools |
   | `gillbates-smtp-client` | `packages/smtp-client/` | abuse reporter |
   | `gillbates-shutdown-handler` | `packages/shutdown-handler/` | both tools (SIGINT/SIGTERM handling in `main.py`) |
+  | `gillbates-geoip` | `packages/geoip/` | abuse reporter (`app/geoip.py` is a thin binding) |
 
   Each package is pinned by git tag in the tool's `[project].dependencies`. For local dev,
   install it editable from a checkout (`pip install -e /opt/python-libraries/packages/<name>`);

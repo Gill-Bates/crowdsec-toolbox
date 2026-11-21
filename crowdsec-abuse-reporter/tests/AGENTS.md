@@ -12,9 +12,9 @@ coverage.
 ## Key Files
 | File | Description |
 |------|-------------|
-| `test_hardening.py` | 129 tests, the main suite; one class per app module it covers directly, plus `ReviewFindingsTest` and entrypoint/Dockerfile checks |
+| `test_hardening.py` | 124 tests, the main suite; one class per app module it covers directly, plus `ReviewFindingsTest` and entrypoint/Dockerfile checks |
 | `test_main.py` | 25 tests for `app.main` helpers: IP/ID/confidence extraction, dedup, stats, plus `WhitelistAsnTableOrderTest` (startup call order) |
-| `test_metrics.py` | 78 tests for `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB version and dedup gates and TTL against a fake `/exec`, the metrics outbox, and the control-data-only property of SQLite in metrics mode |
+| `test_metrics.py` | 77 tests for `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB version and dedup gates and TTL against a fake `/exec`, the metrics outbox, and the control-data-only property of SQLite in metrics mode |
 | `test_banner.py` | 3 tests: the version/metadata line is centred within the visual width of the banner; the release notice after the banner and its silent cases (offline, `gillbates_logging.version_check.fetch_latest_version` patched) |
 
 ### Classes in `test_metrics.py`
@@ -44,7 +44,7 @@ coverage.
 | `CrowdsecAlertFetchLimitTest` | Alert-limit escalation up to the ceiling and the warning when it is saturated |
 | `ConfigWhitelistTest` | An invalid `WHITELISTED_ASN` entry stops startup (subprocess import) |
 | `ConfigSmtpSenderTest` | A non-address `SMTP_SENDER` (empty, `Name <addr>`, no domain) stops startup (subprocess import) |
-| `DnsUtilsHardeningTest` | Resolver selection, plus GeoIP tests: stamp validation, download via the selected nameservers, local ASN provider lookup |
+| `DnsUtilsHardeningTest` | Resolver selection, plus one test that the GeoIP adapter binds `GEOIP_DIR`, the user agent and delegates to the package |
 | `ConfigEnvLoaderTest` | The stdlib `settings.env` parser of `app.config` (quoting, comments, `override`) |
 | `LoggerHardeningTest` | Tagging, TTY colour handling, control-character sanitising |
 | `ReviewFindingsTest` | Fixes from past code reviews, kept as explicit regressions — the largest class (23 tests); also the only coverage of `config.normalize_asn`, the claim failure path, and the entrypoint/Dockerfile text assertions |
@@ -77,7 +77,7 @@ coverage.
 cd crowdsec-abuse-reporter && python -m pytest          # full suite
 python -m pytest tests/test_hardening.py -k Database -q   # one area
 ```
-The suite currently collects 233 tests in total across the four files listed
+The suite currently collects 229 tests in total across the four files listed
 above.
 
 Known gap: `reap_stale_pending()` is covered only inside the retention tests,

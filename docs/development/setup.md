@@ -53,7 +53,7 @@ lets ruff resolve imports across the whole repository in one pass.
 
 !!! warning "pip 25.1 or newer"
     `pip install --group` is what reads the PEP 735 groups. The runtime dependency
-    `gillbates-logging`, `gillbates-questdb-client`, `gillbates-shutdown-handler` and (abuse reporter only) `gillbates-smtp-client` sit in `[project].dependencies`, which `--group` does not read, hence the
+    `gillbates-logging`, `gillbates-questdb-client`, `gillbates-shutdown-handler` and (abuse reporter only) `gillbates-smtp-client` and `gillbates-geoip` sit in `[project].dependencies`, which `--group` does not read, hence the
     separate editable install above. CI and the Docker builds install it from the pinned git
     tag of the private `python-libraries` repository with a token (`RELEASE_TOKEN`, see
     [Pipelines](pipelines.md#secrets)).
@@ -70,10 +70,11 @@ lets ruff resolve imports across the whole repository in one pass.
 !!! danger "The duplication is intentional"
     `config.py` and friends exist separately in both tools on purpose, so each
     deploys and upgrades independently. Do not extract them into a shared package.
-    The one exception is the logging core: both tools install the external `gillbates-logging`
-    package (`Gill-Bates/python-libraries`, pinned by tag) and keep only a thin
-    `app/logger.py`. For local development run
-    `pip install -e /opt/python-libraries/packages/logging`.
+    The exceptions are the external packages of `Gill-Bates/python-libraries` (pinned by tag):
+    `gillbates-logging` (both tools, thin `app/logger.py`) and, for the abuse reporter, `gillbates-geoip`
+    (thin `app/geoip.py`). For local development run
+    `pip install -e /opt/python-libraries/packages/logging` and
+    `pip install -e /opt/python-libraries/packages/geoip`.
 
 ## Adding a dependency
 

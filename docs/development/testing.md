@@ -24,18 +24,18 @@ silently regress. They are not broad functional coverage.
 
 | File | Tests | Covers |
 |---|---|---|
-| `test_hardening.py` | 129 | The main suite; one class per app module, plus `ReviewFindingsTest` and the entrypoint/Dockerfile checks |
-| `test_main.py` | 24 | `app.main` helpers: IP/ID/confidence extraction, dedup, stats |
-| `test_metrics.py` | 67 | `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB dedup gate and TTL, the outbox, SQLite control-data-only property |
-| `test_banner.py` | 1 | Smoke test that the banner renders |
+| `test_hardening.py` | 124 | The main suite; one class per app module, plus `ReviewFindingsTest` and the entrypoint/Dockerfile checks |
+| `test_main.py` | 25 | `app.main` helpers: IP/ID/confidence extraction, dedup, stats |
+| `test_metrics.py` | 77 | `app.metrics` and its `main.py` integration: line protocol, backend writes, the QuestDB dedup gate and TTL, the outbox, SQLite control-data-only property |
+| `test_banner.py` | 3 | Smoke test that the banner renders |
 
-The suite collects **200 tests** across those four files.
+The suite collects **229 tests** across those four files.
 
 ### Notable classes
 
 | Class | Protects |
 |---|---|
-| `ReviewFindingsTest` | Fixes from past code reviews, kept as explicit regressions — the largest class at 23 tests, and the only coverage of `config.normalize_asn`, the `main.py` extraction helpers, the GeoIP download flow and the claim failure path |
+| `ReviewFindingsTest` | Fixes from past code reviews, kept as explicit regressions — the largest class at 23 tests, and the only coverage of `config.normalize_asn`, the `main.py` extraction helpers and the claim failure path |
 | `QuestDbDedupTest` | That every dedup key is a **tag** column; a field key would be rejected by QuestDB |
 | `QuestDbGateTest`, `QuestDbFlushGateTest`, `QuestDbSnapshotGateTest` | That nothing is written to QuestDB before dedup is verified, that a failed gate keeps the whole outbox, and that snapshots pass the same gate (against a fake `/exec`, not a live server) |
 | `SqliteControlDataOnlyTest` | That with a backend enabled, SQLite stores control data only |

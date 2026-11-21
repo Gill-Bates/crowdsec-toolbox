@@ -851,7 +851,6 @@ class DnsUtilsHardeningTest(unittest.TestCase):
         self.assertEqual(fake_resolver.nameservers, ["1.1.1.1"])
 
 
-
 def _import_config_with_env(name: str, value: str) -> subprocess.CompletedProcess:
     """Import app.config in a fresh interpreter with ``name=value`` and no settings file."""
     env = {**os.environ, name: value, "SETTINGS_PATH": os.devnull}
@@ -1309,7 +1308,7 @@ class ReviewFindingsTest(unittest.TestCase):
         )
 
     def test_geoip_adapter_binds_app_settings_and_delegates(self):
-        cfg = geoip._geo._config
+        cfg = geoip._geo.config
         self.assertEqual(cfg.directory, config.GEOIP_DIR)
         self.assertEqual(cfg.user_agent, "crowdsec-abuse-reporter/1.0")
         with (

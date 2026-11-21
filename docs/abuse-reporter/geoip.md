@@ -11,9 +11,10 @@ persistent volume is needed for them.
 2. **Start-time seed.** `entrypoint.sh` copies them into `GEOIP_DIR`
    (`/tmp/geoip`, a tmpfs) before dropping privileges. Enrichment therefore works
    on the very first run, without waiting for a download.
-3. **Runtime update.** `app/geoip.py` checks the mirror conditionally, using
-   `If-Modified-Since` derived from the MMDB build epoch, and overwrites the
-   tmpfs copy in place when a newer release exists.
+3. **Runtime update.** The shared `gillbates-geoip` package (bound in
+   `app/geoip.py`) checks the mirror conditionally, using `If-Modified-Since`
+   derived from the MMDB build epoch, and overwrites the tmpfs copy in place when
+   a newer release exists.
 
 The seed step only copies what is missing, so a restart inside the same container
 does not discard an already updated database.

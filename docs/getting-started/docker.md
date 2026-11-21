@@ -82,7 +82,7 @@ docker buildx build \
 
 `PYTHON_LIBRARIES_TOKEN` is a GitHub token with read access to the private
 `Gill-Bates/python-libraries` repository (fine-grained PAT: `Contents: read`). It reaches the
-build only as a BuildKit secret mounted on the one `RUN` that installs `gillbates-logging` (and the other shared packages: `gillbates-questdb-client`, `gillbates-shutdown-handler`, and `gillbates-smtp-client` for the abuse reporter);
+build only as a BuildKit secret mounted on the one `RUN` that installs `gillbates-logging` (and the other shared packages: `gillbates-questdb-client`, `gillbates-shutdown-handler`, and `gillbates-smtp-client` and `gillbates-geoip` for the abuse reporter);
 it never lands in an `ARG`, `ENV`, layer or the final image, and `git` is purged in the same step.
 
 Substitute `crowdsec-metrics-exporter` for `PROJECT` to build the other image;

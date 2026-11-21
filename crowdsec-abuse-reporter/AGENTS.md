@@ -25,7 +25,7 @@ losing them.
 | `data/abuse_alerts.db` | Default SQLite store for direct host runs |
 | `.gitignore` | Excludes `/data/` only (the repo-root `.gitignore` covers `*.db*`, `settings*.env`, `BUILD_INFO`) |
 
-Runtime deps (dnspython, geoip2, httpx, pinned) are the
+Runtime deps (dnspython, httpx, pinned; `geoip2` comes with `gillbates-geoip`) are the
 `default` group in this tool's own `pyproject.toml`; the `dev` group adds
 pytest, ruff and `jsonschema` (X-ARF schema tests only, never in the image).
 There is no `requirements.txt` and no root manifest.
@@ -47,8 +47,8 @@ There is no `requirements.txt` and no root manifest.
   no pre-3.14 compatibility shims.
 - Scope changes to this project. Do not refactor across the toolbox and do not
   extract further shared packages — `config.py` and friends are duplicated
-  across projects on purpose so each stays independently deployable. The logging core and the SMTP client are
-  the exceptions: they come from the external `gillbates-logging` and `gillbates-smtp-client` packages (see the root `AGENTS.md`).
+  across projects on purpose so each stays independently deployable. The logging core, the SMTP client and GeoIP are
+  the exceptions: they come from the external `gillbates-logging`, `gillbates-smtp-client` and `gillbates-geoip` packages (see the root `AGENTS.md`).
 - Comments and docstrings in English; user-facing strings are frequently German
   and must keep their wording and non-ASCII characters.
 - `docker/settings.env.example` is the single tracked template and must list
@@ -119,7 +119,7 @@ the database history when migrating to avoid sending reports twice.
 ### External
 - `httpx` — CrowdSec LAPI and public-IP detection
 - `dnspython` — Abusix abuse-contact lookups and resolver control
-- `geoip2` / `maxminddb` — GeoLite2 City and ASN enrichment
+- `gillbates-geoip` (brings `geoip2` / `maxminddb`) — GeoLite2 City and ASN download and enrichment
 - stdlib `sqlite3`, `smtplib`, `email` — storage and report delivery; `settings.env` is
   loaded by a small stdlib parser in `config.py` (no third-party dependency)
 

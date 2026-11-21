@@ -22,7 +22,7 @@ With metrics enabled, `metrics` exports the finalized report outcome.
 | `reportbody.py` | Human-readable mail body (wrapped to 76 columns) and X-ARF v4.2.0 JSON (category/type mapping, evidence items), incl. secret redaction of context |
 | `database.py` | SQLite schema, the claim/finalize idempotency protocol, permanent `abuse_alert_tombstones`, contact cache, reaper, retention, metrics outbox |
 | `metrics.py` | Optional InfluxDB or QuestDB export of report outcomes; gates every QuestDB write on a 10.x version check (`ensure_questdb_version()`) and verified dedup (`ensure_questdb_table()`, `DEDUP_KEYS`) and applies retention after it (`apply_questdb_retention()`, optional `QUESTDB_DOWNSAMPLING` rollup `ROLLUP`, implemented by the external `gillbates-questdb-client` package); `flush_points()` is the durable path via the SQLite outbox |
-| `geoip.py` | GeoLite2 City/ASN download (pinned hosts, atomic write, verify), readers, LRU lookups |
+| `geoip.py` | Thin adapter over the external `gillbates-geoip` package (download, verification, readers, LRU lookups): binds it to `GEOIP_DIR`, the app's log helpers and resolver, and keeps `lookup`, `lookup_asn_providers`, `ensure_geoip_databases`, `GeoInfo`, `GeoIPUnavailableError` |
 | `dns_utils.py` | Resolver selection and bounded hostname resolution shared by geoip/abusix |
 | `config.py` | Loads `settings.env`, validates and coerces every env var, fails clean at startup |
 | `logger.py` | Binds the external `gillbates-logging` package to the `crowdsec_abuse` source: tagged console output (`print_*`) plus `setup_logging()` for stdlib `logger.*` records |
@@ -49,9 +49,10 @@ None.
 - `database.py` holds one connection per thread in `threading.local()` with
   lazy schema init. Do not introduce a module-level shared connection and do not
   hold long write transactions.
-- `geoip.py` downloads only from the hosts in `_ALLOWED_HOSTS`, validating
-  scheme and host before **every** request including each redirect hop. That is
-  an SSRF/egress guard — do not relax it to a post-hoc check of the final URL.
+- The `gillbates-geoip` package downloads only from the hosts in its `allowed_hosts`
+  (default: the P3TERX mirror hosts), validating scheme and host before **every**
+  request including each redirect hop. That is an SSRF/egress guard — do not widen
+  `allowed_hosts` in `geoip.py` or relax the check.
 - `metrics.DEDUP_KEYS` makes repeated *writes* idempotent in QuestDB (InfluxDB
   does it inherently). It is **not** a substitute for the claim protocol in
   `database.py`: storage dedup cannot gate an outbound mail, since that
@@ -106,9 +107,10 @@ cd crowdsec-abuse-reporter && python -m pytest
 `test_hardening.py` covers most app modules. `metrics.py` is covered in
 `test_metrics.py`, `main.py` mainly in `test_main.py`, and `banner.py` in
 `test_banner.py` (which also covers the release notice wiring); `version.py` has no dedicated test. `config.py` is covered by
-`ConfigEnvLoaderTest` and `normalize_asn`, and `geoip.py` by
-`DnsUtilsHardeningTest` and `ReviewFindingsTest`. A behavioural change to the claim/finalize protocol,
-the reaper, GeoIP download flow, or report rendering needs a matching test
+`ConfigEnvLoaderTest` and `normalize_asn`; `geoip.py` is only the adapter, checked by one
+test in `DnsUtilsHardeningTest`, while download, verification and lookup are covered by the
+`gillbates-geoip` package suite. A behavioural change to the claim/finalize protocol,
+the reaper, or report rendering needs a matching test
 there.
 
 ### Common Patterns
@@ -119,8 +121,7 @@ there.
 - `_limit_value()` bounds only the strings, lists and dictionaries passed to it
   (`MAX_FIELD_LENGTH`, `MAX_LIST_ITEMS`, `MAX_DICT_ITEMS`). Apply it explicitly
   to untrusted free-form values before rendering them.
-- LRU caches in `geoip.py` are invalidated by passing the `_cache_gen` counter
-  as a cache-key argument; the counter is bumped when a DB file is replaced.
+- The LRU lookup caches live in `gillbates-geoip` and are cleared there when a DB file is replaced.
 
 ## Dependencies
 
@@ -131,7 +132,7 @@ there.
 
 ### External
 - `httpx` (`crowdsec.py`), `dns.resolver` (`abusix.py`, `dns_utils.py`),
-  `geoip2` / `maxminddb` (`geoip.py`),
+  `gillbates-geoip` (`geoip.py`),
   stdlib `sqlite3` / `fcntl` (`smtplib` / `email` live in `gillbates-smtp-client`). `config.py` loads
   `settings.env` with its own stdlib parser (no third-party dependency).
 
