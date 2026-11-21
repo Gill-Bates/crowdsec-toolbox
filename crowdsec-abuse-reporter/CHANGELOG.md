@@ -1,5 +1,6 @@
 ## [1.0.4] - 2026-xx-xx
 - `New` The start banner is followed by a release check: it compares the running version with the latest GitHub release of crowdsec-toolbox and prints either a new-version notice with a link or "Your version is up to date.". The lookup times out after 3 seconds and stays silent when offline, rate-limited or on a `dev` build; it never blocks or fails the start.
+- `Changed` The release check moved into the `gillbates-logging` package (`app/version_check.py` removed). The notice now also reports "Your version (vX) is newer than the latest release.", its link has the form `https://github.com/Gill-Bates/crowdsec-toolbox/releases/latest`, and colour follows `NO_COLOR` (non-empty), `FORCE_COLOR`, `TERM=dumb` and a TTY like the log lines.
 - `Changed` The QuestDB client (`/exec` retries, dedup gate, version check, TTL, rollup retention) moved into the external `gillbates-questdb-client` package (`Gill-Bates/python-libraries`, pinned by tag in `[project].dependencies`); QuestDB behaviour and log output are unchanged. Local dev installs it with `pip install -e <checkout>/packages/questdb-client`.
 - `Changed` The logging core moved into the external `gillbates-logging` package (`Gill-Bates/python-libraries`, pinned by tag in the `default` group); log output is unchanged. Local dev installs it with `pip install -e <checkout>/packages/logging`.
 

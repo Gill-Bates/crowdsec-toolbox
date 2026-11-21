@@ -27,7 +27,6 @@ banner are support modules.
 | `influxdb.py` | `TLS12Adapter`, hardened `requests` session, line-protocol escaping/formatting (shared with QuestDB) and send |
 | `questdb.py` | `httpx.Client` POST of the same line protocol to QuestDB's ILP-over-HTTP `/write` endpoint; bearer token or basic auth, no TLS hardening |
 | `logger.py` | Binds the external `gillbates-logging` package to the `crowdsec_metrics` source: console helpers (`print_info`/`success`/`warning`/`error`), root logging configured on import from `config.LOG_LEVEL` |
-| `version_check.py` | Startup lookup of the latest GitHub release of `Gill-Bates/crowdsec-toolbox` (httpx, 3 s timeout, every failure silent); shared copy |
 | `version.py` | Reads `APP_VERSION` / `GIT_SHA` (build args) for the startup banner |
 | `kbinterrupt.py` | SIGINT/SIGTERM handlers for a clean shutdown |
 
@@ -132,4 +131,4 @@ gate; a real run needs CrowdSec and the configured metrics backend reachable.
 - **Log layout.** `logger.py` renders `<UTC time> | LEVEL | <source> | message` on a single line (see `docs/reference/log-format.md`); WARNING and above go to stderr, colour only on a TTY with `NO_COLOR` unset. The two no-data messages use `💤`; do not add multi-line output or summary tables.
 
 ### Code shared with the abuse reporter
-`banner.py` (`print_banner`), `version.py`, `version_check.py` and the LAPI login block of `crowdsec.py` are deliberate copies of the sibling tool's code, never imports. The QuestDB client (`/exec` retries, dedup gate, version check, TTL, rollup retention) is no longer copied: it comes from the external `gillbates-questdb-client` package and `app/questdb.py` / `app/metrics.py` only bind it to the tool's settings and log helpers. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.
+`banner.py` (`print_banner`), `version.py` and the LAPI login block of `crowdsec.py` are deliberate copies of the sibling tool's code, never imports. The QuestDB client (`/exec` retries, dedup gate, version check, TTL, rollup retention) is no longer copied: it comes from the external `gillbates-questdb-client` package and `app/questdb.py` / `app/metrics.py` only bind it to the tool's settings and log helpers. Change one copy only together with the other: `.github/scripts/test_shared_code.py` compares them by AST and fails on drift.

@@ -135,8 +135,8 @@ anything on it; the real abuse-contact resolution lives in `crowdsec-abuse-repor
 - InfluxDB 2.x write endpoint, or a QuestDB 10.x instance with ILP-over-HTTP
   enabled
 - `requests` + `urllib3` — `default` group
-- `httpx` — declared in the `default` group, used only by
-  `app/questdb.py`
+- `httpx` — declared in the `default` group, used by
+  `app/crowdsec.py` and `app/questdb.py`
 - `gillbates-logging` — logging core, git URL pinned by tag in `[project].dependencies` (private repository)
 - `gillbates-questdb-client` — QuestDB client (writes, `/exec`, dedup gate, TTL, rollup retention), pinned the same way
 - `settings.env` loading (`config.py`) uses only the stdlib; coloured console output (`logger.py`) comes from the external `gillbates-logging` package — no `python-dotenv` or `colorama` dependency

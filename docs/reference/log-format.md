@@ -17,10 +17,11 @@ layout:
 ## Streams and colour
 
 `WARNING`, `ERROR` and `CRITICAL` lines go to stderr, everything else to stdout.
-This also holds for `MAIL` error lines. Colour is used only on a TTY and only
-when `NO_COLOR` is unset, so `docker logs` output is plain text.
+This also holds for `MAIL` error lines. Colour follows one rule for log lines, banner and
+release notice: a non-empty `NO_COLOR` disables it, a non-empty `FORCE_COLOR` other than `0` enables it, otherwise
+it needs a TTY and `TERM` other than `dumb`, so `docker logs` output is plain text.
 
 ## Banners
 
 The start banner is the only multi-line output. It has no blank lines around it.
-A release notice line follows it (`A new version is available: ...` or `Your version is up to date.`). It is printed like the banner, independent of the log level, and is omitted when GitHub cannot be reached, on a `dev` build, or when the version cannot be compared.
+A release notice line follows it (`A new version is available: ...` or `Your version is up to date.`). It is printed like the banner, independent of the log level, and is omitted when GitHub cannot be reached, on a `dev` build, or when the version cannot be compared. A running version newer than the latest release reports `Your version (vX) is newer than the latest release.`
