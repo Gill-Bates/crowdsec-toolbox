@@ -257,7 +257,7 @@ jobs:
 
       # pip >= 25.1 is required for PEP 735 `--group` installs. ruff needs both tools
       # installed to resolve imports across the repository; pytest runs both suites.
-      # [project].dependencies (gillbates-logging and gillbates-questdb-client, private git dependencies) is not part of a
+      # [project].dependencies (gillbates-logging, gillbates-questdb-client and gillbates-smtp-client, private git dependencies) is not part of a
       # group, so it is collected into a requirements file. The token reaches git only through
       # a credential helper that reads it from this step's environment; it is never part of a
       # URL or written to disk. Every failure (missing token, empty list, install, import) fails
@@ -285,7 +285,7 @@ jobs:
                       --group crowdsec-abuse-reporter/pyproject.toml:dev \
                       --group crowdsec-metrics-exporter/pyproject.toml:default \
                       --group crowdsec-metrics-exporter/pyproject.toml:dev
-          python -c "import gillbates_logging, gillbates_questdb_client"
+          python -c "import gillbates_logging, gillbates_questdb_client, gillbates_smtp_client"
 
       - name: Run ruff
         if: matrix.check == 'ruff'

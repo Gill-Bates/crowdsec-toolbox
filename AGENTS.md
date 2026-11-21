@@ -36,7 +36,7 @@ path, and shares no application code with its siblings. Each tool has its own
   toolchain). Do not add a root `pyproject.toml` or per-tool `requirements.txt`;
   CI rejects both. Do not extract further shared packages — `config.py` etc.
   are duplicated on purpose so each tool deploys independently. The exceptions are the
-  QuestDB client (`gillbates-questdb-client`, `packages/questdb-client/`, pinned the same way and installed editable for local dev) and the
+  QuestDB client (`gillbates-questdb-client`, `packages/questdb-client/`, pinned the same way and installed editable for local dev), the SMTP client of the abuse reporter (`gillbates-smtp-client`, `packages/smtp-client/`, same mechanism) and the
   logging core, which lives in the external `gillbates-logging` package (`Gill-Bates/python-libraries`,
   `packages/logging/`) and is pinned by tag in each tool's `default` group; `logger.py` stays as the
   tool's thin binding. For local dev, install it editable from a checkout

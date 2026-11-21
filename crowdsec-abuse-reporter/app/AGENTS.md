@@ -18,7 +18,7 @@ With metrics enabled, `metrics` exports the finalized report outcome.
 | `main.py` | Orchestrator: fetch, filter, subnet-dedup, claim, send, finalize, summary, exit code |
 | `crowdsec.py` | LAPI auth/fetch with bounded retry, decision derivation, context extraction, node-IP detection |
 | `abusix.py` | Abuse-contact lookup via the Abusix DNS contact DB, backed by the SQLite contact cache |
-| `abuse.py` | SMTP connection management, MIME assembly (multipart/report with feedback-report and `xarf.json` parts per the XARF e-mail transport guide), recipient validation, send retry |
+| `abuse.py` | Thin adapter over the external `gillbates-smtp-client` package (connection, TLS/AUTH, retry and error classification, recipient validation, MIME skeleton): binds it to the SMTP settings and log helpers and adds the XARF parts (multipart/report with feedback-report and `xarf.json` per the XARF e-mail transport guide) |
 | `reportbody.py` | Human-readable mail body (wrapped to 76 columns) and X-ARF v4.2.0 JSON (category/type mapping, evidence items), incl. secret redaction of context |
 | `database.py` | SQLite schema, the claim/finalize idempotency protocol, permanent `abuse_alert_tombstones`, contact cache, reaper, retention, metrics outbox |
 | `metrics.py` | Optional InfluxDB or QuestDB export of report outcomes; gates every QuestDB write on a 10.x version check (`ensure_questdb_version()`) and verified dedup (`ensure_questdb_table()`, `DEDUP_KEYS`) and applies retention after it (`apply_questdb_retention()`, optional `QUESTDB_DOWNSAMPLING` rollup `ROLLUP`, implemented by the external `gillbates-questdb-client` package); `flush_points()` is the durable path via the SQLite outbox |
@@ -132,7 +132,7 @@ there.
 ### External
 - `httpx` (`crowdsec.py`), `dns.resolver` (`abusix.py`, `dns_utils.py`),
   `geoip2` / `maxminddb` (`geoip.py`),
-  stdlib `sqlite3` / `smtplib` / `email` / `fcntl`. `config.py` loads
+  stdlib `sqlite3` / `fcntl` (`smtplib` / `email` live in `gillbates-smtp-client`). `config.py` loads
   `settings.env` with its own stdlib parser (no third-party dependency).
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

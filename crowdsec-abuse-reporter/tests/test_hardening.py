@@ -108,9 +108,9 @@ class AbuseHardeningTest(unittest.TestCase):
         server = MagicMock()
         server.sendmail.configure_mock(**sendmail_kwargs)
         with (
-            patch.object(abuse, "smtp_connection") as conn,
+            patch("gillbates_smtp_client.transport.smtp_connection") as conn,
             patch.object(abuse, "print_mail_error"),
-            patch.object(abuse.time, "sleep"),
+            patch("time.sleep"),
         ):
             conn.return_value.__enter__.return_value = server
             result = abuse.send_abuse_mail("a@example.com", "s", "b", max_retries=3, retry_delay=0)
@@ -132,7 +132,7 @@ class AbuseHardeningTest(unittest.TestCase):
 
     def test_partially_refused_primary_recipients_count_as_delivered(self):
         refused = {"b@example.com": (550, b"no")}
-        with patch.object(abuse, "smtp_connection") as conn:
+        with patch("gillbates_smtp_client.transport.smtp_connection") as conn:
             server = MagicMock()
             server.sendmail.return_value = refused
             conn.return_value.__enter__.return_value = server

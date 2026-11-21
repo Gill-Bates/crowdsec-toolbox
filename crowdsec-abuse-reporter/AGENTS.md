@@ -47,8 +47,8 @@ There is no `requirements.txt` and no root manifest.
   no pre-3.14 compatibility shims.
 - Scope changes to this project. Do not refactor across the toolbox and do not
   extract further shared packages — `config.py` and friends are duplicated
-  across projects on purpose so each stays independently deployable. The logging core is the
-  exception: it comes from the external `gillbates-logging` package (see the root `AGENTS.md`).
+  across projects on purpose so each stays independently deployable. The logging core and the SMTP client are
+  the exceptions: they come from the external `gillbates-logging` and `gillbates-smtp-client` packages (see the root `AGENTS.md`).
 - Comments and docstrings in English; user-facing strings are frequently German
   and must keep their wording and non-ASCII characters.
 - `docker/settings.env.example` is the single tracked template and must list
