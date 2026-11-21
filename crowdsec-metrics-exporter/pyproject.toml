@@ -42,5 +42,3 @@ extend = "../ruff.toml"
 
 # The run summary is printed to the console on purpose.
 "main.py" = ["T201"]
-# Identifiers come from validated configuration and go through the quoting helpers.
-"app/questdb.py" = ["S608"]

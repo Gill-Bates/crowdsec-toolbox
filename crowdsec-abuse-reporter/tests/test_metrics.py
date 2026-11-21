@@ -22,7 +22,7 @@ from gillbates_questdb_client.retention import PENDING_WARN_AFTER
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["SMTP_PASSWORD"] = ""
 
-from app import config, database, metrics
+from app import database, metrics
 from app import main as crowdsec_main
 
 
@@ -305,15 +305,6 @@ class BackendWriteTest(unittest.TestCase):
 
 
 class QuestDbTtlTest(_QuestDbStubMixin, unittest.TestCase):
-    def test_parse_ttl(self):
-        self.assertEqual(config.parse_questdb_ttl("365d"), "365 DAYS")
-        self.assertEqual(config.parse_questdb_ttl("6M"), "6 MONTHS")
-        self.assertEqual(config.parse_questdb_ttl("48h"), "48 HOURS")
-        self.assertIsNone(config.parse_questdb_ttl("0"))
-        self.assertIsNone(config.parse_questdb_ttl(""))
-        with self.assertRaises(ValueError):
-            config.parse_questdb_ttl("365")
-
     def test_ttl_applied_after_questdb_write(self):
         self.start_questdb(_FakeQuestDb())
         self.assertEqual(metrics.write_points(["a"]), metrics.WriteStatus.OK)

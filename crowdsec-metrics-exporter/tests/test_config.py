@@ -88,33 +88,6 @@ def test_questdb_event_table_validation_allows_non_colliding_modes(backend, enab
     config._validate_questdb_event_table(backend, enabled, alert_table, event_table)
 
 
-@pytest.mark.parametrize(
-    ("raw", "clause", "days"),
-    [
-        ("365d", "365 DAYS", 365),
-        ("48h", "48 HOURS", 2),
-        ("12w", "12 WEEKS", 84),
-        ("6M", "6 MONTHS", 180),
-        ("1y", "1 YEARS", 365),
-    ],
-)
-def test_questdb_ttl_clause_and_days_agree(raw, clause, days):
-    assert config.parse_questdb_ttl(raw) == clause
-    assert config.questdb_ttl_days(raw) == days
-
-
-@pytest.mark.parametrize("raw", ["", "0", "0d"])
-def test_questdb_ttl_disabled_forms(raw):
-    assert config.parse_questdb_ttl(raw) is None
-    assert config.questdb_ttl_days(raw) is None
-
-
-@pytest.mark.parametrize("raw", ["abc", "10", "10x", "-5d", "1.5d"])
-def test_questdb_ttl_rejects_malformed_values(raw):
-    with pytest.raises(ValueError, match="QUESTDB_TTL"):
-        config.parse_questdb_ttl(raw)
-
-
 def test_require_bare_host_accepts_hosts_and_ipv6_literals():
     assert config._require_bare_host("QUESTDB_URL", " db.example.org/ ") == "db.example.org"
     assert config._require_bare_host("QUESTDB_URL", "[::1]") == "[::1]"

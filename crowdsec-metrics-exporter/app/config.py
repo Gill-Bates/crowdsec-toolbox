@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from gillbates_questdb_client import parse_ttl, ttl_days
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -223,55 +225,12 @@ QUESTDB_TOKEN = os.getenv("QUESTDB_TOKEN", "")
 QUESTDB_USERNAME = os.getenv("QUESTDB_USERNAME", "")
 QUESTDB_PASSWORD = os.getenv("QUESTDB_PASSWORD", "")
 
-_TTL_UNITS = {"h": "HOURS", "d": "DAYS", "w": "WEEKS", "M": "MONTHS", "y": "YEARS"}
-# Months and years are approximated; the day count is only used to compare a
-# profile's raw window against the configured total retention, never to compute
-# a retention boundary.
-_TTL_UNIT_HOURS = {"h": 1, "d": 24, "w": 24 * 7, "M": 24 * 30, "y": 24 * 365}
-
-
-def _split_questdb_ttl(raw: str) -> tuple[int, str] | None:
-    """Split '365d' into (365, 'd'), or None when the TTL is disabled."""
-    value = raw.strip()
-    if value in {"", "0"}:
-        return None
-    match = re.fullmatch(r"([0-9]+)\s*([hdwMy])", value)
-    if not match:
-        raise ValueError(f"QUESTDB_TTL must look like 365d, 12w, 6M, 1y or 48h, got {raw!r}")
-    amount = int(match.group(1))
-    if amount == 0:
-        return None
-    return amount, match.group(2)
-
-
-def parse_questdb_ttl(raw: str) -> str | None:
-    """Convert a TTL such as '365d' into QuestDB's TTL clause value ('365 DAYS').
-
-    Accepts 365d, 12w, 6M, 1y or 48h. '', '0' or '0d' disable the TTL (None).
-    Raises ValueError on anything else.
-    """
-    parsed = _split_questdb_ttl(raw)
-    if parsed is None:
-        return None
-    amount, unit = parsed
-    return f"{amount} {_TTL_UNITS[unit]}"
-
-
-def questdb_ttl_days(raw: str) -> int | None:
-    """Whole days covered by a QuestDB TTL string, or None when it is disabled."""
-    parsed = _split_questdb_ttl(raw)
-    if parsed is None:
-        return None
-    amount, unit = parsed
-    return amount * _TTL_UNIT_HOURS[unit] // 24
-
-
 # Retention applied to the QuestDB table after each write (ALTER TABLE ... SET
 # TTL). Default 365d; "0" disables.
 _QUESTDB_TTL_RAW = os.getenv("QUESTDB_TTL", "365d")
 try:
-    QUESTDB_TTL = parse_questdb_ttl(_QUESTDB_TTL_RAW)
-    QUESTDB_TTL_DAYS = questdb_ttl_days(_QUESTDB_TTL_RAW)
+    QUESTDB_TTL = parse_ttl(_QUESTDB_TTL_RAW)
+    QUESTDB_TTL_DAYS = ttl_days(_QUESTDB_TTL_RAW)
 except ValueError as _e:
     raise _exit(f"Config Error: {_e}") from None
 
