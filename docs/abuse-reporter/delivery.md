@@ -60,8 +60,9 @@ may already be delivered. The report is stored as `unknown_send_state` and is
 **never** retried, like a crashed claim.
 
 A refusal of only some primary recipients counts as delivered. If *all* primary
-recipients are refused, the report stays `failed` and is retried next run; BCC
-copies that were accepted are then sent again.
+recipients are refused, the report stays `failed` and is retried next run. Within one
+run, a temporary (4xx) refusal is retried for the refused primary recipients only, so
+an accepted BCC copy is not re-sent; on a new run it is sent again.
 
 ## The key is a pair
 

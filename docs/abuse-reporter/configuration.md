@@ -60,8 +60,8 @@ fully trust, and keep certificate verification enabled.
 | `SMTP_PORT` | `587` | Mail server port |
 | `SMTP_USERNAME` | — | Set together with `SMTP_PASSWORD` to authenticate |
 | `SMTP_PASSWORD` | — | Plaintext; authentication requires TLS |
-| `SMTP_USE_TLS` | `true` | Use TLS for the connection |
-| `SMTP_VALIDATE_CERTIFICATE` | `true` | Verify the server certificate |
+| `SMTP_USE_TLS` | `true` | TLS (STARTTLS) is mandatory; `false` is rejected at startup, plaintext SMTP is never used |
+| `SMTP_VALIDATE_CERTIFICATE` | `true` | Verify the server certificate; `false` accepts a self-signed one, the server must still present a certificate |
 | `SMTP_SENDER` | `abuse-reporter@example.com` | Envelope sender address; a plain `user@domain.tld`, otherwise startup fails (no `Name <addr>` form, use `SENDER_NAME`) |
 | `SENDER_NAME` | — | Display name of the sender |
 | `BCC` | — | Optional blind copy recipient |

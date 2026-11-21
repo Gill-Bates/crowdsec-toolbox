@@ -93,10 +93,8 @@ def _check_smtp_settings() -> None:
     """
     if bool(SMTP_USERNAME) != bool(SMTP_PASSWORD):
         raise RuntimeError("SMTP_USERNAME and SMTP_PASSWORD must either both be set or both be empty.")
-    if SMTP_USERNAME and not SMTP_USE_TLS:
-        raise RuntimeError(
-            "SMTP authentication requires TLS. Set SMTP_USE_TLS=true or clear SMTP_USERNAME/SMTP_PASSWORD."
-        )
+    if not SMTP_USE_TLS:
+        raise RuntimeError("SMTP requires TLS. Set SMTP_USE_TLS=true; plaintext SMTP is not supported.")
 
 
 @contextmanager
@@ -106,7 +104,7 @@ def smtp_connection(timeout: int = SMTP_TIMEOUT):
     Connections are not reused across sends.
 
     Raises:
-        RuntimeError: Half-configured credentials, or AUTH without TLS.
+        RuntimeError: Half-configured credentials, or TLS switched off.
     """
     _check_smtp_settings()
     with _smtp_connection(_smtp_config(timeout), log=_log_sink()) as server:
