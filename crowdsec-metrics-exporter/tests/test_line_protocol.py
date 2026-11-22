@@ -7,9 +7,11 @@
 # InfluxDB line protocol escaping, the dedup-key-is-a-tag invariant, record-id and coordinate robustness,
 # and the transport warnings of the InfluxDB path.
 import re
+import ssl
 
+import httpx
 import pytest
-import requests
+from gillbates_influxdb_client import InfluxDBClient
 
 import main
 from app import events, influxdb
@@ -283,7 +285,7 @@ def _influx_main(monkeypatch, *, use_https, validate):
         raise AssertionError("main must not prompt or contact a third party")
 
     monkeypatch.setattr("builtins.input", forbidden)
-    monkeypatch.setattr(requests.Session, "request", forbidden)
+    monkeypatch.setattr(httpx.Client, "send", forbidden)
     monkeypatch.setattr(main, "METRICS_BACKEND", "influxdb2")
     monkeypatch.setattr(main, "INFLUXDB_USE_HTTPS", use_https)
     monkeypatch.setattr(main, "INFLUXDB_VALIDATE_CERTIFICATE", validate)
@@ -304,15 +306,125 @@ def test_main_on_influxdb_neither_prompts_nor_contacts_a_third_party(monkeypatch
     assert len(sent) == 1
 
 
+def _wire(monkeypatch, handler, *, use_https=True, validate=True):
+    """Route `send_to_influxdb` through an in-memory httpx transport and capture its log output."""
+    logs = []
+    monkeypatch.setattr(influxdb, "INFLUXDB_USE_HTTPS", use_https)
+    monkeypatch.setattr(influxdb, "INFLUXDB_VALIDATE_CERTIFICATE", validate)
+    monkeypatch.setattr(influxdb, "INFLUXDB_TOKEN", "secret-token")
+    monkeypatch.setattr(influxdb, "print_error", lambda message: logs.append(f"error: {message}"))
+    monkeypatch.setattr(
+        influxdb,
+        "InfluxDBClient",
+        lambda config, **kwargs: InfluxDBClient(config, transport=httpx.MockTransport(handler), **kwargs),
+    )
+    return logs
+
+
+LINE = "h,ip_address=1.2.3.4 alert_id=1 1767323045000000000"
+
+
+def test_send_posts_one_batch_with_token_org_bucket_and_confirms_only_204(monkeypatch):
+    requests_seen = []
+
+    def handler(request):
+        requests_seen.append(request)
+        return httpx.Response(204)
+
+    _wire(monkeypatch, handler)
+    assert influxdb.send_to_influxdb(LINE + "\n" + LINE) is True
+    (request,) = requests_seen
+    assert request.url.path == "/api/v2/write"
+    assert dict(request.url.params) == {"org": "myOrg", "bucket": "crowdsec", "precision": "ns"}
+    assert request.headers["Authorization"] == "Token secret-token"
+    assert request.content.decode() == LINE + "\n" + LINE + "\n"
+
+
+@pytest.mark.parametrize(
+    ("status", "expect"),
+    [
+        (401, "InfluxDB API error: 401 - denied"),
+        (404, "InfluxDB API error: 404 - denied"),
+        (200, "InfluxDB API error: 200 - denied"),
+        (503, "InfluxDB API error: 503 - denied"),
+    ],
+)
+def test_send_fails_on_every_status_but_204_and_does_not_retry(monkeypatch, status, expect):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status, text="denied")
+
+    logs = _wire(monkeypatch, handler)
+    assert influxdb.send_to_influxdb(LINE) is False
+    assert logs == [f"error: {expect}"]
+    assert len(calls) == 1
+    assert "secret-token" not in logs[0]
+
+
+def test_send_reports_a_connection_failure_without_the_token(monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    logs = _wire(monkeypatch, handler)
+    assert influxdb.send_to_influxdb(LINE) is False
+    assert logs[0].startswith("error: Connection error to InfluxDB:")
+    assert "secret-token" not in logs[0]
+
+
+def test_send_reports_a_tls_handshake_failure_as_ssl_error(monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("handshake rejected", request=request) from ssl.SSLError("bad certificate")
+
+    logs = _wire(monkeypatch, handler)
+    assert influxdb.send_to_influxdb(LINE) is False
+    assert logs[0].startswith("error: SSL/TLS error:")
+
+
 @pytest.mark.usefixtures("isolated_main")
 def test_tls_handshake_failure_on_the_write_still_exits_1(monkeypatch):
-    class Session:
-        def post(self, *_args, **_kwargs):
-            raise requests.exceptions.SSLError("handshake rejected")
+    def handler(request):
+        raise httpx.ConnectError("handshake rejected", request=request) from ssl.SSLError("bad certificate")
 
-        def close(self):
-            pass
-
+    _wire(monkeypatch, handler)
     _influx_main(monkeypatch, use_https=True, validate=True)
-    monkeypatch.setattr(influxdb, "create_secure_session", Session)
     assert _influx_run(monkeypatch) == 1
+
+
+def test_https_uses_the_hardened_context_and_keeps_certificate_semantics(monkeypatch):
+    monkeypatch.setattr(influxdb, "INFLUXDB_USE_HTTPS", True)
+    monkeypatch.setattr(influxdb, "INFLUXDB_VALIDATE_CERTIFICATE", True)
+    context = influxdb._build_config().ssl_context
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.maximum_version == ssl.TLSVersion.TLSv1_3
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname
+    assert all(c["name"] != "AES128-SHA" for c in context.get_ciphers())
+    monkeypatch.setattr(influxdb, "INFLUXDB_VALIDATE_CERTIFICATE", False)
+    assert influxdb._build_config().ssl_context.verify_mode == ssl.CERT_NONE
+
+
+@pytest.mark.parametrize(("use_https", "validate"), [(False, True), (True, False)])
+def test_insecure_transport_stays_a_warning_not_a_config_error(monkeypatch, use_https, validate):
+    # The package would reject these settings by default; the exporter opts in and only warns.
+    monkeypatch.setattr(influxdb, "INFLUXDB_URL", "influx.example.org")
+    monkeypatch.setattr(influxdb, "INFLUXDB_USE_HTTPS", use_https)
+    monkeypatch.setattr(influxdb, "INFLUXDB_VALIDATE_CERTIFICATE", validate)
+    monkeypatch.setattr(influxdb, "INFLUXDB_TOKEN", "t")
+    assert influxdb._build_config().allow_insecure is True
+
+
+@pytest.mark.parametrize("value", ["a\\", "a\\ b", "a\\,b"])
+def test_backslash_before_a_separator_skips_the_alert_instead_of_poisoning_the_batch(value):
+    assert format_influxdb_line_protocol({**ALERT, "scenario": value}, "h") is None
+
+
+def test_backslash_before_a_separator_skips_the_event_and_counts_it():
+    alert = {
+        "id": 1,
+        "start_at": "2026-01-02T03:04:05Z",
+        "events": [{"meta": [{"key": "target_host", "value": "x\\"}]}],
+    }
+    lines, skipped = events.build_event_lines([alert], "m", host="h")
+    assert (lines, skipped) == ([], 1)

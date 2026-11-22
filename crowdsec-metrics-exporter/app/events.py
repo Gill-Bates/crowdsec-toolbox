@@ -198,17 +198,21 @@ def build_event_lines(
                 print_warning(f"Skipping event {seq} of alert {alert_id}: no parseable timestamp")
                 skipped += 1
                 continue
-            lines.append(
-                format_event_line_protocol(
-                    measurement,
-                    host=host,
-                    alert_id=alert_id,
-                    event_seq=seq,
-                    scenario=scenario,
-                    ip=meta.get("source_ip", "") or source_ip,
-                    meta=meta,
-                    timestamp_ns=timestamp_ns,
+            try:
+                lines.append(
+                    format_event_line_protocol(
+                        measurement,
+                        host=host,
+                        alert_id=alert_id,
+                        event_seq=seq,
+                        scenario=scenario,
+                        ip=meta.get("source_ip", "") or source_ip,
+                        meta=meta,
+                        timestamp_ns=timestamp_ns,
+                    )
                 )
-            )
-
+            except ValueError as e:
+                # A backslash before a separator cannot be stored; one bad line must not poison the batch.
+                print_warning(f"Skipping event {seq} of alert {alert_id}: {e}")
+                skipped += 1
     return lines, skipped

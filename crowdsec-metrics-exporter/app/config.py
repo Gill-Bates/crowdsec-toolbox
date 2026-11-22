@@ -208,8 +208,8 @@ INFLUXDB_ORGANIZATION = os.getenv("INFLUXDB_ORGANIZATION", "myOrg")
 INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "crowdsec")
 
 # InfluxDB Security Settings. The TLS version bounds live in
-# `influxdb.TLS12Adapter` (ssl.TLSVersion.TLSv1_2 … TLSv1_3); only the cipher
-# list is configured here.
+# `gillbates_influxdb_client.hardened_tls_context` (TLS 1.2 to 1.3); only the
+# cipher list is configured here.
 INFLUXDB_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS"
 
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")

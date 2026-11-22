@@ -10,6 +10,7 @@ requires-python = ">=3.14"
 # needs git and read access (no credentials belong in this file; see docs/development/setup.md).
 # Installers that only read the `default` group must also install this list.
 dependencies = [
+    "gillbates-influxdb-client @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-influxdb-client-v0.10.0#subdirectory=packages/influxdb-client",
     "gillbates-logging @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-logging-v0.10.0#subdirectory=packages/logging",
     "gillbates-questdb-client @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-questdb-client-v0.10.0#subdirectory=packages/questdb-client",
     "gillbates-shutdown-handler @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-shutdown-handler-v0.10.0#subdirectory=packages/shutdown-handler",
@@ -19,8 +20,6 @@ dependencies = [
 # Runtime dependencies for metrics exporter
 default = [
     "httpx==0.28.1",
-    "requests==2.34.2",
-    "urllib3==2.8.0",
 ]
 # Development dependencies (testing, linting). Pinned on purpose: none of it ships in
 # an image, so a ruff release that changes its rules must not fail CI on untouched code.
