@@ -18,6 +18,7 @@ from gillbates_influxdb_client import (
     InfluxDBConfig,
     InfluxDBError,
     InfluxDBUnavailableError,
+    escape_measurement,
     escape_string_field,
     escape_tag,
     hardened_tls_context,
@@ -38,13 +39,23 @@ from .logger import print_error, print_info, print_success, print_warning
 
 
 def escape_influxdb_value(value: str) -> str:
-    """Escape a tag value or measurement; empty or missing values become an empty string.
+    """Escape a tag value; empty or missing values become an empty string.
 
     Raises ValueError for a backslash before a separator or at the end, which line protocol cannot store.
     """
     if not value:
         return ""
     return escape_tag(str(value))
+
+
+def escape_influxdb_measurement(value: str) -> str:
+    """Escape a measurement name; empty or missing values become an empty string.
+
+    Raises ValueError for a name line protocol cannot store (see `escape_measurement`).
+    """
+    if not value:
+        return ""
+    return escape_measurement(str(value))
 
 
 def escape_influxdb_string_field(value: str) -> str:
@@ -83,7 +94,7 @@ def format_influxdb_line_protocol(alert: dict, hostname: str, *, host: str | Non
         host: Optional source host tag, used to separate QuestDB instances
     """
     try:
-        measurement = escape_influxdb_value(hostname)
+        measurement = escape_influxdb_measurement(hostname)
 
         tags = {
             "ip_address": escape_influxdb_value(alert.get("ip_address", "")),

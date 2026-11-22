@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .crowdsec import parse_record_id
-from .influxdb import escape_influxdb_string_field, escape_influxdb_value
+from .influxdb import escape_influxdb_measurement, escape_influxdb_string_field, escape_influxdb_value
 from .logger import print_warning
 
 # Columns that identify an event row exactly. Passed to QuestDB's
@@ -132,7 +132,7 @@ def format_event_line_protocol(
     # tag value, and QuestDB would reject the line.
     tags_str = ",".join(f"{k}={v}" for k, v in tags.items() if v)
     fields_str = ",".join(f"{k}={v}" for k, v in fields.items())
-    prefix = escape_influxdb_value(measurement)
+    prefix = escape_influxdb_measurement(measurement)
     if tags_str:
         prefix = f"{prefix},{tags_str}"
     return f"{prefix} {fields_str} {timestamp_ns}"

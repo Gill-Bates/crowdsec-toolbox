@@ -10,9 +10,9 @@ requires-python = ">=3.14"
 # needs git and read access (no credentials belong in this file; see docs/development/setup.md).
 # Installers that only read the `default` group must also install this list.
 dependencies = [
-    "gillbates-influxdb-client @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-influxdb-client-v0.11.0#subdirectory=packages/influxdb-client",
+    "gillbates-influxdb-client @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-influxdb-client-v0.11.2#subdirectory=packages/influxdb-client",
     "gillbates-logging @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-logging-v0.10.0#subdirectory=packages/logging",
-    "gillbates-questdb-client @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-questdb-client-v0.10.0#subdirectory=packages/questdb-client",
+    "gillbates-questdb-client @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-questdb-client-v0.11.0#subdirectory=packages/questdb-client",
     "gillbates-shutdown-handler @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-shutdown-handler-v0.10.0#subdirectory=packages/shutdown-handler",
 ]
 
