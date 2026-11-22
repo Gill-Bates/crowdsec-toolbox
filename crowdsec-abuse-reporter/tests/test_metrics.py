@@ -75,6 +75,7 @@ class _FakeQuestDb:
         self.views: list[list] = []
         self.state_rows: list[list] = []
         self.on_write = None  # called after each /write, to model the async refresh
+        self.on_sleep = None  # called when the client waits: the refresh progresses meanwhile
         self.build_info = build_info
         self.events: list[tuple[str, str]] = []
 
@@ -114,6 +115,9 @@ class _FakeQuestDb:
         elif "DEDUP ENABLE UPSERT KEYS" in query:
             if self.alter_applies:
                 self.dedup, self.keys = True, re.findall(r'"([^"]+)"', query.split("KEYS", 1)[1])
+        elif "FROM wal_tables()" in query:
+            # sequencerTxn: the base-table transaction the views report as their latest
+            rows = [[self.views[0][4]]] if self.views else []
         elif "materialized_views()" in query:
             rows = self.views
         elif "LATEST ON timestamp PARTITION BY table_name" in query:
@@ -150,7 +154,7 @@ class _QuestDbStubMixin:
             ttl_days=self.ttl_days,
             downsampling=self.downsampling,
             transport=httpx.MockTransport(fake.handler),
-            sleep=lambda _seconds: None,
+            sleep=lambda _seconds: fake.on_sleep and fake.on_sleep(),
         )
         stack.enter_context(patch.object(metrics, "_CLIENT", client))
         stack.enter_context(patch.object(metrics, "print_config_info"))
@@ -707,10 +711,19 @@ class QuestDbDownsamplingTest(_QuestDbStubMixin, unittest.TestCase):
     def _raw_ttl(self, fake):
         return [q for q in fake.queries if q.startswith(f'ALTER TABLE "{self.TABLE}" SET TTL')]
 
-    def test_refresh_lagging_only_this_runs_own_write_still_shortens_the_raw_ttl(self):
+    def test_refresh_lagging_this_runs_own_write_keeps_the_full_raw_ttl(self):
+        fake = _FakeQuestDb()
+        fake.views = [[self.VIEW, self.TABLE, "valid", 4, 4]]
+        # The write commits txn 5; its rows may be older than the raw window and are not aggregated yet.
+        fake.on_write = lambda: fake.views.__setitem__(0, [self.VIEW, self.TABLE, "refreshing", 4, 5])
+        self.assertEqual(self._write(fake), metrics.WriteStatus.OK)
+        self.assertEqual(self._raw_ttl(fake), [f'ALTER TABLE "{self.TABLE}" SET TTL 365 DAYS'])
+
+    def test_refresh_catching_up_with_this_runs_own_write_shortens_the_raw_ttl(self):
         fake = _FakeQuestDb()
         fake.views = [[self.VIEW, self.TABLE, "valid", 4, 4]]
         fake.on_write = lambda: fake.views.__setitem__(0, [self.VIEW, self.TABLE, "refreshing", 4, 5])
+        fake.on_sleep = lambda: fake.views.__setitem__(0, [self.VIEW, self.TABLE, "valid", 5, 5])
         self.assertEqual(self._write(fake), metrics.WriteStatus.OK)
         self.assertEqual(self._warnings(), [])
         self.assertEqual(self._raw_ttl(fake), [f'ALTER TABLE "{self.TABLE}" SET TTL 30 DAYS'])

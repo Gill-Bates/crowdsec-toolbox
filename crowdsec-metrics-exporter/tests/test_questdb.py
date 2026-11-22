@@ -41,6 +41,7 @@ class FakeQuestDB:
         self.on_write = None  # called after each /write, to model the async refresh
         self.empty_show_create = False
         self.sleeps: list[float] = []  # recorded instead of sleeping
+        self.sleeps_hook = None  # runs on every recorded sleep: the server progresses while the client waits
         self.logs: list[str] = []  # captured print_* output as "level: message"
         self.build_info: object = "Build Information: QuestDB 10.0.0, JDK 25, Commit Hash abc"
 
@@ -69,6 +70,11 @@ class FakeQuestDB:
         if sql.startswith(("CREATE ", "ALTER ")):
             return httpx.Response(200, json={"ddl": "OK"})
         return httpx.Response(200, json={"dataset": rows})
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        if self.sleeps_hook:
+            self.sleeps_hook()
 
     def _rows(self, sql: str) -> list:
         names = _quoted(sql)
@@ -113,6 +119,9 @@ class FakeQuestDB:
                 return []
             table = self.tables[names[0]]
             return [[f"CREATE TABLE ... DEDUP {table['mode']} KEYS({','.join(table['keys'])})"]]
+        elif "FROM wal_tables()" in sql:
+            # sequencerTxn: the base-table transaction the views report as their latest
+            return [[self.views[0][4]]] if self.views else []
         elif "materialized_views()" in sql:
             return self.views
         elif "LATEST ON timestamp PARTITION BY table_name" in sql:
@@ -125,7 +134,7 @@ def db(monkeypatch, isolated_main):
     fake = FakeQuestDB()
 
     def configure(**settings):
-        client = questdb.build_client(transport=httpx.MockTransport(fake.handler), sleep=fake.sleeps.append, **settings)
+        client = questdb.build_client(transport=httpx.MockTransport(fake.handler), sleep=fake.sleep, **settings)
         monkeypatch.setattr(questdb, "_CLIENT", client)
 
     fake.configure = configure
@@ -423,11 +432,20 @@ def _raw_ttl(db):
     return [sql for sql in db.log if sql.startswith(f'ALTER TABLE "{ALERT_TABLE}" SET TTL')]
 
 
-def test_a_refresh_that_lags_only_this_runs_own_write_still_shortens_the_raw_ttl(db):
+def test_a_refresh_that_lags_this_runs_own_write_keeps_the_full_raw_ttl(db):
     db.configure(downsampling="medium")
     db.views = [[VIEW, ALERT_TABLE, "valid", 9, 9]]
-    # The write commits txn 10; the async refresh has not started when the check runs.
+    # The write commits txn 10; the async refresh has not started: its rows may be older than the raw window.
     db.on_write = lambda: db.views.__setitem__(0, [VIEW, ALERT_TABLE, "refreshing", 9, 10])
+    assert _send_alerts() is main.SendStatus.OK
+    assert _raw_ttl(db) == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 365 DAYS']
+
+
+def test_a_refresh_that_catches_up_with_this_runs_own_write_shortens_the_raw_ttl(db):
+    db.configure(downsampling="medium")
+    db.views = [[VIEW, ALERT_TABLE, "valid", 9, 9]]
+    db.on_write = lambda: db.views.__setitem__(0, [VIEW, ALERT_TABLE, "refreshing", 9, 10])
+    db.sleeps_hook = lambda: db.views.__setitem__(0, [VIEW, ALERT_TABLE, "valid", 10, 10])
     assert _send_alerts() is main.SendStatus.OK
     assert _raw_ttl(db) == [f'ALTER TABLE "{ALERT_TABLE}" SET TTL 30 DAYS']
     assert not any(line.startswith("warning:") for line in db.logs)
