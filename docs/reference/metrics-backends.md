@@ -18,12 +18,17 @@ Both backends receive the same InfluxDB Line Protocol payload over HTTP(S).
 QuestDB accepts it on its own `/write` ILP endpoint and auto-creates the target
 table and columns on first write.
 
-!!! note "Two HTTP clients, on purpose"
-    In the exporter, `app/influxdb.py` uses `requests` with a hardened
-    `TLS12Adapter` built on a `urllib3` SSL context, while `app/questdb.py` uses
-    `httpx`. QuestDB's endpoint has no equivalent cipher or TLS-version
-    requirement, and the adapter is `requests`-specific. Do not unify them —
-    that would drop the InfluxDB TLS hardening.
+!!! note "One HTTP client, two backends"
+    The exporter uses `httpx` throughout. The InfluxDB write goes through the
+    shared `gillbates-influxdb-client` package with a hardened TLS context
+    (TLS 1.2 to 1.3 and the configured cipher list); the QuestDB write goes
+    through `gillbates-questdb-client` without that hardening, since QuestDB's
+    endpoint has no equivalent cipher or TLS-version requirement. The InfluxDB
+    write makes one attempt per batch, sends at most 5000 lines per request and
+    counts only HTTP 204 as stored; any other answer fails the run. An alert or
+    event whose tag value has a backslash before a separator or at its end
+    cannot be stored in line protocol; it is skipped with a warning and the run
+    exits 1.
 
 ## Point schema
 

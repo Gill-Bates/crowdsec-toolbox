@@ -15,7 +15,7 @@ installable packages; the manifest exists only to declare
 |---|---|---|
 | `crowdsec-abuse-reporter/pyproject.toml` | `default` | `dnspython`, `httpx` |
 | | `dev` | `pytest`, `ruff` |
-| `crowdsec-metrics-exporter/pyproject.toml` | `default` | `httpx`, `requests`, `urllib3` |
+| `crowdsec-metrics-exporter/pyproject.toml` | `default` | `httpx` |
 | | `dev` | `pytest`, `ruff` |
 | `docs/pyproject.toml` | `default` | Zensical site builder |
 

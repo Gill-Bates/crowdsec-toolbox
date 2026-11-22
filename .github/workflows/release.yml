@@ -249,7 +249,7 @@ jobs:
           set -euo pipefail
           case "$TOOL" in
             abuse-reporter)   imports="httpx, dns.resolver, geoip2.database, gillbates_geoip" ;;
-            metrics-exporter) imports="httpx, requests, urllib3" ;;
+            metrics-exporter) imports="httpx, gillbates_influxdb_client" ;;
             *) echo "ERROR: no smoke-test imports defined for $TOOL"; exit 1 ;;
           esac
           docker run --rm --entrypoint python "$IMAGE" -c "import ${imports}; print('imports ok')"

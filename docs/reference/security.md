@@ -136,8 +136,9 @@ Every outbound HTTP, DNS and SMTP call carries an explicit timeout.
     performs the handshake and fails the run when it is rejected.
 
 !!! note "The InfluxDB TLS hardening is load-bearing"
-    Do not port the exporter's `TLS12Adapter` to httpx; see
-    [Transport](metrics-backends.md#transport).
+    The InfluxDB write passes a hardened TLS context (TLS 1.2 to 1.3, configured
+    ciphers) to the `gillbates-influxdb-client`; keep it when changing the
+    transport. See [Transport](metrics-backends.md#transport).
 
 ## Data sensitivity
 

@@ -86,10 +86,9 @@ and the run exits `1` when either failed.
     The exporter does not follow all of the abuse reporter's conventions, and
     some differences are load-bearing:
 
-    - `app/influxdb.py` uses `requests` with a hardened `TLS12Adapter` built on a
-      `urllib3` SSL context. `app/questdb.py` uses `httpx`. This mix is
-      intentional — "modernising" InfluxDB to httpx would drop the custom
-      cipher and TLS-version handling.
+    - Both backends use `httpx` through the shared `gillbates-*` client
+      packages. The InfluxDB write passes a hardened TLS context (TLS 1.2 to
+      1.3, configured ciphers); the QuestDB write has no such hardening.
     - Importing `app.config` has side effects: it loads `settings.env` at import
       time with `override=True`, so for this tool the file beats an existing
       environment variable.

@@ -33,7 +33,7 @@ monitor. Each tool is independent, so you can run only the part you need.
 | 📇 **Contact lookup** | Abusix DNS abuse-contact database | — |
 | 🔁 **Idempotency** | SQLite, at-most-once per `(AlertId, IPAddress)` | Backend-side deduplication, no local state |
 | 🐳 **Runs as** | Docker container (own image), or cron/host script | Docker container, or cron/host script |
-| 📦 **Dependencies** | `httpx`, `dnspython`, `geoip2` | `requests`, `urllib3`, `httpx` |
+| 📦 **Dependencies** | `httpx`, `dnspython`, `geoip2` | `httpx` |
 
 ## Grafana dashboards
 

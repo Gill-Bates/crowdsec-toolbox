@@ -42,6 +42,7 @@ path, and shares no application code with its siblings. Each tool has its own
   | Package | Path in `python-libraries` | Used by |
   |---------|----------------------------|---------|
   | `gillbates-logging` | `packages/logging/` | both tools (`logger.py`, `banner.py` are thin bindings) |
+  | `gillbates-influxdb-client` | `packages/influxdb-client/` | metrics exporter (`app/influxdb.py`) |
   | `gillbates-questdb-client` | `packages/questdb-client/` | both tools |
   | `gillbates-smtp-client` | `packages/smtp-client/` | abuse reporter |
   | `gillbates-shutdown-handler` | `packages/shutdown-handler/` | both tools (SIGINT/SIGTERM handling in `main.py`) |

@@ -24,7 +24,7 @@ banner are support modules.
 | `config.py` | Reads `settings.env` via a small stdlib parser and exposes module-level constants |
 | `crowdsec.py` | `httpx` LAPI client: credentials resolution, `/watchers/login` token, bounded retry, `CrowdSecFetchError`, hostname, abuse-contact **stub**; `/alerts?has_active_decision` for the alert export and `/alerts?since` plus a per-alert `/alerts/{id}` fallback for the event export |
 | `events.py` | Per-event export: flattens each alert's `events[].meta` list and builds line protocol for `EVENTS_TABLE`; reuses the escaping helpers from `influxdb.py` |
-| `influxdb.py` | `TLS12Adapter`, hardened `requests` session, line-protocol escaping/formatting (shared with QuestDB) and send |
+| `influxdb.py` | Binds `gillbates-influxdb-client`: hardened TLS context, escaping wrappers, the exporter's own line-protocol assembly (shared with QuestDB) and `send_to_influxdb()` |
 | `questdb.py` | `httpx.Client` POST of the same line protocol to QuestDB's ILP-over-HTTP `/write` endpoint; bearer token or basic auth, no TLS hardening |
 | `logger.py` | Binds the external `gillbates-logging` package to the `crowdsec_metrics` source: console helpers (`print_info`/`success`/`warning`/`error`), root logging configured on import from `config.LOG_LEVEL` |
 | `version.py` | Reads `APP_VERSION` / `GIT_SHA` (build args) for the startup banner |
@@ -44,16 +44,18 @@ None.
   or copy its values elsewhere.
 - `SENSITIVE_KEYS`-style filtering does not exist here: this project sends no
   mail, so there is no `SMTP_PASSWORD` handling to speak of.
-- `influxdb.py` is `requests`-based on purpose (see `../AGENTS.md`). The TLS
-  hardening — minimum version, cipher list, adapter — is the reason; do not
-  swap the client library casually.
-- `questdb.py` is `httpx`-based (a short-lived `httpx.Client` per write) and
-  deliberately does not reuse `TLS12Adapter`/`create_secure_session()` from
-  `influxdb.py`; that hardening is `requests`/`urllib3`-specific and targets
-  the InfluxDB endpoint. `questdb.py` reuses only
+- `influxdb.py` writes through `gillbates-influxdb-client` with a hardened TLS context
+  (TLS 1.2 to 1.3, `INFLUXDB_CIPHERS`); `allow_insecure=True` keeps plain HTTP and
+  `INFLUXDB_VALIDATE_CERTIFICATE=false` a warning instead of a config error. Errors map back
+  to the old log wording (`InfluxDB API error: <status> - <body>`, `SSL/TLS error`,
+  `Connection error to InfluxDB`). Escaping goes through the package's `escape_tag()` /
+  `escape_string_field()`; a backslash before a separator raises `ValueError`, which the
+  alert and event builders turn into a skipped record (run rated 1). Field values stay
+  untyped (no `i` suffix) on purpose, see `../AGENTS.md`.
+- `questdb.py` binds `gillbates-questdb-client` (no TLS hardening) and reuses only
   `format_influxdb_line_protocol()` / `escape_influxdb_value()` /
-  `escape_influxdb_string_field()` from `influxdb.py`, since ILP is the same
-  wire format for both backends.
+  `escape_influxdb_string_field()` from `influxdb.py`, since ILP is the same wire format
+  for both backends.
 - `ensure_questdb_table()` creates each QuestDB table with its dedup keys before
   the first write. ILP-over-HTTP `/write` auto-creates additional columns.
 - **No local state.** There is no persisted cursor and no local database
@@ -119,8 +121,9 @@ gate; a real run needs CrowdSec and the configured metrics backend reachable.
 - `../settings.env` — read by `config.py`
 
 ### External
-- `requests` + `urllib3` (`influxdb.py`), `httpx` (`questdb.py`) — declared in the
-  `default` group of `../pyproject.toml`; stdlib
+- `httpx` (`crowdsec.py` and the shared clients) — declared in the
+  `default` group of `../pyproject.toml`; `gillbates-influxdb-client` and
+  `gillbates-questdb-client` come from `[project].dependencies`; stdlib
   `socket` / `re`. `config.py` uses only the
   stdlib; `logger.py` needs only the external `gillbates-logging` package (stdlib-only itself) (no `python-dotenv` or `colorama`).
 - A reachable CrowdSec Local API and valid watcher credentials

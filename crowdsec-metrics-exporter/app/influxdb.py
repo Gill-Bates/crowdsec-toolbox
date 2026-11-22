@@ -11,6 +11,7 @@ InfluxDB integration: line protocol formatting and writes to InfluxDB 2.x.
 import math
 import ssl
 from datetime import UTC, datetime
+
 from gillbates_influxdb_client import (
     NO_RETRY,
     InfluxDBClient,
@@ -21,6 +22,7 @@ from gillbates_influxdb_client import (
     escape_tag,
     hardened_tls_context,
 )
+
 from .config import (
     INFLUXDB_BUCKET,
     INFLUXDB_CIPHERS,

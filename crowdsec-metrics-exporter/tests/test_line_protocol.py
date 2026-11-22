@@ -395,6 +395,7 @@ def test_tls_handshake_failure_on_the_write_still_exits_1(monkeypatch):
 def test_https_uses_the_hardened_context_and_keeps_certificate_semantics(monkeypatch):
     monkeypatch.setattr(influxdb, "INFLUXDB_USE_HTTPS", True)
     monkeypatch.setattr(influxdb, "INFLUXDB_VALIDATE_CERTIFICATE", True)
+    monkeypatch.setattr(influxdb, "INFLUXDB_TOKEN", "t")
     context = influxdb._build_config().ssl_context
     assert context.minimum_version == ssl.TLSVersion.TLSv1_2
     assert context.maximum_version == ssl.TLSVersion.TLSv1_3
@@ -403,6 +404,15 @@ def test_https_uses_the_hardened_context_and_keeps_certificate_semantics(monkeyp
     assert all(c["name"] != "AES128-SHA" for c in context.get_ciphers())
     monkeypatch.setattr(influxdb, "INFLUXDB_VALIDATE_CERTIFICATE", False)
     assert influxdb._build_config().ssl_context.verify_mode == ssl.CERT_NONE
+
+
+def test_send_without_a_token_fails_before_any_request(monkeypatch):
+    calls = []
+    logs = _wire(monkeypatch, lambda request: calls.append(request) or httpx.Response(204))
+    monkeypatch.setattr(influxdb, "INFLUXDB_TOKEN", "")
+    assert influxdb.send_to_influxdb(LINE) is False
+    assert logs == ["error: Invalid InfluxDB write configuration: InfluxDB 2.x requires token"]
+    assert calls == []
 
 
 @pytest.mark.parametrize(("use_https", "validate"), [(False, True), (True, False)])
@@ -424,7 +434,7 @@ def test_backslash_before_a_separator_skips_the_event_and_counts_it():
     alert = {
         "id": 1,
         "start_at": "2026-01-02T03:04:05Z",
-        "events": [{"meta": [{"key": "target_host", "value": "x\\"}]}],
+        "events": [{"meta": [{"key": "target_user", "value": "x\\"}]}],
     }
     lines, skipped = events.build_event_lines([alert], "m", host="h")
     assert (lines, skipped) == ([], 1)

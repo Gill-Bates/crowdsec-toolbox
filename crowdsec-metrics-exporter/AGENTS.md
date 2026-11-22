@@ -38,17 +38,20 @@ changing anything here.
 - All third-party imports must be declared in the `default` group
   of this tool's own `pyproject.toml`. There is no root manifest - every
   component in the repository owns its own (see `../AGENTS.md`).
-- **`app/influxdb.py` is on `requests`, `app/questdb.py` is on `httpx`.**
-  Its sibling `crowdsec-abuse-reporter` uses `httpx` throughout; this tool is mixed on
-  purpose. `app/influxdb.py` builds a hardened `TLS12Adapter` on top of a
-  `urllib3` SSL context. Do not "modernize" it to httpx as a side effect of
-  another change — that would drop the custom cipher/TLS-version handling.
-- **`app/questdb.py`** sends the same InfluxDB Line Protocol payload
-  (built by `app/influxdb.py`'s `format_influxdb_line_protocol()`) to
-  QuestDB's ILP-over-HTTP `/write` endpoint, over an `httpx.Client` call —
-  no TLS hardening, since QuestDB's endpoint has no equivalent cipher/version
-  requirement. Do not point it at `TLS12Adapter`; that adapter is
-  `requests`/`urllib3`-specific and targets the InfluxDB endpoint only.
+- **Both backends are on `httpx`, through shared packages.** `app/influxdb.py` binds
+  `gillbates-influxdb-client` (`InfluxDBClient`, `hardened_tls_context`) and keeps only
+  the exporter's own line-protocol assembly. The TLS hardening (TLS 1.2 to 1.3,
+  `INFLUXDB_CIPHERS`, `INFLUXDB_VALIDATE_CERTIFICATE`) is a `hardened_tls_context` passed
+  as `ssl_context`; keep it when changing the transport.
+- The package rejects credentials over plain HTTP to a non-loopback host or over unverified
+  HTTPS unless `allow_insecure=True`. The exporter sets it on purpose: the documented
+  behavior is that such settings only warn (`warn_insecure_transport()`).
+- `send_to_influxdb()` uses `NO_RETRY` (one attempt per batch, the next run resends),
+  batches at 5000 lines and confirms only HTTP 204. Field values keep the exporter's
+  untyped form (no `i` suffix): a typed integer would conflict with existing buckets and
+  QuestDB columns, so the package's `format_line()` is not used.
+- **`app/questdb.py`** sends the same line protocol (built by `app/influxdb.py`'s
+  `format_influxdb_line_protocol()`) through `gillbates-questdb-client`, without TLS hardening.
 - `main.py` selects the backend via `METRICS_BACKEND` (`influxdb2` default,
   or `questdb`; any other value aborts at config import) and calls `warn_insecure_transport()` for
   `influxdb2`: plain HTTP or `INFLUXDB_VALIDATE_CERTIFICATE=false` only warns,
@@ -134,9 +137,9 @@ anything on it; the real abuse-contact resolution lives in `crowdsec-abuse-repor
   credentials (no Docker CLI or socket is used)
 - InfluxDB 2.x write endpoint, or a QuestDB 10.x instance with ILP-over-HTTP
   enabled
-- `requests` + `urllib3` — `default` group
 - `httpx` — declared in the `default` group, used by
-  `app/crowdsec.py` and `app/questdb.py`
+  `app/crowdsec.py` and, through the shared clients, by both backends
+- `gillbates-influxdb-client` — InfluxDB 2.x write client (hardened TLS context, batching, status classification, escaping), pinned the same way
 - `gillbates-logging` — logging core, git URL pinned by tag in `[project].dependencies` (private repository)
 - `gillbates-questdb-client` — QuestDB client (writes, `/exec`, dedup gate, TTL, rollup retention), pinned the same way
 - `settings.env` loading (`config.py`) uses only the stdlib; coloured console output (`logger.py`) comes from the external `gillbates-logging` package — no `python-dotenv` or `colorama` dependency
