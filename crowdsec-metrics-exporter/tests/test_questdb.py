@@ -9,7 +9,7 @@ import re
 
 import httpx
 import pytest
-from gillbates_questdb_client.client import RETRY_BACKOFF_SECONDS, VERIFY_INTERVAL_SECONDS, VERIFY_POLLS
+from gillbates_questdb_client.client import RETRY_BACKOFF_SECONDS, VERIFY_INTERVAL_SECONDS
 from gillbates_questdb_client.retention import PENDING_WARN_AFTER
 
 import main
@@ -64,14 +64,24 @@ class FakeQuestDB:
                 status = statuses.pop(0)
                 if status != 200:
                     return httpx.Response(status, text="injected failure")
-        return httpx.Response(200, json={"dataset": self._rows(sql)})
+        rows = self._rows(sql)
+        # Real QuestDB answers DDL with {"ddl": "OK"} and no dataset.
+        if sql.startswith(("CREATE ", "ALTER ")):
+            return httpx.Response(200, json={"ddl": "OK"})
+        return httpx.Response(200, json={"dataset": rows})
 
     def _rows(self, sql: str) -> list:
         names = _quoted(sql)
         if sql.startswith("CREATE TABLE IF NOT EXISTS") and "UPSERT KEYS" in sql:
             self.tables.setdefault(
                 names[0],
-                {"dedup": True, "wal": True, "keys": names[1 + len(names[1:]) // 2 :], "mode": "UPSERT", "lag": 0},
+                {
+                    "dedup": True,
+                    "wal": True,
+                    "keys": _quoted(sql.split("UPSERT KEYS", 1)[1]),
+                    "mode": "UPSERT",
+                    "lag": 0,
+                },
             )
         elif sql.startswith("ALTER TABLE") and "DEDUP ENABLE" in sql:
             table = self.tables[names[0]]
@@ -85,7 +95,8 @@ class FakeQuestDB:
                 return []
             dedup = table["dedup"] and table["lag"] <= 0
             table["lag"] -= 1
-            return [[dedup, table["wal"]]] if "walEnabled" in sql else [[table["dedup"]]]
+            # tables() also reports the designated timestamp; both tools declare TIMESTAMP("timestamp").
+            return [[dedup, table["wal"], "timestamp"]] if "walEnabled" in sql else [[table["dedup"]]]
         elif "upsertKey" in sql:
             return [[key] for key in self.tables[re.search(r"table_columns\('([^']+)'\)", sql).group(1)]["keys"]]
         elif "FROM table_columns" in sql:
@@ -145,8 +156,10 @@ def test_gate_creates_enables_and_verifies_dedup_before_the_first_write(db):
     first_write = db.log.index("WRITE")
     before = db.log[:first_write]
     assert any(sql.startswith("CREATE TABLE IF NOT EXISTS") and "WAL DEDUP UPSERT KEYS" in sql for sql in before)
-    assert any("DEDUP ENABLE UPSERT KEYS" in sql for sql in before)
+    # A table created with dedup is verified, never altered.
+    assert not any("DEDUP ENABLE" in sql for sql in db.log)
     assert any("upsertKey = true" in sql for sql in before)
+    assert any(sql.startswith("SHOW CREATE TABLE") for sql in before)
     assert db.tables[ALERT_TABLE]["keys"] == list(main.ALERT_DEDUP_KEYS)
 
 
@@ -160,7 +173,10 @@ def test_foreign_key_set_blocks_the_write_and_exits_1(db, monkeypatch, owned_key
     db.ignore_alter.add(ALERT_TABLE)
     assert _run_main(monkeypatch) == 1
     assert db.writes == []
-    assert db.count("upsertKey = true") == VERIFY_POLLS
+    # A table that already deduplicates is judged once and never altered, so another tool's keys survive.
+    assert db.count("upsertKey = true") == 1
+    assert db.count("DEDUP ENABLE") == 0
+    assert db.tables[ALERT_TABLE]["keys"] == owned_keys
 
 
 @pytest.mark.parametrize("flag", [{"mode": "SKIP"}, {"wal": False}], ids=["skip-mode", "not-wal"])
@@ -184,6 +200,8 @@ def test_unverifiable_dedup_mode_blocks_the_write(db, response):
 @pytest.mark.parametrize("step", ["CREATE TABLE IF NOT EXISTS", "DEDUP ENABLE"])
 def test_failing_ddl_blocks_the_write_and_a_4xx_is_not_retried(db, monkeypatch, step):
     needle = f'{step} "{ALERT_TABLE}"' if step.startswith("CREATE") else step
+    if step == "DEDUP ENABLE":
+        db.add_table(ALERT_TABLE, dedup=False, keys=())  # the ALTER is only sent for a table reporting dedup off
     db.fail[needle] = [400] * 10
     assert _run_main(monkeypatch) == 1
     assert db.writes == []
@@ -200,6 +218,7 @@ def test_transient_statuses_are_retried_with_bounded_backoff(db, status):
 
 
 def test_persistent_5xx_stops_after_the_retry_budget(db):
+    db.add_table(ALERT_TABLE, dedup=False, keys=())
     db.fail["DEDUP ENABLE"] = [503] * 20
     assert _send_alerts() is main.SendStatus.NOT_WRITTEN
     assert db.count("DEDUP ENABLE") == len(RETRY_BACKOFF_SECONDS) + 1

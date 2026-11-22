@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
-from gillbates_questdb_client.client import RETRY_BACKOFF_SECONDS
+from gillbates_questdb_client.client import NEGATIVE_RECHECK_SECONDS, RETRY_BACKOFF_SECONDS
 from gillbates_questdb_client.retention import PENDING_WARN_AFTER
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -103,8 +103,9 @@ class _FakeQuestDb:
         rows: list = []
         if query == "SELECT build()":
             rows = [] if self.build_info is None else [[self.build_info]]
-        elif query.startswith("SELECT dedup, walEnabled FROM tables()"):
-            rows = [[self.dedup, self.wal]] if self.exists else []
+        elif query.startswith("SELECT dedup, walEnabled"):
+            # tables() also reports the designated timestamp, which the app declares as "timestamp".
+            rows = [[self.dedup, self.wal, "timestamp"]] if self.exists else []
         elif query.startswith("SELECT dedup FROM tables()"):
             rows = [[self.dedup]] if self.exists else []
         elif query.startswith("CREATE TABLE"):
@@ -765,8 +766,10 @@ class QuestDbGateTest(_QuestDbStubMixin, unittest.TestCase):
         first_write = next(i for i, (kind, _) in enumerate(self.fake.events) if kind == "write")
         before = [value for _, value in self.fake.events[:first_write]]
         create = next(q for q in before if q.startswith("CREATE TABLE"))
-        self.assertTrue(any("DEDUP ENABLE UPSERT KEYS" in q for q in before))
-        self.assertTrue(any("table_columns(" in q for q in before))
+        # A table created with dedup is verified (keys, mode) and never altered.
+        self.assertFalse(any("DEDUP ENABLE" in q for q in self.fake.queries))
+        self.assertTrue(any("table_columns(" in q and "upsertKey" in q for q in before))
+        self.assertTrue(any(q.startswith("SHOW CREATE TABLE") for q in before))
         self.assertIn('"timestamp" TIMESTAMP, "host" SYMBOL, "ip_address" SYMBOL', create)
         self.assertIn('"as_name" SYMBOL) TIMESTAMP("timestamp") PARTITION BY DAY WAL DEDUP UPSERT KEYS(', create)
 
@@ -777,13 +780,22 @@ class QuestDbGateTest(_QuestDbStubMixin, unittest.TestCase):
         self.assertEqual(self.fake.count("CREATE TABLE"), 1)
         self.assertEqual(len(self.fake.writes), 2)
 
-    def test_failed_gate_is_cached_and_never_writes(self):
+    def test_failed_gate_never_writes_and_is_rechecked_only_after_the_negative_window(self):
         self.start_questdb(_FakeQuestDb(dedup=False, exists=True, alter_applies=False))
-        for _ in range(2):
-            with self.assertRaises(metrics.MetricsGateError):
-                metrics.write_points(["a"])
+        now = [0.0]
+        metrics._CLIENT._clock = lambda: now[0]  # the client has no public clock hook in build_client
+        with self.assertRaises(metrics.MetricsGateError):
+            metrics.write_points(["a"])
+        asked = len(self.fake.queries)
+        self.assertGreater(self.fake.count("ALTER TABLE"), 0)
+        with self.assertRaises(metrics.MetricsGateError):
+            metrics.write_points(["a"])
+        self.assertEqual(len(self.fake.queries), asked)  # inside the window the verdict is cached
+        now[0] = NEGATIVE_RECHECK_SECONDS + 1
+        with self.assertRaises(metrics.MetricsGateError):
+            metrics.write_points(["a"])
+        self.assertGreater(len(self.fake.queries), asked)  # afterwards the table is judged again
         self.assertEqual(self.fake.writes, [])
-        self.assertEqual(self.fake.count("CREATE TABLE"), 1)
 
     def test_other_key_set_blocks_the_write(self):
         self.start_questdb(_FakeQuestDb(exists=True, keys=["timestamp", "ip_address"], alter_applies=False))
